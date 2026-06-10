@@ -75,7 +75,7 @@ def main() -> None:
     print(output)
 
     _RESULTS_DIR.mkdir(exist_ok=True)
-    out_path = _RESULTS_DIR / "validation_output.txt"
+    out_path = _RESULTS_DIR / "validation_output_edgar.txt"
     out_path.write_text(output)
     print(f"Results saved to {out_path}")
 
