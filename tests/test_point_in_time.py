@@ -7,11 +7,12 @@ from core.data.fundamentals import PointInTimeFundamentals
 
 
 def _income_stmt():
+    # yfinance 1.x uses camelCase row labels
     return pd.DataFrame(
         {
-            pd.Timestamp("2022-09-24"): {"Total Revenue": 394_328e6, "Net Income": 99_803e6},
-            pd.Timestamp("2021-09-25"): {"Total Revenue": 365_817e6, "Net Income": 94_680e6},
-            pd.Timestamp("2020-09-26"): {"Total Revenue": 274_515e6, "Net Income": 57_411e6},
+            pd.Timestamp("2022-09-24"): {"TotalRevenue": 394_328e6, "NetIncome": 99_803e6},
+            pd.Timestamp("2021-09-25"): {"TotalRevenue": 365_817e6, "NetIncome": 94_680e6},
+            pd.Timestamp("2020-09-26"): {"TotalRevenue": 274_515e6, "NetIncome": 57_411e6},
         }
     )
 
@@ -19,9 +20,9 @@ def _income_stmt():
 def _balance_sheet():
     return pd.DataFrame(
         {
-            pd.Timestamp("2022-09-24"): {"Total Debt": 132_480e6, "Stockholders Equity": 50_672e6},
-            pd.Timestamp("2021-09-25"): {"Total Debt": 136_522e6, "Stockholders Equity": 63_090e6},
-            pd.Timestamp("2020-09-26"): {"Total Debt": 112_436e6, "Stockholders Equity": 65_339e6},
+            pd.Timestamp("2022-09-24"): {"TotalDebt": 132_480e6, "StockholdersEquity": 50_672e6},
+            pd.Timestamp("2021-09-25"): {"TotalDebt": 136_522e6, "StockholdersEquity": 63_090e6},
+            pd.Timestamp("2020-09-26"): {"TotalDebt": 112_436e6, "StockholdersEquity": 65_339e6},
         }
     )
 
@@ -49,10 +50,10 @@ def test_future_statement_excluded(tmp_path):
 
     # 2022-10-15 is only 77 days before 2022-12-31 → must be excluded
     trap = pd.Timestamp("2022-10-15")
-    income[trap] = {"Total Revenue": 999e12, "Net Income": 999e12}
+    income[trap] = {"TotalRevenue": 999e12, "NetIncome": 999e12}
     income = income[sorted(income.columns, reverse=True)]
 
-    balance[trap] = {"Total Debt": 1e9, "Stockholders Equity": 1e9}
+    balance[trap] = {"TotalDebt": 1e9, "StockholdersEquity": 1e9}
     balance = balance[sorted(balance.columns, reverse=True)]
 
     mock_ticker = MagicMock()
@@ -72,10 +73,10 @@ def test_no_eligible_statement_returns_none(tmp_path):
     """When all statements are too recent, return None."""
     # Only statement is 2022-11-01, which is 60 days before 2022-12-31 → excluded
     income = pd.DataFrame(
-        {pd.Timestamp("2022-11-01"): {"Total Revenue": 100e9, "Net Income": 20e9}}
+        {pd.Timestamp("2022-11-01"): {"TotalRevenue": 100e9, "NetIncome": 20e9}}
     )
     balance = pd.DataFrame(
-        {pd.Timestamp("2022-11-01"): {"Total Debt": 10e9, "Stockholders Equity": 50e9}}
+        {pd.Timestamp("2022-11-01"): {"TotalDebt": 10e9, "StockholdersEquity": 50e9}}
     )
 
     mock_ticker = MagicMock()

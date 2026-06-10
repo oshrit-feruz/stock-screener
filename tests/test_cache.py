@@ -13,10 +13,11 @@ def _mock_price_df():
 
 
 def _mock_income():
+    # yfinance 1.x camelCase labels
     return pd.DataFrame(
         {
-            pd.Timestamp("2022-09-24"): {"Total Revenue": 394e9, "Net Income": 99e9},
-            pd.Timestamp("2021-09-25"): {"Total Revenue": 366e9, "Net Income": 95e9},
+            pd.Timestamp("2022-09-24"): {"TotalRevenue": 394e9, "NetIncome": 99e9},
+            pd.Timestamp("2021-09-25"): {"TotalRevenue": 366e9, "NetIncome": 95e9},
         }
     )
 
@@ -24,8 +25,8 @@ def _mock_income():
 def _mock_balance():
     return pd.DataFrame(
         {
-            pd.Timestamp("2022-09-24"): {"Total Debt": 132e9, "Stockholders Equity": 51e9},
-            pd.Timestamp("2021-09-25"): {"Total Debt": 137e9, "Stockholders Equity": 63e9},
+            pd.Timestamp("2022-09-24"): {"TotalDebt": 132e9, "StockholdersEquity": 51e9},
+            pd.Timestamp("2021-09-25"): {"TotalDebt": 137e9, "StockholdersEquity": 63e9},
         }
     )
 

@@ -9,11 +9,24 @@ import yfinance as yf
 _DEFAULT_CACHE = Path(__file__).parent.parent.parent / "data" / "cache" / "fundamentals"
 _PUBLICATION_LAG_DAYS = 90
 
-# Try multiple key names — yfinance renames fields across versions
-_REVENUE_KEYS = ["Total Revenue", "Revenue"]
-_NET_INCOME_KEYS = ["Net Income", "Net Income Common Stockholders"]
-_TOTAL_DEBT_KEYS = ["Total Debt", "Long Term Debt"]
-_EQUITY_KEYS = ["Stockholders Equity", "Common Stock Equity", "Total Stockholder Equity"]
+# yfinance 1.x uses camelCase; older versions used spaced names — try both
+_REVENUE_KEYS = ["TotalRevenue", "Total Revenue", "OperatingRevenue"]
+_NET_INCOME_KEYS = [
+    "NetIncome",
+    "Net Income",
+    "NetIncomeCommonStockholders",
+    "Net Income Common Stockholders",
+    "NetIncomeFromContinuingOperationNetMinorityInterest",
+]
+_TOTAL_DEBT_KEYS = ["TotalDebt", "Total Debt", "LongTermDebt", "Long Term Debt"]
+_EQUITY_KEYS = [
+    "StockholdersEquity",
+    "Stockholders Equity",
+    "CommonStockEquity",
+    "Common Stock Equity",
+    "TotalEquityGrossMinorityInterest",
+    "Total Stockholder Equity",
+]
 
 
 @dataclass

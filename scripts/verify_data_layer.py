@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""Smoke test: fetch prices and point-in-time snapshots for AAPL, MSFT, NVDA."""
+"""
+Smoke test: fetch prices and point-in-time snapshots for AAPL, MSFT, NVDA.
+
+Validation window: 2022-12-31 and 2024-12-31.
+  - 2021 dates dropped: yfinance returns ~4 fiscal years; FY2020 (needed as the
+    prior-year baseline for FY2021 revenue-growth) is no longer in the API window.
+  - 2022-12-31 is the earliest date where the prior-year baseline (FY2021) is
+    guaranteed to be present.
+"""
 import sys
 from datetime import date
 from pathlib import Path
 
-# Allow running from the project root without installing the package
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
 
 TICKERS = ["AAPL", "MSFT", "NVDA"]
-AS_OF_DATES = [date(2021, 12, 31), date(2023, 12, 31)]
+AS_OF_DATES = [date(2022, 12, 31), date(2024, 12, 31)]
+PRICE_YEARS = [2022, 2024]
 
 
 def fmt(val: float | None, fmt_str: str = ".2f") -> str:
@@ -54,7 +62,7 @@ def main() -> None:
     print(f"{'Ticker':<7} {'Year':<6} {'Return':>8}")
     print("-" * 24)
     for ticker in TICKERS:
-        for yr in [2021, 2023]:
+        for yr in PRICE_YEARS:
             ret = prices.get_return(ticker, f"{yr}-01-02", f"{yr}-12-30")
             ret_str = f"{ret:.1%}" if ret is not None else "N/A"
             print(f"{ticker:<7} {yr:<6} {ret_str:>8}")
