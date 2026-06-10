@@ -7,13 +7,18 @@ import yfinance as yf
 _DEFAULT_CACHE = Path(__file__).parent.parent.parent / "data" / "cache" / "prices"
 
 
+def _safe_ticker(ticker: str) -> str:
+    """Strip path separators and dots to prevent cache path traversal."""
+    return "".join(c for c in ticker if c.isalnum() or c in "-_")
+
+
 class PriceData:
     def __init__(self, cache_dir: Path = _DEFAULT_CACHE):
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _cache_path(self, ticker: str, start: str, end: str) -> Path:
-        return self.cache_dir / f"{ticker}_{start}_{end}.pkl"
+        return self.cache_dir / f"{_safe_ticker(ticker)}_{start}_{end}.pkl"
 
     def get_prices(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         path = self._cache_path(ticker, start, end)

@@ -54,13 +54,18 @@ def _col_to_date(col) -> date:
     return col.date() if hasattr(col, "date") else pd.Timestamp(col).date()
 
 
+def _safe_ticker(ticker: str) -> str:
+    """Strip path separators and dots to prevent cache path traversal."""
+    return "".join(c for c in ticker if c.isalnum() or c in "-_")
+
+
 class PointInTimeFundamentals:
     def __init__(self, cache_dir: Path = _DEFAULT_CACHE):
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _cache_path(self, ticker: str) -> Path:
-        return self.cache_dir / f"{ticker}.json"
+        return self.cache_dir / f"{_safe_ticker(ticker)}.json"
 
     def _fetch_and_process(self, ticker: str) -> list[dict] | None:
         try:
@@ -85,7 +90,7 @@ class PointInTimeFundamentals:
 
             revenue_growth = None
             if revenue_current is not None and revenue_prior is not None and revenue_prior != 0:
-                revenue_growth = (revenue_current - revenue_prior) / abs(revenue_prior)
+                revenue_growth = (revenue_current - revenue_prior) / revenue_prior
 
             net_income = _safe_get(income, _NET_INCOME_KEYS, col)
 

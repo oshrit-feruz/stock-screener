@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import pandas as pd
 import yfinance as yf
 
 TICKERS = ["AAPL", "MSFT", "NVDA"]
@@ -25,7 +26,7 @@ def diagnose(ticker: str) -> None:
         print(f"\n  {label} — {len(cols)} years: {cols}")
         print(f"  Row labels ({len(df.index)}):")
         for row in df.index:
-            vals = [f"{df.loc[row, c]:.0f}" if df.loc[row, c] and str(df.loc[row, c]) != "nan" else "NaN"
+            vals = [f"{df.loc[row, c]:.0f}" if pd.notna(df.loc[row, c]) else "NaN"
                     for c in df.columns]
             print(f"    {row:<50} {vals}")
 
