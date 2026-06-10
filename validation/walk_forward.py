@@ -3,6 +3,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
+from core.data.edgar import EdgarFundamentals
 from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
 
@@ -31,12 +32,18 @@ class WalkForwardEngine:
         tickers: list[str],
         snapshot_dates: list[str],
         prices: PriceData | None = None,
-        fundamentals: PointInTimeFundamentals | None = None,
+        fundamentals: PointInTimeFundamentals | EdgarFundamentals | None = None,
+        use_edgar: bool = True,
     ) -> None:
         self.tickers = tickers
         self.snapshot_dates = [date.fromisoformat(s) for s in snapshot_dates]
         self.prices = prices or PriceData()
-        self.fundamentals = fundamentals or PointInTimeFundamentals()
+        if fundamentals is not None:
+            self.fundamentals = fundamentals
+        elif use_edgar:
+            self.fundamentals = EdgarFundamentals(fallback=PointInTimeFundamentals())
+        else:
+            self.fundamentals = PointInTimeFundamentals()
 
     def build_snapshot_df(self) -> pd.DataFrame:
         rows: list[dict] = []

@@ -18,5 +18,8 @@ VALIDATION_UNIVERSE: list[str] = [
     "GE", "MMM",
 ]
 
-SNAPSHOT_DATES: list[str] = ["2022-12-31", "2023-12-31", "2024-12-31"]
+SNAPSHOT_DATES: list[str] = [
+    "2018-12-31", "2019-12-31", "2020-12-31", "2021-12-31",
+    "2022-12-31", "2023-12-31", "2024-12-31",
+]
 FORWARD_MONTHS: int = 12
