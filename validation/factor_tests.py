@@ -22,23 +22,24 @@ _MIN_ROWS = 20  # minimum valid rows to compute a meaningful decile spread
 class FactorResult:
     factor: str
     spreads: dict[str, float | None] = field(default_factory=dict)
+    valid_rows: dict[str, int] = field(default_factory=dict)   # rows used per year
     positive_years: int = 0
     total_years: int = 0
     reliable: bool = False
 
 
-def _year_spread(df_year: pd.DataFrame, factor: str, direction: int) -> float | None:
+def _year_spread(df_year: pd.DataFrame, factor: str, direction: int) -> tuple[float | None, int]:
     sub = df_year[["forward_return_12m", factor]].dropna()
-    if len(sub) < _MIN_ROWS:
-        return None
-
     n = len(sub)
+    if n < _MIN_ROWS:
+        return None, n
+
     decile_n = max(1, ceil(n * 0.10))
 
     ranked = sub.sort_values(factor, ascending=(direction == -1))
     top    = ranked.head(decile_n)["forward_return_12m"].mean()
     bottom = ranked.tail(decile_n)["forward_return_12m"].mean()
-    return float(top - bottom)
+    return float(top - bottom), n
 
 
 def evaluate_factors(df: pd.DataFrame) -> list[FactorResult]:
@@ -49,8 +50,9 @@ def evaluate_factors(df: pd.DataFrame) -> list[FactorResult]:
 
         for snap_date, group in df.groupby("snapshot_date"):
             date_str = str(snap_date)
-            spread = _year_spread(group, factor, direction)
+            spread, n = _year_spread(group, factor, direction)
             result.spreads[date_str] = spread
+            result.valid_rows[date_str] = n
             if spread is not None:
                 result.total_years += 1
                 if spread > 0:

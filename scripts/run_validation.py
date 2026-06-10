@@ -59,6 +59,10 @@ def main() -> None:
             else f"NO  ({r.positive_years}/{r.total_years})"
         )
         buf.write(f"{r.factor:<22} {spreads_str}   {verdict}\n")
+        counts_str = "   ".join(
+            f"{'n='+str(r.valid_rows.get(str(d), 0)):>10}" for d in date_cols
+        )
+        buf.write(f"{'':22} {counts_str}\n")
 
     buf.write(divider + "\n")
     buf.write(

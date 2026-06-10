@@ -27,8 +27,9 @@ def test_year_spread_top_minus_bottom():
     factor_vals = list(range(n))          # 0..19, higher = better
     fwd_vals    = [0.20 if i >= 18 else (-0.10 if i < 2 else 0.05) for i in range(n)]
     df = _make_df(n, factor_vals, fwd_vals)
-    spread = _year_spread(df, "revenue_growth_yoy", direction=1)
+    spread, n_valid = _year_spread(df, "revenue_growth_yoy", direction=1)
     assert spread == pytest.approx(0.20 - (-0.10), rel=1e-6)
+    assert n_valid == n
 
 
 def test_factor_direction_inverts_de():
@@ -51,9 +52,10 @@ def test_factor_direction_inverts_de():
         "momentum_6m":        [0.05] * n,
     })
 
-    spread = _year_spread(df, "debt_to_equity", direction=-1)
+    spread, n_valid = _year_spread(df, "debt_to_equity", direction=-1)
     # Top decile = low D/E stocks (high fwd return), bottom decile = high D/E (low fwd)
     assert spread == pytest.approx(0.50 - (-0.20), rel=1e-6)
+    assert n_valid == n
 
 
 def test_reliability_two_of_three():
@@ -98,8 +100,9 @@ def test_insufficient_data_returns_none():
     """Years with < 20 valid rows produce a None spread and are excluded from reliability."""
     n = 10  # below _MIN_ROWS
     df = _make_df(n, list(range(n)), [0.1] * n)
-    spread = _year_spread(df, "revenue_growth_yoy", direction=1)
+    spread, n_valid = _year_spread(df, "revenue_growth_yoy", direction=1)
     assert spread is None
+    assert n_valid == n
 
 
 def test_insufficient_data_excluded_from_reliability_count():
