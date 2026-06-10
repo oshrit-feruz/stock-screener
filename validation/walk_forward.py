@@ -46,6 +46,7 @@ class WalkForwardEngine:
             self.fundamentals = PointInTimeFundamentals()
 
     def build_snapshot_df(self) -> pd.DataFrame:
+        # Collect raw rows first; factor-momentum columns require the full cross-section
         rows: list[dict] = []
         for snap_date in self.snapshot_dates:
             fwd_start = _iso(snap_date + timedelta(days=2))
@@ -84,5 +85,32 @@ class WalkForwardEngine:
                     continue
 
         if not rows:
-            return pd.DataFrame(columns=[f.name for f in SnapshotRow.__dataclass_fields__.values()])
-        return pd.DataFrame(rows)
+            empty_cols = list(SnapshotRow.__dataclass_fields__) + [
+                "revenue_growth_acceleration", "margin_improvement"
+            ]
+            return pd.DataFrame(columns=empty_cols)
+
+        df = pd.DataFrame(rows)
+        df = self._add_factor_momentum(df)
+        return df
+
+    def _add_factor_momentum(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add revenue_growth_acceleration and margin_improvement columns.
+
+        Each is defined as the factor value at the current snapshot minus the
+        value at the prior year's snapshot (same ticker, one year back).
+        """
+        df = df.sort_values(["ticker", "snapshot_date"]).copy()
+        prior = df[["ticker", "snapshot_date", "revenue_growth_yoy", "net_margin"]].copy()
+        prior["snapshot_date"] = prior["snapshot_date"].apply(
+            lambda d: date(d.year + 1, d.month, d.day)
+        )
+        prior = prior.rename(columns={
+            "revenue_growth_yoy": "_prior_rev_growth",
+            "net_margin":         "_prior_net_margin",
+        })
+        df = df.merge(prior, on=["ticker", "snapshot_date"], how="left")
+        df["revenue_growth_acceleration"] = df["revenue_growth_yoy"] - df["_prior_rev_growth"]
+        df["margin_improvement"]          = df["net_margin"] - df["_prior_net_margin"]
+        df = df.drop(columns=["_prior_rev_growth", "_prior_net_margin"])
+        return df
