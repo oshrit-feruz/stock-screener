@@ -53,6 +53,7 @@ def _make_ticker(revenue_key: str, income_key: str, debt_key: str, equity_key: s
         ("TotalRevenue", "NetIncome", "TotalDebt", "CommonStockEquity", "CommonStockEquity variant"),
         ("Total Revenue", "Net Income", "Total Debt", "Stockholders Equity", "spaced (legacy yfinance)"),
         ("Total Revenue", "Net Income Common Stockholders", "Long Term Debt", "Common Stock Equity", "legacy alt keys"),
+        ("Operating Revenue", "Net Income", "Total Debt", "Stockholders Equity", "Operating Revenue fallback"),
     ],
 )
 def test_field_extraction(tmp_path, revenue_key, income_key, debt_key, equity_key, label):

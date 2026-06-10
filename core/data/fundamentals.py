@@ -10,7 +10,7 @@ _DEFAULT_CACHE = Path(__file__).parent.parent.parent / "data" / "cache" / "funda
 _PUBLICATION_LAG_DAYS = 90
 
 # yfinance 1.x uses camelCase; older versions used spaced names — try both
-_REVENUE_KEYS = ["TotalRevenue", "Total Revenue", "OperatingRevenue"]
+_REVENUE_KEYS = ["TotalRevenue", "Total Revenue", "OperatingRevenue", "Operating Revenue"]
 _NET_INCOME_KEYS = [
     "NetIncome",
     "Net Income",
@@ -103,6 +103,12 @@ class PointInTimeFundamentals:
             net_margin = None
             if net_income is not None and revenue_current is not None and revenue_current != 0:
                 net_margin = net_income / revenue_current
+
+            # Skip sparse columns (oldest year from yfinance is often nearly empty).
+            # A column with no revenue has no computable growth or margin; storing it
+            # would cause get_snapshot to return an all-None entry instead of None.
+            if revenue_current is None:
+                continue
 
             snapshots.append(
                 {

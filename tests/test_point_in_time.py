@@ -88,3 +88,33 @@ def test_no_eligible_statement_returns_none(tmp_path):
         snapshot = pit.get_snapshot("AAPL", date(2022, 12, 31))
 
     assert snapshot is None
+
+
+def test_sparse_oldest_column_excluded(tmp_path):
+    """A column where yfinance returns no revenue (sparse oldest year) must not
+    appear as a snapshot — callers should get None rather than an all-N/A entry."""
+    income = pd.DataFrame(
+        {
+            pd.Timestamp("2022-09-24"): {"TotalRevenue": 394e9, "NetIncome": 99e9},
+            pd.Timestamp("2021-09-25"): {"InterestIncome": 2.8e9},  # sparse — no revenue
+        }
+    )
+    balance = pd.DataFrame(
+        {
+            pd.Timestamp("2022-09-24"): {"TotalDebt": 132e9, "StockholdersEquity": 50e9},
+            pd.Timestamp("2021-09-25"): {"CapitalLeaseObligations": 11e9},  # sparse
+        }
+    )
+
+    mock_ticker = MagicMock()
+    mock_ticker.income_stmt = income
+    mock_ticker.balance_sheet = balance
+
+    with patch("yfinance.Ticker", return_value=mock_ticker):
+        pit = PointInTimeFundamentals(cache_dir=tmp_path)
+        snap_sparse = pit.get_snapshot("AAPL", date(2021, 12, 31))
+        snap_full = pit.get_snapshot("AAPL", date(2022, 12, 31))
+
+    assert snap_sparse is None, "sparse column must not surface as a valid snapshot"
+    assert snap_full is not None
+    assert snap_full.statement_date == date(2022, 9, 24)
