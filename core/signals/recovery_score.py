@@ -16,11 +16,11 @@ from core.signals.entry_score import (
 )
 
 # Theory-driven weights — do NOT optimize to historical data.
+# v2: recovery_score removed (ablation showed it adds noise; dip is the primary driver).
 WEIGHTS = {
-    "dip":      0.35,
-    "recovery": 0.35,
-    "momentum": 0.20,
-    "volume":   0.10,
+    "dip":      0.50,
+    "momentum": 0.30,
+    "volume":   0.20,
 }
 
 BUY_THRESHOLD = 0.60
@@ -128,13 +128,11 @@ def compute_recovery_signals(ohlcv: pd.DataFrame) -> pd.DataFrame:
 
     has_all = (
         df["dip_score"].notna() &
-        df["recovery_score"].notna() &
         df["momentum_score"].notna() &
         df["volume_score"].notna()
     )
     composite = (
         WEIGHTS["dip"]      * df["dip_score"].fillna(0) +
-        WEIGHTS["recovery"] * df["recovery_score"].fillna(0) +
         WEIGHTS["momentum"] * df["momentum_score"].fillna(0) +
         WEIGHTS["volume"]   * df["volume_score"].fillna(0)
     )

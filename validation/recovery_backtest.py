@@ -204,7 +204,7 @@ class RecoveryBacktester:
         return {ts.date(): ("bull" if b else "bear") for ts, b in zip(ohlcv.index, bull)}
 
     def _ablation(self) -> dict[str, dict]:
-        components = ["dip", "recovery", "momentum", "volume"]
+        components = list(WEIGHTS.keys())
         results: dict[str, dict] = {}
 
         for disabled in ["none"] + components:
@@ -223,15 +223,12 @@ class RecoveryBacktester:
                     scored = scored.copy()
                     scored[f"{disabled}_score"] = 0.5
 
-                has_all = (
-                    scored["dip_score"].notna() & scored["recovery_score"].notna() &
-                    scored["momentum_score"].notna() & scored["volume_score"].notna()
-                )
-                comp = (
-                    WEIGHTS["dip"]      * scored["dip_score"].fillna(0) +
-                    WEIGHTS["recovery"] * scored["recovery_score"].fillna(0) +
-                    WEIGHTS["momentum"] * scored["momentum_score"].fillna(0) +
-                    WEIGHTS["volume"]   * scored["volume_score"].fillna(0)
+                score_cols = [f"{k}_score" for k in WEIGHTS]
+                has_all = scored[score_cols[0]].notna()
+                for _sc in score_cols[1:]:
+                    has_all = has_all & scored[_sc].notna()
+                comp = sum(
+                    WEIGHTS[k] * scored[f"{k}_score"].fillna(0) for k in WEIGHTS
                 ).where(has_all)
 
                 quality_by_year = self._prefetch_quality(ticker)

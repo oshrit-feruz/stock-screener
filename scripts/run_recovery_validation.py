@@ -62,10 +62,9 @@ def _write_buckets(buf: StringIO, buckets: dict) -> None:
     buf.write(f"SUCCESS CRITERION 1 (HIGH–RANDOM > +3%):                {'PASS' if c1 else 'FAIL'}\n")
     buf.write(f"SUCCESS CRITERION 2 (HIGH capture – RANDOM capture > 10pp): {'PASS' if c2 else 'FAIL'}\n")
 
+    w_str = "  ".join(f"{k}={int(v*100)}%" for k, v in WEIGHTS.items())
     buf.write(
-        f"\nWeights (theory-driven, NOT optimised): "
-        f"dip={int(WEIGHTS['dip']*100)}%  recovery={int(WEIGHTS['recovery']*100)}%  "
-        f"momentum={int(WEIGHTS['momentum']*100)}%  volume={int(WEIGHTS['volume']*100)}%\n"
+        f"\nWeights (theory-driven, NOT optimised): {w_str}\n"
         f"BUY threshold: {BUY_THRESHOLD}   LOW threshold: {LOW_THRESHOLD}\n"
     )
     return c1, c2
@@ -113,13 +112,8 @@ def _write_ablation(buf: StringIO, ablation: dict) -> None:
     base_l = base.get("low_mean")
     base_s = (base_h - base_l) if (base_h is not None and base_l is not None) else None
 
-    for key, label in [
-        ("none",     "Baseline"),
-        ("dip",      "Dip disabled"),
-        ("recovery", "Recovery disabled"),
-        ("momentum", "Momentum disabled"),
-        ("volume",   "Volume disabled"),
-    ]:
+    rows = [("none", "Baseline")] + [(k, f"{k.capitalize()} disabled") for k in WEIGHTS]
+    for key, label in rows:
         row = ablation.get(key, {})
         hi  = row.get("high_mean")
         lo  = row.get("low_mean")
@@ -145,7 +139,10 @@ def _write_regime(buf: StringIO, regime: dict) -> None:
     buf.write("Bull = SPY SMA200 rising vs 20 days prior.\n")
 
 
-def main() -> None:
+def main(
+    out_filename: str = "recovery_entry_validation.txt",
+    label: str = "Stage 5",
+) -> None:
     print(f"Universe: {len(VALIDATION_UNIVERSE)} tickers")
     print("Loading price data and EDGAR fundamentals…\n")
 
@@ -165,7 +162,7 @@ def main() -> None:
     buf = StringIO()
 
     buf.write("=" * 70 + "\n")
-    buf.write("=== RECOVERY ENTRY SCORE VALIDATION (Stage 5) ===\n")
+    buf.write(f"=== RECOVERY ENTRY SCORE VALIDATION ({label}) ===\n")
     buf.write("=" * 70 + "\n")
     w_str = "  ".join(f"{k}={int(v*100)}%" for k, v in WEIGHTS.items())
     buf.write(f"Weights: {w_str}  |  BUY≥{BUY_THRESHOLD}\n")
@@ -206,7 +203,7 @@ def main() -> None:
     print(output)
 
     _RESULTS_DIR.mkdir(exist_ok=True)
-    out_path = _RESULTS_DIR / "recovery_entry_validation.txt"
+    out_path = _RESULTS_DIR / out_filename
     out_path.write_text(output)
     print(f"Results saved to {out_path}")
 
