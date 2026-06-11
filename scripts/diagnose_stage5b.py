@@ -21,13 +21,12 @@ from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import (
     BUY_THRESHOLD,
-    WEIGHTS,
     compute_recovery_signals,
     passes_quality_gate,
 )
 from validation.recovery_backtest import (
-    CASE_STUDIES,
     _CASE_WINDOW_DAYS,
+    CASE_STUDIES,
     _recovery_captured,
 )
 
@@ -102,7 +101,7 @@ def part1_regime_capture(prices: PriceData, fundamentals) -> None:
                 if comp >= BUY_THRESHOLD:
                     captured["HIGH"][regime].append(cap)
 
-            if rng.random() < _RANDOM_PROB:
+            if rng.random() < _RANDOM_PROB and gate is not False:
                 captured["RANDOM"][regime].append(cap)
 
     # Print table
@@ -154,10 +153,13 @@ def part2_ba_gate(fundamentals) -> bool | None:
     print(f"ROE:                              {snap.roe}")
 
     gate = passes_quality_gate(snap)
-    print(f"\nGate conditions:")
-    print(f"  revenue_growth_yoy > 0 : {snap.revenue_growth_yoy} → {snap.revenue_growth_yoy is not None and snap.revenue_growth_yoy > 0}")
-    print(f"  debt_to_equity < 3     : {snap.debt_to_equity}  → {snap.debt_to_equity is not None and snap.debt_to_equity < 3}")
-    print(f"  net_margin > 0         : {snap.net_margin}  → {snap.net_margin is not None and snap.net_margin > 0}")
+    print("\nGate conditions:")
+    rev_check = snap.revenue_growth_yoy is not None and snap.revenue_growth_yoy > 0
+    print(f"  revenue_growth_yoy > 0 : {snap.revenue_growth_yoy} → {rev_check}")
+    debt_check = snap.debt_to_equity is not None and snap.debt_to_equity < 3
+    print(f"  debt_to_equity < 3     : {snap.debt_to_equity}  → {debt_check}")
+    margin_check = snap.net_margin is not None and snap.net_margin > 0
+    print(f"  net_margin > 0         : {snap.net_margin}  → {margin_check}")
     print(f"\npasses_quality_gate(snap) = {gate}")
     return gate
 
@@ -204,14 +206,18 @@ def part3_fwd_from_buy(prices: PriceData, fundamentals, ba_gate: bool | None) ->
         w_start = pd.Timestamp(bottom_date) - pd.Timedelta(days=_CASE_WINDOW_DAYS * 2)
         w_end   = pd.Timestamp(bottom_date) + pd.Timedelta(days=_CASE_WINDOW_DAYS * 2)
         window  = scored.loc[(scored.index >= w_start) & (scored.index <= w_end)]
-        max_win = float(window["composite_score"].max()) if window["composite_score"].notna().any() else None
+        has_scores = window["composite_score"].notna().any()
+        max_win = float(window["composite_score"].max()) if has_scores else None
         max_str = f"{max_win:.2f}" if max_win is not None else " N/A"
 
         # First date in window where composite >= BUY_THRESHOLD
         buy_rows = window[window["composite_score"] >= BUY_THRESHOLD]
         if buy_rows.empty or gate is False:
             note = "gate_fail" if gate is False else "no BUY in window"
-            print(f"{ticker:<7} {str(bottom_date):<12} {gate_str:>5}  {max_str:>7}  {'—':<12} {'':>7}  {'N/A':>8}  {note}")
+            print(
+                f"{ticker:<7} {str(bottom_date):<12} {gate_str:>5}  "
+                f"{max_str:>7}  {'—':<12} {'':>7}  {'N/A':>8}  {note}"
+            )
             continue
 
         buy_ts  = buy_rows.index[0]
@@ -247,7 +253,7 @@ def part3_fwd_from_buy(prices: PriceData, fundamentals, ba_gate: bool | None) ->
 
     print("-" * 80)
     print(f"Cases with BUY in window AND valid Fwd63d: {buy_count}/5")
-    print(f"\nNote: Fwd63d is the 63-trading-day return from the first BUY-signal date")
+    print("\nNote: Fwd63d is the 63-trading-day return from the first BUY-signal date")
     print(f"in the ±{_CASE_WINDOW_DAYS * 2}-calendar-day window, not from the bottom date.")
 
 
