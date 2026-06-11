@@ -91,14 +91,19 @@ def _recovery_score_series(close: pd.Series) -> pd.Series:
 # ── public API ────────────────────────────────────────────────────────────────
 
 def passes_quality_gate(snap: FundamentalSnapshot | None) -> bool | None:
-    """Return True/False/None (None = no data available)."""
+    """Return True/False/None (None = no fundamental data available at all).
+
+    Fail-closed: de=None (negative/zero equity or missing LT-debt concept) → False.
+    """
     if snap is None:
         return None
     rev  = snap.revenue_growth_yoy
     de   = snap.debt_to_equity
     nm   = snap.net_margin
-    if rev is None or de is None or nm is None:
+    if rev is None or nm is None:
         return None
+    if de is None:
+        return False   # equity ≤0 or LT-debt not found → D/E unbounded → FAIL
     return bool(rev > 0 and de < 3 and nm > 0)
 
 
@@ -178,7 +183,7 @@ def get_recovery_signal(
         signal = "INSUFFICIENT_DATA"
     elif gate is False:
         signal = "SKIP"
-    elif comp >= BUY_THRESHOLD and gate is not False:
+    elif comp >= BUY_THRESHOLD and gate is True:
         signal = "BUY"
     else:
         signal = "WAIT"

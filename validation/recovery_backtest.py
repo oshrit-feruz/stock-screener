@@ -38,32 +38,26 @@ class RecoveryBacktestStats:
     mean_return_63d: float | None
     mean_return_21d: float | None
     pct_positive_12m: float | None
-    recovery_capture_rate: float | None
     mean_max_drawdown: float | None
 
 
 def _stats_from_records(label: str, records: list[dict]) -> RecoveryBacktestStats:
     if not records:
-        return RecoveryBacktestStats(label, 0, None, None, None, None, None, None)
+        return RecoveryBacktestStats(label, 0, None, None, None, None, None)
 
     r12  = [r["fwd_12m"] for r in records if r["fwd_12m"] is not None]
     r63  = [r["fwd_63d"] for r in records if r["fwd_63d"] is not None]
     r21  = [r["fwd_21d"] for r in records if r["fwd_21d"] is not None]
     dd   = [r["max_dd"]  for r in records if r["max_dd"]  is not None]
-    cap  = [r["captured"] for r in records]   # all have this field
-
-    n_captured = sum(cap)
-    rcr = float(n_captured / len(cap)) if cap else None
 
     return RecoveryBacktestStats(
-        label                 = label,
-        n_entries             = len(records),
-        mean_return_12m       = float(np.mean(r12))   if r12  else None,
-        mean_return_63d       = float(np.mean(r63))   if r63  else None,
-        mean_return_21d       = float(np.mean(r21))   if r21  else None,
-        pct_positive_12m      = float(np.mean([x > 0 for x in r12])) if r12 else None,
-        recovery_capture_rate = rcr,
-        mean_max_drawdown     = float(np.mean(dd))    if dd   else None,
+        label             = label,
+        n_entries         = len(records),
+        mean_return_12m   = float(np.mean(r12))   if r12  else None,
+        mean_return_63d   = float(np.mean(r63))   if r63  else None,
+        mean_return_21d   = float(np.mean(r21))   if r21  else None,
+        pct_positive_12m  = float(np.mean([x > 0 for x in r12])) if r12 else None,
+        mean_max_drawdown = float(np.mean(dd))    if dd   else None,
     )
 
 
@@ -122,6 +116,7 @@ class RecoveryBacktester:
         high_recs:   list[dict] = []
         low_recs:    list[dict] = []
         random_recs: list[dict] = []
+        gate_none_high_count = 0
 
         for ticker in self.tickers:
             ohlcv = self.prices.get_prices(
@@ -148,24 +143,39 @@ class RecoveryBacktester:
                 fwd_21d = _fwd_return(close_arr, i, 21)
                 max_dd  = _max_drawdown_window(close_arr, i, 252)
                 regime  = spy_regime.get(ts.date(), "unknown")
-                captured = _recovery_captured(close_arr, i)
 
                 rec = dict(
-                    ticker   = ticker,
-                    date     = ts.date(),
-                    fwd_12m  = fwd_12m,
-                    fwd_63d  = fwd_63d,
-                    fwd_21d  = fwd_21d,
-                    max_dd   = max_dd,
-                    regime   = regime,
-                    captured = captured,
+                    ticker  = ticker,
+                    date    = ts.date(),
+                    fwd_12m = fwd_12m,
+                    fwd_63d = fwd_63d,
+                    fwd_21d = fwd_21d,
+                    max_dd  = max_dd,
+                    regime  = regime,
                 )
 
-                if not np.isnan(comp) and gate is not False:
-                    if comp >= BUY_THRESHOLD:
-                        high_recs.append(dict(rec))
-                    elif comp < LOW_THRESHOLD:
-                        low_recs.append(dict(rec))
+                if not np.isnan(comp):
+                    if gate is None and comp >= BUY_THRESHOLD:
+                        gate_none_high_count += 1   # would have been HIGH under old gate is not False
+                    if gate is True:
+                        if comp >= BUY_THRESHOLD:
+                            ep    = close_arr[i]
+                            ahead = close_arr[i + 1 : min(i + 253, len(close_arr))]
+                            if len(ahead) > 0 and ep > 0:
+                                mn  = float(np.min(ahead))
+                                mae = float(mn / ep - 1)   # max adverse excursion from entry price
+                            else:
+                                mn  = ep
+                                mae = None
+                            high_recs.append(dict(
+                                rec,
+                                mae        = mae,
+                                touched_10 = (mae is not None and mae <= -0.10),
+                                touched_15 = (mae is not None and mae <= -0.15),
+                                touched_20 = (mae is not None and mae <= -0.20),
+                            ))
+                        elif comp < LOW_THRESHOLD:
+                            low_recs.append(dict(rec))
 
                 if rng.random() < _RANDOM_PROB:
                     random_recs.append(dict(rec))
@@ -177,10 +187,12 @@ class RecoveryBacktester:
         }
 
         return dict(
-            buckets      = buckets,
-            ablation     = self._ablation(),
-            case_studies = self._run_case_studies(),
-            regime       = self._regime_breakdown(high_recs),
+            buckets           = buckets,
+            ablation          = self._ablation(),
+            case_studies      = self._run_case_studies(),
+            regime            = self._regime_breakdown(high_recs),
+            drawdown          = self._drawdown_analysis(high_recs),
+            gate_none_dropped = gate_none_high_count,
         )
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -239,7 +251,7 @@ class RecoveryBacktester:
                     if ts < self.start_date or ts > self.end_date:
                         continue
                     gate = quality_by_year.get(ts.year)
-                    if np.isnan(c) or gate is False:
+                    if np.isnan(c) or gate is not True:
                         continue
                     fwd = _fwd_return(close_arr, i, 252)
                     if fwd is None:
@@ -321,9 +333,9 @@ class RecoveryBacktester:
             else:
                 signal = "WAIT"
 
-            # "BUY within window" check
+            # "BUY within window" check — fail-closed: gate must be True
             buy_in_window = False
-            if max_window is not None and max_window >= BUY_THRESHOLD and gate is not False:
+            if max_window is not None and max_window >= BUY_THRESHOLD and gate is True:
                 buy_in_window = True
 
             results.append(dict(
@@ -356,3 +368,45 @@ class RecoveryBacktester:
             )
 
         return {"bull": _s(bull), "bear": _s(bear)}
+
+    @staticmethod
+    def _drawdown_analysis(high_recs: list[dict]) -> dict:
+        if not high_recs:
+            return {"n_entries": 0, "mae_median": None, "mae_p75": None, "mae_p90": None,
+                    "mae_p10": None, "groups": {}}
+
+        # Max adverse excursion (MAE): min price in next 252d / entry price − 1
+        # A value of -0.08 means the entry was at most 8% against you; never negative below entry if MAE>0.
+        maes = [r["mae"] for r in high_recs if r.get("mae") is not None]
+        # Percentiles: P10 = worst 10% of entries (most negative), P90 = best 10% (least negative)
+        mae_p10    = float(np.percentile(maes, 10))  if maes else None   # worst decile
+        mae_median = float(np.percentile(maes, 50))  if maes else None
+        mae_p75    = float(np.percentile(maes, 75))  if maes else None   # 75% stayed above this
+        mae_p90    = float(np.percentile(maes, 90))  if maes else None   # 90% stayed above this
+
+        def _group_stats(key: str) -> dict:
+            touched   = [r for r in high_recs if r.get(key) is True]
+            untouched = [r for r in high_recs if r.get(key) is False]
+
+            def _s(recs: list[dict]) -> dict:
+                fwds = [r["fwd_12m"] for r in recs if r["fwd_12m"] is not None]
+                return dict(
+                    n       = len(recs),
+                    pct     = len(recs) / len(high_recs),
+                    fwd_12m = float(np.mean(fwds)) if fwds else None,
+                )
+
+            return dict(touched=_s(touched), untouched=_s(untouched))
+
+        return dict(
+            n_entries  = len(high_recs),
+            mae_p10    = mae_p10,
+            mae_median = mae_median,
+            mae_p75    = mae_p75,
+            mae_p90    = mae_p90,
+            groups     = {
+                "10": _group_stats("touched_10"),
+                "15": _group_stats("touched_15"),
+                "20": _group_stats("touched_20"),
+            },
+        )

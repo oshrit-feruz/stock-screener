@@ -211,11 +211,19 @@ class EdgarFundamentals:
             equity     = eq_entry["val"]  if eq_entry  else None
             lt_debt    = ltd_entry["val"] if ltd_entry else None
 
+            # D/E: negative/zero equity means book value wiped out → unbounded → None (fail-closed)
+            if equity is None or equity <= 0:
+                de_ratio = None
+            elif lt_debt is None:
+                de_ratio = None   # LT-debt concept not found in EDGAR → unknown → fail-closed
+            else:
+                de_ratio = float(lt_debt / equity)
+
             return FundamentalSnapshot(
                 statement_date     = date.fromisoformat(rev_entry["end"]),
                 revenue_growth_yoy = revenue_growth,
-                debt_to_equity     = (lt_debt / equity) if (equity and lt_debt is not None) else None,
-                roe                = (net_income / equity) if (equity and net_income is not None) else None,
+                debt_to_equity     = de_ratio,
+                roe                = (net_income / equity) if (equity and equity > 0 and net_income is not None) else None,
                 net_margin         = (net_income / revenue) if (revenue and net_income is not None) else None,
                 filed_date         = date.fromisoformat(rev_entry["filed"]),
             )
