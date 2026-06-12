@@ -274,6 +274,9 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                     "position_value": alloc,
                 }
 
+    # ── Realized-only value: open positions returned at cost (no unrealized P&L) ─
+    final_value_realized = cash + sum(pos["shares"] * pos["entry_price"] for pos in positions.values())
+
     # ── Force-close remaining open positions at end_date ──────────────────────
     last_date = trading_dates[-1]
     last_ts   = pd.Timestamp(last_date)
@@ -299,6 +302,9 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     total_return_pct = (final_value / _INITIAL_CAPITAL - 1) * 100
     years            = max(1.0, (end_date - start_date).days / 365.25)
     cagr             = ((final_value / _INITIAL_CAPITAL) ** (1.0 / years) - 1) * 100
+
+    total_return_realized_pct = (final_value_realized / _INITIAL_CAPITAL - 1) * 100
+    cagr_realized             = ((final_value_realized / _INITIAL_CAPITAL) ** (1.0 / years) - 1) * 100
 
     pv_arr = np.array(daily_pv, dtype=float)
     dr     = np.diff(pv_arr) / pv_arr[:-1]
@@ -383,12 +389,16 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "pct_exit_via_threshold": round(pct_thresh, 1),
             "mean_return_pct":        round(mean_ret, 2),
             "pct_positive":           round(pct_pos, 1),
-            "final_portfolio":        int(round(final_value)),
-            "total_return_pct":       round(total_return_pct, 1),
-            "cagr":                   round(cagr, 1),
-            "spy_total_return_pct":   round(spy_ret, 1)      if spy_ret      is not None else None,
-            "spy_cagr":               round(spy_cagr_val, 1) if spy_cagr_val is not None else None,
-            "beat_spy":               bool(final_value > spy_final) if spy_final is not None else None,
+            "final_portfolio":              int(round(final_value)),
+            "final_portfolio_realized":    int(round(final_value_realized)),
+            "total_return_pct":            round(total_return_pct, 1),
+            "total_return_realized_pct":   round(total_return_realized_pct, 1),
+            "cagr":                        round(cagr, 1),
+            "cagr_realized":              round(cagr_realized, 1),
+            "spy_total_return_pct":        round(spy_ret, 1)      if spy_ret      is not None else None,
+            "spy_cagr":                    round(spy_cagr_val, 1) if spy_cagr_val is not None else None,
+            "beat_spy":                    bool(final_value > spy_final)          if spy_final is not None else None,
+            "beat_spy_realized":           bool(final_value_realized > spy_final) if spy_final is not None else None,
             "sharpe":                 round(sharpe, 2),
             "max_drawdown_pct":       round(max_dd, 1),
             "best_year":              best_year,
@@ -398,9 +408,11 @@ def _simulate(preloaded: dict, params: dict) -> dict:
         "trades":   sorted(trades, key=lambda t: t["entry_date"]),
         "yearly":   yearly,
         "spy_comparison": {
-            "final_spy":       int(round(spy_final))               if spy_final is not None else None,
-            "final_portfolio": int(round(final_value)),
-            "difference":      int(round(final_value - spy_final)) if spy_final is not None else None,
+            "final_spy":                  int(round(spy_final))                          if spy_final is not None else None,
+            "final_portfolio":            int(round(final_value)),
+            "final_portfolio_realized":   int(round(final_value_realized)),
+            "difference":                 int(round(final_value - spy_final))            if spy_final is not None else None,
+            "difference_realized":        int(round(final_value_realized - spy_final))   if spy_final is not None else None,
         },
     }
 

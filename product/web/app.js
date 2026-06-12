@@ -658,26 +658,47 @@ function renderSimResults(data, scenario) {
     'threshold_only':   'Threshold exit',
   }[params.exit_mode] || params.exit_mode;
 
-  var beatHtml = (s.beat_spy === true)
-    ? '<span class="beat-badge beat-yes">&#9989; Beat S&P 500</span>'
-    : (s.beat_spy === false)
-    ? '<span class="beat-badge beat-no">&#10060; Underperformed S&P 500</span>'
+  var hasOpen   = s.final_portfolio !== s.final_portfolio_realized;
+  var beatLabel = hasOpen
+    ? (s.beat_spy === true  ? '&#9989; Beat S&P 500 (incl. open)'  :
+       s.beat_spy === false ? '&#10060; Underperformed S&P 500 (incl. open)' : '')
+    : (s.beat_spy === true  ? '&#9989; Beat S&P 500'  :
+       s.beat_spy === false ? '&#10060; Underperformed S&P 500' : '');
+  var realizedBeatHtml = (hasOpen && s.beat_spy_realized !== undefined && s.beat_spy_realized !== s.beat_spy)
+    ? (s.beat_spy_realized === true
+        ? ' &nbsp;<span class="beat-badge beat-yes" style="font-size:11px;">&#9989; Realized also beats</span>'
+        : ' &nbsp;<span class="beat-badge beat-no"  style="font-size:11px;">&#10060; Realized does not beat</span>')
+    : '';
+  var beatHtml = beatLabel
+    ? '<span class="beat-badge ' + (s.beat_spy ? 'beat-yes' : 'beat-no') + '">' + beatLabel + '</span>' + realizedBeatHtml
     : '';
 
   var cmpGrid = '';
   if (data.spy_comparison.final_spy) {
+    var hasOpen    = s.final_portfolio !== s.final_portfolio_realized;
+    var spyCls     = s.spy_total_return_pct >= 0 ? 'ret-pos' : 'ret-neg';
+    var botRetCls  = s.total_return_pct    >= 0 ? 'ret-pos' : 'ret-neg';
+    var realRetCls = (s.total_return_realized_pct >= 0) ? 'ret-pos' : 'ret-neg';
     cmpGrid = [
-      '<div class="sim-cmp-grid" style="margin-top:12px;">',
+      '<div class="sim-cmp-grid' + (hasOpen ? ' sim-cmp-3col' : '') + '" style="margin-top:12px;">',
       '  <div class="cmp-card">',
-      '    <div class="cmp-label">Your Bot</div>',
+      '    <div class="cmp-label">Bot (incl. open)</div>',
       '    <div class="cmp-val">$' + fmtK(s.final_portfolio) + '</div>',
-      '    <div class="cmp-sub ret-pos">+' + fmt(s.total_return_pct, 1) + '%</div>',
+      '    <div class="cmp-sub ' + botRetCls + '">' + (s.total_return_pct >= 0 ? '+' : '') + fmt(s.total_return_pct, 1) + '%</div>',
       '    <div class="cmp-sub">' + fmt(s.cagr, 1) + '% / yr</div>',
       '  </div>',
+      (hasOpen ? [
+        '  <div class="cmp-card">',
+        '    <div class="cmp-label">Bot (realized)</div>',
+        '    <div class="cmp-val">$' + fmtK(s.final_portfolio_realized) + '</div>',
+        '    <div class="cmp-sub ' + realRetCls + '">' + (s.total_return_realized_pct >= 0 ? '+' : '') + fmt(s.total_return_realized_pct, 1) + '%</div>',
+        '    <div class="cmp-sub">' + fmt(s.cagr_realized, 1) + '% / yr</div>',
+        '  </div>',
+      ].join('\n') : ''),
       '  <div class="cmp-card">',
       '    <div class="cmp-label">S&P 500 (SPY)</div>',
       '    <div class="cmp-val">$' + fmtK(data.spy_comparison.final_spy) + '</div>',
-      '    <div class="cmp-sub ' + (s.spy_total_return_pct >= 0 ? 'ret-pos' : 'ret-neg') + '">+' + fmt(s.spy_total_return_pct, 1) + '%</div>',
+      '    <div class="cmp-sub ' + spyCls + '">' + (s.spy_total_return_pct >= 0 ? '+' : '') + fmt(s.spy_total_return_pct, 1) + '%</div>',
       '    <div class="cmp-sub">' + fmt(s.spy_cagr, 1) + '% / yr</div>',
       '  </div>',
       '</div>',
