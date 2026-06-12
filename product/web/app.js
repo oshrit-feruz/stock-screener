@@ -699,17 +699,48 @@ function renderSimResults(data, scenario) {
     ].join('\n');
   }).join('\n');
 
-  // Trades — show first 8, toggle for all
-  var allTrades = data.trades || [];
-  var tradeRowsHTML = allTrades.slice(0, 8).map(tradeRowHTML).join('\n');
-  var showMoreBtn = allTrades.length > 8
-    ? '<button class="btn btn-ghost btn-sm" style="margin-top:10px;" onclick="toggleAllTrades(\'' + scenario + '\')">' +
-      'Show all ' + allTrades.length + ' trades &#9660;</button>'
-    : '';
-  var hiddenTrades = allTrades.length > 8
-    ? '<div id="sim-all-trades-' + scenario + '" style="display:none;">' +
-      allTrades.slice(8).map(tradeRowHTML).join('\n') + '</div>'
-    : '';
+  // Split open vs closed trades
+  var allTrades    = data.trades || [];
+  var endDate      = new Date(params.end_date);
+  var today        = new Date();
+  var isRecentEnd  = (today - endDate) / (1000 * 60 * 60 * 24) <= 60;
+  var openTrades   = allTrades.filter(function (t) { return t.exit_reason === 'open_at_end'; });
+  var closedTrades = allTrades.filter(function (t) { return t.exit_reason !== 'open_at_end'; });
+
+  // Open positions section (only when sim end is near today)
+  var openSection = '';
+  if (isRecentEnd && openTrades.length > 0) {
+    openSection = [
+      '<div class="section-title">Currently Open Positions (' + openTrades.length + ')</div>',
+      '<div class="card">',
+      openTrades.map(function (t) { return tradeRowHTML(t, true); }).join('\n'),
+      '<div class="disclaimer" style="margin-top:8px;">Unrealized returns as of ' + escHtml(params.end_date) + '. Not closed yet.</div>',
+      '</div>',
+    ].join('\n');
+  } else if (openTrades.length > 0) {
+    // Sim ended in the past — show open_at_end trades inline with a note
+    closedTrades = allTrades; // treat all as closed with labels
+  }
+
+  // Closed trades section — show first 12, toggle for rest
+  var SHOW_FIRST   = 12;
+  var closedHtml   = closedTrades.slice(0, SHOW_FIRST).map(function (t) {
+    return tradeRowHTML(t, !isRecentEnd && t.exit_reason === 'open_at_end');
+  }).join('\n');
+  var moreBtn      = '';
+  var hiddenHtml   = '';
+  if (closedTrades.length > SHOW_FIRST) {
+    hiddenHtml = '<div id="sim-all-trades-' + scenario + '" style="display:none;">' +
+      closedTrades.slice(SHOW_FIRST).map(function (t) {
+        return tradeRowHTML(t, !isRecentEnd && t.exit_reason === 'open_at_end');
+      }).join('\n') + '</div>';
+    moreBtn = '<button class="btn btn-ghost btn-sm" style="margin-top:10px;" ' +
+      'onclick="toggleAllTrades(\'' + scenario + '\')">Show all ' + closedTrades.length + ' trades &#9660;</button>';
+  }
+
+  var closedTitle = isRecentEnd
+    ? 'Closed Trades (' + closedTrades.length + ')'
+    : 'All Trades (' + allTrades.length + (openTrades.length > 0 ? ', ' + openTrades.length + ' open at end' : '') + ')';
 
   return [
     '<div class="section-title" style="margin-top:16px;">Results &mdash; Entry &ge;' + params.entry_threshold + ' | ' + exitLabel + '</div>',
@@ -719,14 +750,14 @@ function renderSimResults(data, scenario) {
 
     '<div class="card">',
     '  <div class="subsection" style="margin-top:0;">Details</div>',
-    detailRow('Signals fired',       s.n_signals),
-    detailRow('Trades opened',       s.n_trades),
-    detailRow('Avg hold',            fmt(s.avg_hold_days, 0) + ' days'),
-    detailRow('Win rate',            fmt(s.pct_positive, 0) + '%'),
-    detailRow('Avg return/trade',    (s.mean_return_pct >= 0 ? '+' : '') + fmt(s.mean_return_pct, 1) + '%'),
-    detailRow('Time in market',      fmt(s.pct_time_invested, 0) + '%'),
-    detailRow('Max drawdown',        fmt(s.max_drawdown_pct, 1) + '%'),
-    detailRow('Sharpe ratio',        fmt(s.sharpe, 2)),
+    detailRow('Signals fired',    s.n_signals),
+    detailRow('Trades opened',    s.n_trades),
+    detailRow('Avg hold',         fmt(s.avg_hold_days, 0) + ' days'),
+    detailRow('Win rate',         fmt(s.pct_positive, 0) + '%'),
+    detailRow('Avg return/trade', (s.mean_return_pct >= 0 ? '+' : '') + fmt(s.mean_return_pct, 1) + '%'),
+    detailRow('Time in market',   fmt(s.pct_time_invested, 0) + '%'),
+    detailRow('Max drawdown',     fmt(s.max_drawdown_pct, 1) + '%'),
+    detailRow('Sharpe ratio',     fmt(s.sharpe, 2)),
     (s.best_year  ? detailRow('Best year',  s.best_year.year  + '  ' + (s.best_year.return_pct  >= 0 ? '+' : '') + s.best_year.return_pct  + '%') : ''),
     (s.worst_year ? detailRow('Worst year', s.worst_year.year + '  ' + (s.worst_year.return_pct >= 0 ? '+' : '') + s.worst_year.return_pct + '%') : ''),
     '</div>',
@@ -735,30 +766,26 @@ function renderSimResults(data, scenario) {
     '<div class="card">',
     '  <div class="yr-row" style="border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:2px;">',
     '    <span class="yr-year" style="color:var(--muted);">Year</span>',
-    '    <span class="yr-bot" style="color:var(--muted);">Bot</span>',
-    '    <span class="yr-spy" style="color:var(--muted);">SPY</span>',
+    '    <span class="yr-bot"  style="color:var(--muted);">Bot</span>',
+    '    <span class="yr-spy"  style="color:var(--muted);">SPY</span>',
     '    <span class="yr-tick"></span>',
     '  </div>',
     yearRows,
     '</div>',
 
-    '<div class="section-title">All Trades</div>',
+    openSection,
+
+    '<div class="section-title">' + closedTitle + '</div>',
     '<div class="card">',
-    '  <div class="trade-row" style="border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:2px;">',
-    '    <span class="tr-ticker" style="color:var(--muted);">Ticker</span>',
-    '    <span class="tr-date"   style="color:var(--muted);">Entry</span>',
-    '    <span class="tr-ret"    style="color:var(--muted);">Return</span>',
-    '    <span class="tr-days"   style="color:var(--muted);">Days</span>',
-    '  </div>',
-    tradeRowsHTML,
-    hiddenTrades,
-    showMoreBtn,
+    closedHtml,
+    hiddenHtml,
+    moreBtn,
     '</div>',
 
     '<div class="sim-disclaimer" style="margin-top:12px;">',
-    '  &#9888;&#65039; This is a historical simulation on the same data used to build the signal. ',
+    '  &#9888;&#65039; Historical simulation on the same data used to build the signal. ',
     '  Results are optimistically biased. Past performance does not guarantee future results. ',
-    '  This is not investment advice.',
+    '  Not investment advice.',
     '</div>',
   ].join('\n');
 }
@@ -772,16 +799,37 @@ function detailRow(label, val) {
   ].join('\n');
 }
 
-function tradeRowHTML(t) {
-  var cls = t.return_pct >= 0 ? 'ret-pos' : 'ret-neg';
+function tradeRowHTML(t, isOpen) {
+  var cls    = t.return_pct >= 0 ? 'ret-pos' : 'ret-neg';
   var retStr = (t.return_pct >= 0 ? '+' : '') + fmt(t.return_pct, 1) + '%';
-  var reason = t.exit_reason === 'threshold' ? ' &#8599;' : (t.exit_reason === 'open_at_end' ? ' *' : '');
+  var retLabel = retStr + (isOpen ? ' <span style="font-size:10px;font-weight:400;color:var(--muted);">unrealized</span>' : '');
+
+  var entryPx = '$' + fmt(t.entry_price, 2);
+  var exitPx  = '$' + fmt(t.exit_price,  2);
+  var pricesStr = entryPx + ' &rarr; ' + exitPx + (isOpen ? ' <span style="color:var(--muted);">(now)</span>' : '');
+
+  var entryMo = (t.entry_date || '').substring(0, 10);
+  var exitMo  = (t.exit_date  || '').substring(0, 10);
+  var datesStr;
+  if (isOpen) {
+    datesStr = 'entered ' + entryMo + ' &middot; ' + t.hold_days + 'd held';
+  } else {
+    var reasonTag = '';
+    if (t.exit_reason === 'threshold' || t.exit_reason === 'stop_loss') reasonTag = ' &middot; early exit';
+    datesStr = entryMo + ' &rarr; ' + exitMo + ' &middot; ' + t.hold_days + 'd' + reasonTag;
+  }
+
   return [
-    '<div class="trade-row">',
-    '  <span class="tr-ticker">' + t.ticker + '</span>',
-    '  <span class="tr-date">' + (t.entry_date || '').substring(0, 7) + '</span>',
-    '  <span class="tr-ret ' + cls + '">' + retStr + reason + '</span>',
-    '  <span class="tr-days">' + t.hold_days + 'd</span>',
+    '<div class="trade-row' + (isOpen ? ' tr-open-pos' : '') + '">',
+    '  <div class="tr-main">',
+    '    <span class="tr-ticker">' + t.ticker + '</span>',
+    (isOpen ? '    <span class="open-badge">OPEN</span>' : ''),
+    '    <span class="tr-ret ' + cls + '">' + retLabel + '</span>',
+    '  </div>',
+    '  <div class="tr-sub">',
+    '    <span class="tr-prices">' + pricesStr + '</span>',
+    '    <span class="tr-dates">' + datesStr + '</span>',
+    '  </div>',
     '</div>'
   ].join('\n');
 }

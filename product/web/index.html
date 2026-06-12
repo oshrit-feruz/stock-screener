@@ -372,12 +372,21 @@
     .yr-bot  { font-family: monospace; width: 60px; }
     .yr-spy  { font-family: monospace; width: 60px; color: var(--muted); }
     .yr-tick { font-size: 14px; }
-    .trade-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .trade-row { padding: 8px 0; border-bottom: 1px solid var(--border); }
     .trade-row:last-child { border-bottom: none; }
-    .tr-ticker { font-weight: 600; width: 50px; }
-    .tr-date   { color: var(--muted); width: 80px; }
-    .tr-ret    { font-family: monospace; font-weight: 700; width: 58px; text-align: right; }
-    .tr-days   { color: var(--muted); width: 50px; text-align: right; }
+    .tr-open-pos { background: rgba(59,130,246,0.05); border-radius: 6px; padding: 8px 6px; margin: 2px -4px; }
+    .tr-main { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+    .tr-sub  { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); gap: 6px; }
+    .tr-ticker { font-weight: 700; font-size: 13px; min-width: 44px; }
+    .tr-ret    { font-family: monospace; font-weight: 700; font-size: 13px; margin-left: auto; white-space: nowrap; }
+    .tr-prices { font-family: monospace; white-space: nowrap; }
+    .tr-dates  { text-align: right; white-space: nowrap; }
+    .open-badge {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+      padding: 1px 5px; border-radius: 3px;
+      background: rgba(245,158,11,0.15); color: var(--amber);
+      border: 1px solid rgba(245,158,11,0.3); white-space: nowrap;
+    }
 
     /* ── Alert cards ── */
     .alert-card {
