@@ -429,6 +429,7 @@ def backtest(body: BacktestParams) -> dict:
         "entry_threshold":  body.entry_threshold,
         "exit_threshold":   body.exit_threshold,
         "exit_mode":        body.exit_mode,
+        "take_profit_pct":  body.take_profit_pct,
         "position_size_pct": body.position_size_pct,
         "max_positions":    body.max_positions,
         "start_date":       body.start_date,
