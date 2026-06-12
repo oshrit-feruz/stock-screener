@@ -1,0 +1,109 @@
+{
+  "meta": {
+    "version": "1.0",
+    "stage": "5b",
+    "frozen_signal_params": {
+      "weights": {"dip": 0.50, "momentum": 0.30, "volume": 0.20},
+      "buy_threshold": 0.60,
+      "exit_rule": "Hold 252 trading days (~12 months). No stop-loss.",
+      "gate": "fail-closed"
+    },
+    "validated_stats": {
+      "spread": "+26.9%",
+      "high_mean_252d": "+49.2%",
+      "random_mean_252d": "+22.3%",
+      "high_pct_positive_12m": "78.9%",
+      "random_pct_positive_12m": "71.9%",
+      "median_mae": "-15.0%",
+      "bear_mean": "+50.6%",
+      "bull_mean": "+45.3%",
+      "n_high_entries": 2382,
+      "years_tested": 7,
+      "n_tickers": 50,
+      "pct_touch_minus_10": "66.4%",
+      "pct_exit_at_loss": "27.4%"
+    }
+  },
+  "principles": [
+    "Lead with what the signal IS, not what it predicts.",
+    "Never use: 'win rate', 'guaranteed', 'high confidence', 'bullish', 'will'.",
+    "Always name the expected drawdown path — median -15% before recovery is normal.",
+    "Signal is a 252-day hold. Communicate the full timeline upfront.",
+    "Magnitude edge framing: recovery returns are typically large but lumpy.",
+    "Bear market performance (+50.6%) should be cited when user is worried.",
+    "Cite historical base rates as context, not as prediction."
+  ],
+  "contexts": {
+    "smart_alert_fired": {
+      "description": "Alert when a ticker crosses the BUY threshold for the first time.",
+      "headline": "{ticker} has pulled back {drawdown_pct} from its 52-week high — recovery signal active.",
+      "body": "Our recovery detector flagged {ticker} today. The stock is down {drawdown_pct} from its 12-month peak, and the signal is showing early signs of reversal across momentum and volume.\n\nIn 7 years of backtesting across 50 large-cap stocks, signals like this have returned an average of +49% over the following 12 months — compared to +22% for random entries.\n\nWhat to expect: the path won't be smooth. The median position drops another 15% from entry before recovering. 66% of positions at some point touch -10% before year-end. That's normal, not a sign the trade is broken.\n\nThe plan: hold for 252 trading days (~12 months). No stop-loss. We'll alert you at the exit date.",
+      "cta": "See full analysis",
+      "disclaimer": "short"
+    },
+    "user_entered_position": {
+      "description": "Confirmation shown immediately after user acts on a BUY alert.",
+      "headline": "Position noted. 252-day hold begins today.",
+      "body": "You've noted a position in {ticker} at {entry_price}.\n\nThe plan is straightforward: hold for 252 trading days (exit around {exit_date_approx}). No stop-loss.\n\nWhat you should expect: this stock may drop further before it recovers — historically, the median recovery signal position falls another 15% from entry before recovering. That's part of the strategy. Closing early because of a paper loss has historically destroyed the edge.\n\nWe'll check in if the position moves significantly, and we'll send you an exit alert at day 252.",
+      "cta": "Got it",
+      "disclaimer": "medium"
+    },
+    "user_watching_loss": {
+      "at_minus_12_pct": {
+        "description": "Position is at roughly -12% unrealized. Reassure without false comfort.",
+        "headline": "{ticker} is down {loss_pct} — this is within the expected range.",
+        "body": "This is not unusual for a recovery signal. In our backtest, 66% of HIGH-signal positions fell 10% or more from entry before recovering by year-end. The median drop before recovery was -15%.\n\nPositions that touched -10% in our data still averaged +32% by day 252, compared to +86% for those that never pulled back that far — both well above the +22% random baseline.\n\nThe plan hasn't changed: hold to day 252 ({days_remaining} trading days remaining). We'll alert you at the exit date.",
+        "cta": "Hold",
+        "disclaimer": "short"
+      },
+      "at_minus_25_pct": {
+        "description": "Position is at -25% or worse. Deeper loss, more urgent reassurance needed.",
+        "headline": "{ticker} is down {loss_pct} — still within the historical distribution.",
+        "body": "A drawdown of {loss_pct} is painful. It's also within the range we've seen in recovering positions.\n\nThe data: even among positions that fell 20-25% from entry, the majority recovered to positive returns by day 252 in our backtest. The worst decile of positions reached -44.5% at some point before their 252-day exit.\n\nNote: signals performed even better in bear markets (+50.6% average vs +45.3% in bull markets) — meaning the signal isn't broken when markets are down.\n\nThe plan remains: hold to day 252 ({days_remaining} trading days remaining).",
+        "cta": "Hold",
+        "disclaimer": "medium"
+      }
+    },
+    "user_considering_exit": {
+      "up_20_pct": {
+        "description": "User is considering taking profits early at +20%.",
+        "headline": "Early exit at +{gain_pct} — here's what the data says.",
+        "body": "Taking a +{gain_pct} gain early feels sensible. Here's the trade-off:\n\nIn our backtest, the average 252-day return for HIGH signals was +49%. Early-exit variants that locked in gains at +20% captured only a fraction of that — positions that hit +20% often continued higher.\n\nThis is your decision. The system was designed and validated for a 252-day hold. Exiting early at +{gain_pct} means accepting a certain gain in exchange for giving up potential upside.",
+        "cta": "Keep holding  /  Exit now",
+        "disclaimer": "short"
+      },
+      "down_8_pct": {
+        "description": "User is considering cutting a loss at -8%.",
+        "headline": "Cutting at -{loss_pct} — the historical cost of this decision.",
+        "body": "In our backtest, applying a -10% hard stop to HIGH-signal positions reduced the average 252-day return from +49% to +32%. That's because positions that triggered the stop still averaged +32% if held — the stop is cutting winners, not just losers.\n\nWe can't predict how this specific position will perform. What we can say is that the strategy was designed and validated without a stop-loss, and adding one historically reduced returns.\n\nThis is your decision.",
+        "cta": "Keep holding  /  Exit now",
+        "disclaimer": "short"
+      }
+    },
+    "comparison_to_random": {
+      "description": "Used in onboarding and educational contexts to explain the signal's edge.",
+      "headline": "Recovery signals historically return 2x a random entry.",
+      "body": "In 7 years of backtesting (2018-2024) across 50 large-cap stocks:\n\n  Recovery signal entries:  +49.2% average over 12 months  (n=2,382)\n  Random entries:           +22.3% average over 12 months  (n=8,874)\n  Spread:                   +26.9 percentage points\n\nThe edge is not in picking the right direction — 79% of signal entries were positive at 12 months versus 72% for random. The edge is in MAGNITUDE: when recovery signals work, they work bigger.\n\nBear markets amplify the signal (+51% average vs +23% for random in bear periods). The signal is not market-timing — it's identifying deep, quality-stock pullbacks.",
+      "disclaimer": "long"
+    },
+    "exit_alert_due": {
+      "description": "Alert at day 252 — time to exit.",
+      "headline": "{ticker}: 252-day hold complete. Exit alert.",
+      "body": "Your {ticker} position has reached the planned 252-day hold period.\n\n  Entry:     {entry_date} at {entry_price}\n  Today:     {exit_date} at {current_price}\n  Return:    {realized_return}\n\nYou have 5 trading days to act. If no action is taken, we'll send a reminder.",
+      "cta": "Mark as exited  /  Defer 5 days",
+      "disclaimer": "short"
+    },
+    "onboarding": {
+      "description": "Shown once during first-time user setup.",
+      "headline": "Before your first alert — what this signal actually does.",
+      "body": "This app detects large-cap stocks that have pulled back significantly from their 52-week highs and are showing early recovery momentum.\n\nThe edge is in magnitude, not timing. Our backtest (2018-2024, 50 stocks) shows these signals return an average of +49% over 12 months vs +22% for random entries. But the path is bumpy.\n\nWhat you will experience:\n  - 66% of positions will drop 10% or more after you enter\n  - The median position drops 15% from entry before recovering\n  - 27% of positions close at a loss at the 12-month mark\n  - The 12-month hold is not optional — exiting early destroys the edge\n\nThis is a recovery strategy. It requires patience and tolerance for drawdowns. If you see a position at -20%, that is expected, not a sign to exit.\n\nBy continuing, you confirm you've read and understood the strategy.",
+      "cta": "I understand — show me the signals",
+      "disclaimer": "long"
+    }
+  },
+  "disclaimer_variations": {
+    "short": "Past performance in backtesting does not guarantee future results. This is not financial advice.",
+    "medium": "Signal performance is based on historical backtesting (2018-2024, 50 large-cap US stocks). Backtested results are hypothetical and do not account for transaction costs, taxes, or slippage. Past performance does not guarantee future results. This is not financial advice.",
+    "long": "Signal performance is based on historical backtesting across 50 large-cap US stocks from 2018 to 2024 (2,382 HIGH-signal entries, 8,874 random-baseline entries). Backtested returns are hypothetical — they assume perfect execution at closing prices and do not account for transaction costs, taxes, slippage, or market impact. The signal has not been tested in live trading. Past performance does not guarantee future results. Individual results will vary. This app does not provide personalized investment advice. Always consult a qualified financial advisor before making investment decisions."
+  }
+}
