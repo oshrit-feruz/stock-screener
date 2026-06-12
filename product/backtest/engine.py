@@ -36,24 +36,14 @@ def _safe_float(v) -> Optional[float]:
         return None
 
 
-def run_backtest(params: dict) -> dict:
-    """Run a full backtest simulation with the given parameters.
+def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_year: int) -> dict:
+    """Pre-load OHLCV, compute signals, and pre-fetch quality gates for all tickers.
 
-    Returns a dict with keys: params, summary, trades, yearly, spy_comparison.
-    On validation failure returns {"error": "..."}.
+    Expensive step done once for batch runs — amortizes across all simulations.
     """
-    entry_threshold = float(params.get("entry_threshold", 0.80))
-    exit_threshold  = float(params.get("exit_threshold", 0.40))
-    exit_mode       = params.get("exit_mode", "252d_only")
-    pos_size_pct    = float(params.get("position_size_pct", 10.0)) / 100.0
-    max_positions   = int(params.get("max_positions", 10))
-    start_date      = date.fromisoformat(params.get("start_date", "2018-01-01"))
-    end_date        = date.fromisoformat(params.get("end_date", "2026-06-12"))
-
     prices       = PriceData()
     fundamentals = EdgarFundamentals(fallback=PointInTimeFundamentals())
 
-    # ── 1. Pre-compute signals for all tickers ────────────────────────────────
     scored_data: dict[str, pd.DataFrame] = {}
     for ticker in VALIDATION_UNIVERSE:
         try:
@@ -67,11 +57,64 @@ def run_backtest(params: dict) -> dict:
         except Exception:
             continue
 
+    spy_ohlcv = prices.get_prices("SPY", _WARMUP_START, end_date.isoformat())
+
+    quality_cache: dict[tuple, bool | None] = {}
+    for ticker in scored_data:
+        for year in range(quality_start_year, quality_end_year + 1):
+            try:
+                snap = fundamentals.get_snapshot(ticker, date(year, 12, 31))
+                quality_cache[(ticker, year)] = passes_quality_gate(snap)
+            except Exception:
+                quality_cache[(ticker, year)] = None
+
+    return {
+        "scored_data":   scored_data,
+        "spy_ohlcv":     spy_ohlcv,
+        "quality_cache": quality_cache,
+    }
+
+
+def _simulate(preloaded: dict, params: dict) -> dict:
+    """Run portfolio simulation with pre-loaded data.
+
+    Supports two exit modes:
+      hold_days + exit_rule  — for parameter optimization grid
+      exit_mode + exit_threshold — for legacy UI simulator (backward compat)
+
+    exit_rule "A": hold for hold_days trading days, no stop-loss.
+    exit_rule "B": hold for hold_days trading days; emergency exit at -40% from entry.
+    """
+    scored_data   = preloaded["scored_data"]
+    spy_ohlcv     = preloaded["spy_ohlcv"]
+    quality_cache = preloaded["quality_cache"]
+
     if not scored_data:
         return {"error": "No price data available"}
 
-    # ── 2. Build trading calendar from SPY ─────────────────────────────────────
-    spy_ohlcv = prices.get_prices("SPY", _WARMUP_START, end_date.isoformat())
+    entry_threshold = float(params.get("entry_threshold", 0.60))
+    pos_size_pct    = float(params.get("position_size_pct", 10.0)) / 100.0
+    max_positions   = int(params.get("max_positions", 10))
+    start_date = (
+        date.fromisoformat(params["start_date"])
+        if isinstance(params.get("start_date"), str)
+        else params["start_date"]
+    )
+    end_date = (
+        date.fromisoformat(params["end_date"])
+        if isinstance(params.get("end_date"), str)
+        else params["end_date"]
+    )
+
+    # Optimization mode overrides when hold_days is explicitly set
+    hold_days_param: Optional[int] = params.get("hold_days")
+    exit_rule:        str           = params.get("exit_rule", "A")
+
+    # Legacy UI mode params (only used when hold_days_param is None)
+    exit_mode:      str   = params.get("exit_mode", "252d_only")
+    exit_threshold: float = float(params.get("exit_threshold", 0.40))
+
+    # ── Trading calendar ───────────────────────────────────────────────────────
     if spy_ohlcv is not None and not spy_ohlcv.empty:
         trading_dates = [
             d.date() for d in spy_ohlcv.index
@@ -87,29 +130,18 @@ def run_backtest(params: dict) -> dict:
     if not trading_dates:
         return {"error": "No trading dates found in the specified range"}
 
-    # ── 3. Pre-fetch quality gates by (ticker, year) ──────────────────────────
     start_year = start_date.year
     end_year   = end_date.year
 
-    quality_cache: dict[tuple, bool | None] = {}
-    for ticker in scored_data:
-        for year in range(start_year, end_year + 1):
-            try:
-                snap = fundamentals.get_snapshot(ticker, date(year, 12, 31))
-                quality_cache[(ticker, year)] = passes_quality_gate(snap)
-            except Exception:
-                quality_cache[(ticker, year)] = None
-
-    # ── 4. Walk through time ──────────────────────────────────────────────────
+    # ── Portfolio state ────────────────────────────────────────────────────────
     cash      = _INITIAL_CAPITAL
-    positions: dict[str, dict] = {}   # ticker → {entry_date, entry_price, shares, position_value}
+    positions: dict[str, dict] = {}
     trades:    list[dict]       = []
     n_signals       = 0
     n_days_invested = 0
-
     portfolio_daily: dict[date, float] = {}
     daily_pv: list[float] = []
-    prev_buy_set: set[str] = set()    # track new BUY transitions
+    prev_buy_set: set[str] = set()
 
     def _cur_price(tkr: str, ts: pd.Timestamp) -> Optional[float]:
         sc = scored_data.get(tkr)
@@ -119,7 +151,6 @@ def run_backtest(params: dict) -> dict:
         if not mask.any():
             return None
         row = sc.loc[mask].iloc[-1]
-        # Accept price only if within 5 calendar days of today (handles thin trading)
         if (ts.date() - row.name.date()).days > 5:
             return None
         return _safe_float(row["Close"])
@@ -127,7 +158,7 @@ def run_backtest(params: dict) -> dict:
     for today in trading_dates:
         today_ts = pd.Timestamp(today)
 
-        # ── Portfolio value at today's close ──────────────────────────────
+        # ── Portfolio value at today's close ───────────────────────────────
         pos_value = 0.0
         for tkr, pos in positions.items():
             cp = _cur_price(tkr, today_ts)
@@ -155,19 +186,28 @@ def run_backtest(params: dict) -> dict:
             hold = int(np.busday_count(pos["entry_date"].isoformat(), today.isoformat()))
 
             reason: Optional[str] = None
-            if exit_mode == "252d_only":
-                if hold >= 252:
-                    reason = "252d"
-            elif exit_mode == "threshold_or_252d":
-                if hold >= 252:
-                    reason = "252d"
-                elif comp is not None and comp < exit_threshold:
-                    reason = "threshold"
-            elif exit_mode == "threshold_only":
-                if hold >= 504:
-                    reason = "504d_cap"
-                elif comp is not None and comp < exit_threshold:
-                    reason = "threshold"
+
+            if hold_days_param is not None:
+                # Optimization mode
+                if hold >= hold_days_param:
+                    reason = f"{hold_days_param}d"
+                elif exit_rule == "B" and cp / pos["entry_price"] - 1 <= -0.40:
+                    reason = "stop_loss"
+            else:
+                # Legacy UI mode
+                if exit_mode == "252d_only":
+                    if hold >= 252:
+                        reason = "252d"
+                elif exit_mode == "threshold_or_252d":
+                    if hold >= 252:
+                        reason = "252d"
+                    elif comp is not None and comp < exit_threshold:
+                        reason = "threshold"
+                elif exit_mode == "threshold_only":
+                    if hold >= 504:
+                        reason = "504d_cap"
+                    elif comp is not None and comp < exit_threshold:
+                        reason = "threshold"
 
             if reason is not None:
                 to_close.append((tkr, cp, hold, reason))
@@ -187,7 +227,7 @@ def run_backtest(params: dict) -> dict:
                 "exit_reason": reason,
             })
 
-        # ── Identify today's BUY signals (after exits, to allow same-day reentry)
+        # ── Identify today's BUY signals ───────────────────────────────────
         today_buy_set:    set[str]   = set()
         today_candidates: list[tuple] = []
 
@@ -198,14 +238,13 @@ def run_backtest(params: dict) -> dict:
             if not mask.any():
                 continue
             row = sc.loc[mask].iloc[-1]
-            # Only enter on the exact trading day (causal — no stale carry-over)
             if row.name.date() != today:
                 continue
             comp = _safe_float(row.get("composite_score"))
             if comp is None or comp < entry_threshold:
                 continue
             gate = quality_cache.get((tkr, today.year))
-            if gate is not True:     # fail-closed: None treated as False
+            if gate is not True:
                 continue
             cp = _safe_float(row["Close"])
             if cp is None or cp <= 0:
@@ -213,14 +252,13 @@ def run_backtest(params: dict) -> dict:
             today_buy_set.add(tkr)
             today_candidates.append((tkr, comp, cp))
 
-        # New signals = first day of BUY episode (transitions from non-BUY to BUY)
         n_signals += len(today_buy_set - prev_buy_set)
         prev_buy_set = today_buy_set
 
         # ── Open new positions ─────────────────────────────────────────────
         capacity = max_positions - len(positions)
         if capacity > 0 and today_candidates:
-            today_candidates.sort(key=lambda x: -x[1])   # highest composite first
+            today_candidates.sort(key=lambda x: -x[1])
             for tkr, comp, cp in today_candidates[:capacity]:
                 if len(positions) >= max_positions:
                     break
@@ -236,7 +274,7 @@ def run_backtest(params: dict) -> dict:
                     "position_value": alloc,
                 }
 
-    # ── Force-close any remaining open positions at end_date ─────────────────
+    # ── Force-close remaining open positions at end_date ──────────────────────
     last_date = trading_dates[-1]
     last_ts   = pd.Timestamp(last_date)
     for tkr, pos in list(positions.items()):
@@ -256,30 +294,28 @@ def run_backtest(params: dict) -> dict:
         })
     positions.clear()
 
-    # ── 5. Compute summary metrics ─────────────────────────────────────────────
+    # ── Summary metrics ────────────────────────────────────────────────────────
     final_value      = cash
     total_return_pct = (final_value / _INITIAL_CAPITAL - 1) * 100
     years            = max(1.0, (end_date - start_date).days / 365.25)
     cagr             = ((final_value / _INITIAL_CAPITAL) ** (1.0 / years) - 1) * 100
 
-    # Sharpe (annualized, excess return over 0 cash)
     pv_arr = np.array(daily_pv, dtype=float)
     dr     = np.diff(pv_arr) / pv_arr[:-1]
     sharpe = float(dr.mean() / dr.std() * np.sqrt(252)) if len(dr) > 1 and dr.std() > 1e-10 else 0.0
 
-    # Max drawdown
-    peaks     = np.maximum.accumulate(pv_arr)
-    dd_arr    = (pv_arr - peaks) / peaks
-    max_dd    = float(np.min(dd_arr) * 100) if len(dd_arr) > 0 else 0.0
+    peaks  = np.maximum.accumulate(pv_arr)
+    dd_arr = (pv_arr - peaks) / peaks
+    max_dd = float(np.min(dd_arr) * 100) if len(dd_arr) > 0 else 0.0
 
-    # Trade statistics
-    n_trades      = len(trades)
-    rets          = [t["return_pct"] for t in trades]
-    mean_ret      = float(np.mean(rets))                                    if rets else 0.0
-    pct_pos       = float(sum(1 for r in rets if r > 0) / max(1, n_trades) * 100)
-    avg_hold      = float(np.mean([t["hold_days"] for t in trades]))         if trades else 0.0
-    pct_thresh    = float(sum(1 for t in trades if t["exit_reason"] == "threshold") / max(1, n_trades) * 100)
-    pct_time_inv  = n_days_invested / max(1, len(trading_dates)) * 100
+    n_trades     = len(trades)
+    rets         = [t["return_pct"] for t in trades]
+    mean_ret     = float(np.mean(rets))                                   if rets   else 0.0
+    pct_pos      = float(sum(1 for r in rets if r > 0) / max(1, n_trades) * 100)
+    avg_hold     = float(np.mean([t["hold_days"] for t in trades]))        if trades else 0.0
+    pct_thresh   = float(sum(1 for t in trades if t["exit_reason"] in ("threshold", "stop_loss"))
+                         / max(1, n_trades) * 100)
+    pct_time_inv = n_days_invested / max(1, len(trading_dates)) * 100
 
     # SPY metrics
     spy_ret = spy_cagr_val = spy_final = None
@@ -304,7 +340,6 @@ def run_backtest(params: dict) -> dict:
                     (float(yr_data["Close"].iloc[-1]) / float(yr_data["Close"].iloc[0]) - 1) * 100, 1
                 )
 
-    # Yearly portfolio returns
     port_yearly: dict[int, float] = {}
     for yr in range(start_year, end_year + 1):
         yr_days = [d for d in portfolio_daily if d.year == yr]
@@ -326,16 +361,15 @@ def run_backtest(params: dict) -> dict:
 
     best_year = worst_year = None
     if port_yearly:
-        best_yr   = max(port_yearly, key=port_yearly.get)
-        worst_yr  = min(port_yearly, key=port_yearly.get)
+        best_yr  = max(port_yearly, key=port_yearly.get)
+        worst_yr = min(port_yearly, key=port_yearly.get)
         best_year  = {"year": best_yr,  "return_pct": port_yearly[best_yr]}
         worst_year = {"year": worst_yr, "return_pct": port_yearly[worst_yr]}
 
-    # Warn if too few signals
     if n_trades < _MIN_SIGNALS:
         return {
-            "error":   f"Too few signals to draw conclusions ({n_trades} trades < {_MIN_SIGNALS} required). "
-                       "Try a lower entry threshold.",
+            "error":    f"Too few signals to draw conclusions ({n_trades} trades < {_MIN_SIGNALS} required). "
+                        "Try a lower entry threshold.",
             "n_trades": n_trades,
             "params":   params,
         }
@@ -369,3 +403,31 @@ def run_backtest(params: dict) -> dict:
             "difference":      int(round(final_value - spy_final)) if spy_final is not None else None,
         },
     }
+
+
+def run_backtest_batch(params_list: list) -> list:
+    """Run multiple simulations sharing one data load pass.
+
+    All params must use the same start_date / end_date range.
+    """
+    if not params_list:
+        return []
+
+    end_date_str = params_list[0].get("end_date", "2024-12-31")
+    end_date     = date.fromisoformat(end_date_str)
+    start_year   = date.fromisoformat(params_list[0].get("start_date", "2018-01-01")).year
+    end_year     = end_date.year
+
+    preloaded = _load_backtest_data(end_date, start_year, end_year)
+    return [_simulate(preloaded, p) for p in params_list]
+
+
+def run_backtest(params: dict) -> dict:
+    """Run a single backtest simulation (backward-compatible entry point)."""
+    end_date_str = params.get("end_date", "2026-06-12")
+    end_date     = date.fromisoformat(end_date_str)
+    start_year   = date.fromisoformat(params.get("start_date", "2018-01-01")).year
+    end_year     = end_date.year
+
+    preloaded = _load_backtest_data(end_date, start_year, end_year)
+    return _simulate(preloaded, params)
