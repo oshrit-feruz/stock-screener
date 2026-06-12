@@ -26,6 +26,7 @@ sys.path.insert(0, str(_ROOT))
 from product.screener.daily_screener import run_screener, ScreenerRow
 from product.exit.exit_tracker import ExitTracker
 from product.alerts.alert_templates import _pct_rank, _interp_expected_return
+from product.backtest.engine import run_backtest
 from core.data.prices import PriceData
 
 app = FastAPI(title="Recovery Detector API", version="1.0")
@@ -67,6 +68,15 @@ class PortfolioHolding(BaseModel):
 
 class PortfolioIn(BaseModel):
     holdings: List[PortfolioHolding]
+
+class BacktestParams(BaseModel):
+    entry_threshold:  float = 0.80
+    exit_threshold:   float = 0.40
+    exit_mode:        str   = "252d_only"   # "252d_only" | "threshold_or_252d" | "threshold_only"
+    position_size_pct: float = 10.0
+    max_positions:    int   = 10
+    start_date:       str   = "2018-01-01"
+    end_date:         str   = "2026-06-12"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -408,6 +418,25 @@ def portfolio_alerts() -> dict:
                 })
 
     return {"alerts": alerts}
+
+
+# ── Backtest simulator ─────────────────────────────────────────────────────────
+
+@app.post("/api/backtest")
+def backtest(body: BacktestParams) -> dict:
+    params = {
+        "entry_threshold":  body.entry_threshold,
+        "exit_threshold":   body.exit_threshold,
+        "exit_mode":        body.exit_mode,
+        "position_size_pct": body.position_size_pct,
+        "max_positions":    body.max_positions,
+        "start_date":       body.start_date,
+        "end_date":         body.end_date,
+    }
+    result = run_backtest(params)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
 
 
 # ── Static files — mount LAST so API routes take priority ─────────────────────

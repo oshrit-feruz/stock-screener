@@ -81,6 +81,8 @@ function updateTabBar() {
   var showPositions = (_userMode === 'fresh'     || _userMode === 'both');
   var showPortfolio = (_userMode === 'portfolio' || _userMode === 'both');
   var showAlerts    = (_userMode === 'portfolio' || _userMode === 'both');
+  var showSimulator = (_userMode === 'fresh'     || _userMode === 'both');
+  // Settings always visible
 
   function setVis(tab, show) {
     var btn = document.querySelector('[data-tab="' + tab + '"]');
@@ -90,7 +92,7 @@ function updateTabBar() {
   setVis('positions', showPositions);
   setVis('portfolio', showPortfolio);
   setVis('alerts',    showAlerts);
-  // Settings always visible
+  setVis('simulator', showSimulator);
 
   var lbl = document.getElementById('current-mode-label');
   if (lbl) lbl.textContent = 'Mode: ' + (_MODE_LABELS[_userMode] || _userMode);
@@ -118,6 +120,8 @@ function switchTab(tab) {
   if (tab === 'positions') loadPositions();
   if (tab === 'portfolio') loadPortfolio();
   if (tab === 'alerts')    loadPortfolioAlerts();
+  var simBtn = document.getElementById('sim-run-btn');
+  if (tab !== 'simulator' && simBtn) simBtn.disabled = false;
 }
 
 // ── Signals ────────────────────────────────────────────────────────────────────
@@ -552,6 +556,282 @@ function toggleAlertBody(id, btn) {
   if (!el) return;
   var open = el.classList.toggle('open');
   if (btn) btn.textContent = open ? 'Hide' : 'Details';
+}
+
+// ── Simulator ─────────────────────────────────────────────────────────────────
+var _simResultA = null;
+var _simResultB = null;
+
+function _getSimParams(suffix) {
+  suffix = suffix || '';
+  var etName = 'entry_threshold' + (suffix ? '_' + suffix : '');
+  var emName = 'exit_mode'       + (suffix ? '_' + suffix : '');
+  var etEl   = document.querySelector('input[name="' + etName + '"]:checked');
+  var emEl   = document.querySelector('input[name="' + emName + '"]:checked');
+  var et     = etEl ? parseFloat(etEl.value) : 0.80;
+  var em     = emEl ? emEl.value : '252d_only';
+  var ps     = parseFloat((document.getElementById('pos-size-slider') || {}).value || 10);
+  var sd     = (document.getElementById('sim-start-date') || {}).value || '2018-01-01';
+  var ed     = (document.getElementById('sim-end-date')   || {}).value || '2026-06-12';
+  var exv    = parseFloat((document.getElementById('exit-thresh-val') || {}).value || 0.40);
+  return {
+    entry_threshold:   et,
+    exit_threshold:    exv,
+    exit_mode:         em,
+    position_size_pct: ps,
+    max_positions:     10,
+    start_date:        sd,
+    end_date:          ed,
+  };
+}
+
+function runSimulation(scenario) {
+  scenario = scenario || 'A';
+  var suffix = scenario === 'B' ? 'B' : '';
+  var params = _getSimParams(suffix);
+
+  // Validate
+  if (params.exit_mode !== '252d_only' && params.exit_threshold >= params.entry_threshold) {
+    showToast('Exit threshold must be lower than entry threshold'); return;
+  }
+
+  var btn = document.getElementById('sim-run-btn');
+  var rContainer = document.getElementById('sim-results-' + scenario);
+  if (!rContainer) return;
+
+  if (btn && scenario === 'A') btn.disabled = true;
+  rContainer.innerHTML = [
+    '<div class="card" style="text-align:center;padding:28px 20px;">',
+    '  <div style="font-size:28px;margin-bottom:10px;">&#8987;</div>',
+    '  <div style="font-size:15px;font-weight:600;margin-bottom:6px;">Running simulation&hellip;</div>',
+    '  <div style="font-size:13px;color:var(--muted);">Scanning 50 tickers across ' +
+         Math.round((new Date(params.end_date) - new Date(params.start_date)) / (365.25 * 86400000)) +
+         ' years of data.</div>',
+    '  <div style="font-size:12px;color:var(--muted);margin-top:6px;">This takes 10&ndash;30 seconds on first run.</div>',
+    '</div>'
+  ].join('\n');
+
+  fetch('/api/backtest', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(params),
+  })
+  .then(function (r) {
+    if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Simulation failed'); });
+    return r.json();
+  })
+  .then(function (data) {
+    if (scenario === 'A') {
+      _simResultA = data;
+    } else {
+      _simResultB = data;
+    }
+    rContainer.innerHTML = renderSimResults(data, scenario);
+    if (btn && scenario === 'A') btn.disabled = false;
+    // Show add-scenario button after first result
+    var addBtn = document.getElementById('sim-add-scenario');
+    if (addBtn && scenario === 'A') addBtn.style.display = '';
+    // Show comparison if both results exist
+    if (_simResultA && _simResultB) renderComparison();
+  })
+  .catch(function (err) {
+    rContainer.innerHTML = '<div class="err-box">&#9888;&#65039; ' + escHtml(err.message) + '</div>';
+    if (btn && scenario === 'A') btn.disabled = false;
+  });
+}
+
+function addScenario() {
+  var scB = document.getElementById('sim-scenario-B');
+  var addBtn = document.getElementById('sim-add-scenario');
+  if (scB) scB.style.display = '';
+  if (addBtn) addBtn.style.display = 'none';
+}
+
+function renderSimResults(data, scenario) {
+  var s = data.summary;
+  var params = data.params;
+  scenario = scenario || 'A';
+
+  var exitLabel = {
+    '252d_only':        'Hold 12 months',
+    'threshold_or_252d': 'Threshold or 12m',
+    'threshold_only':   'Threshold exit',
+  }[params.exit_mode] || params.exit_mode;
+
+  var beatHtml = (s.beat_spy === true)
+    ? '<span class="beat-badge beat-yes">&#9989; Beat S&P 500</span>'
+    : (s.beat_spy === false)
+    ? '<span class="beat-badge beat-no">&#10060; Underperformed S&P 500</span>'
+    : '';
+
+  var cmpGrid = '';
+  if (data.spy_comparison.final_spy) {
+    cmpGrid = [
+      '<div class="sim-cmp-grid" style="margin-top:12px;">',
+      '  <div class="cmp-card">',
+      '    <div class="cmp-label">Your Bot</div>',
+      '    <div class="cmp-val">$' + fmtK(s.final_portfolio) + '</div>',
+      '    <div class="cmp-sub ret-pos">+' + fmt(s.total_return_pct, 1) + '%</div>',
+      '    <div class="cmp-sub">' + fmt(s.cagr, 1) + '% / yr</div>',
+      '  </div>',
+      '  <div class="cmp-card">',
+      '    <div class="cmp-label">S&P 500 (SPY)</div>',
+      '    <div class="cmp-val">$' + fmtK(data.spy_comparison.final_spy) + '</div>',
+      '    <div class="cmp-sub ' + (s.spy_total_return_pct >= 0 ? 'ret-pos' : 'ret-neg') + '">+' + fmt(s.spy_total_return_pct, 1) + '%</div>',
+      '    <div class="cmp-sub">' + fmt(s.spy_cagr, 1) + '% / yr</div>',
+      '  </div>',
+      '</div>',
+    ].join('\n');
+  }
+
+  var yearRows = (data.yearly || []).map(function (y) {
+    var pRet = y.portfolio_return;
+    var sRet = y.spy_return;
+    var beat  = (pRet !== null && sRet !== null) ? (pRet >= sRet ? '&#9989;' : '&#10060;') : '';
+    var pCls  = (pRet !== null && pRet >= 0) ? 'ret-pos' : 'ret-neg';
+    return [
+      '<div class="yr-row">',
+      '  <span class="yr-year">' + y.year + '</span>',
+      '  <span class="yr-bot ' + pCls + '">' + (pRet !== null ? (pRet >= 0 ? '+' : '') + fmt(pRet, 1) + '%' : '—') + '</span>',
+      '  <span class="yr-spy">' + (sRet !== null ? (sRet >= 0 ? '+' : '') + fmt(sRet, 1) + '%' : '—') + '</span>',
+      '  <span class="yr-tick">' + beat + '</span>',
+      '</div>',
+    ].join('\n');
+  }).join('\n');
+
+  // Trades — show first 8, toggle for all
+  var allTrades = data.trades || [];
+  var tradeRowsHTML = allTrades.slice(0, 8).map(tradeRowHTML).join('\n');
+  var showMoreBtn = allTrades.length > 8
+    ? '<button class="btn btn-ghost btn-sm" style="margin-top:10px;" onclick="toggleAllTrades(\'' + scenario + '\')">' +
+      'Show all ' + allTrades.length + ' trades &#9660;</button>'
+    : '';
+  var hiddenTrades = allTrades.length > 8
+    ? '<div id="sim-all-trades-' + scenario + '" style="display:none;">' +
+      allTrades.slice(8).map(tradeRowHTML).join('\n') + '</div>'
+    : '';
+
+  return [
+    '<div class="section-title" style="margin-top:16px;">Results &mdash; Entry &ge;' + params.entry_threshold + ' | ' + exitLabel + '</div>',
+
+    cmpGrid,
+    '<div style="margin:8px 0;">' + beatHtml + '</div>',
+
+    '<div class="card">',
+    '  <div class="subsection" style="margin-top:0;">Details</div>',
+    detailRow('Signals fired',       s.n_signals),
+    detailRow('Trades opened',       s.n_trades),
+    detailRow('Avg hold',            fmt(s.avg_hold_days, 0) + ' days'),
+    detailRow('Win rate',            fmt(s.pct_positive, 0) + '%'),
+    detailRow('Avg return/trade',    (s.mean_return_pct >= 0 ? '+' : '') + fmt(s.mean_return_pct, 1) + '%'),
+    detailRow('Time in market',      fmt(s.pct_time_invested, 0) + '%'),
+    detailRow('Max drawdown',        fmt(s.max_drawdown_pct, 1) + '%'),
+    detailRow('Sharpe ratio',        fmt(s.sharpe, 2)),
+    (s.best_year  ? detailRow('Best year',  s.best_year.year  + '  ' + (s.best_year.return_pct  >= 0 ? '+' : '') + s.best_year.return_pct  + '%') : ''),
+    (s.worst_year ? detailRow('Worst year', s.worst_year.year + '  ' + (s.worst_year.return_pct >= 0 ? '+' : '') + s.worst_year.return_pct + '%') : ''),
+    '</div>',
+
+    '<div class="section-title">Year by Year</div>',
+    '<div class="card">',
+    '  <div class="yr-row" style="border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:2px;">',
+    '    <span class="yr-year" style="color:var(--muted);">Year</span>',
+    '    <span class="yr-bot" style="color:var(--muted);">Bot</span>',
+    '    <span class="yr-spy" style="color:var(--muted);">SPY</span>',
+    '    <span class="yr-tick"></span>',
+    '  </div>',
+    yearRows,
+    '</div>',
+
+    '<div class="section-title">All Trades</div>',
+    '<div class="card">',
+    '  <div class="trade-row" style="border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:2px;">',
+    '    <span class="tr-ticker" style="color:var(--muted);">Ticker</span>',
+    '    <span class="tr-date"   style="color:var(--muted);">Entry</span>',
+    '    <span class="tr-ret"    style="color:var(--muted);">Return</span>',
+    '    <span class="tr-days"   style="color:var(--muted);">Days</span>',
+    '  </div>',
+    tradeRowsHTML,
+    hiddenTrades,
+    showMoreBtn,
+    '</div>',
+
+    '<div class="sim-disclaimer" style="margin-top:12px;">',
+    '  &#9888;&#65039; This is a historical simulation on the same data used to build the signal. ',
+    '  Results are optimistically biased. Past performance does not guarantee future results. ',
+    '  This is not investment advice.',
+    '</div>',
+  ].join('\n');
+}
+
+function detailRow(label, val) {
+  return [
+    '<div class="about-row">',
+    '  <span>' + label + '</span>',
+    '  <span class="about-val" style="color:var(--text);font-family:monospace;">' + escHtml(String(val)) + '</span>',
+    '</div>'
+  ].join('\n');
+}
+
+function tradeRowHTML(t) {
+  var cls = t.return_pct >= 0 ? 'ret-pos' : 'ret-neg';
+  var retStr = (t.return_pct >= 0 ? '+' : '') + fmt(t.return_pct, 1) + '%';
+  var reason = t.exit_reason === 'threshold' ? ' &#8599;' : (t.exit_reason === 'open_at_end' ? ' *' : '');
+  return [
+    '<div class="trade-row">',
+    '  <span class="tr-ticker">' + t.ticker + '</span>',
+    '  <span class="tr-date">' + (t.entry_date || '').substring(0, 7) + '</span>',
+    '  <span class="tr-ret ' + cls + '">' + retStr + reason + '</span>',
+    '  <span class="tr-days">' + t.hold_days + 'd</span>',
+    '</div>'
+  ].join('\n');
+}
+
+function toggleAllTrades(scenario) {
+  var el = document.getElementById('sim-all-trades-' + scenario);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+function renderComparison() {
+  var cmp = document.getElementById('sim-compare');
+  if (!cmp || !_simResultA || !_simResultB) return;
+  var a = _simResultA.summary;
+  var b = _simResultB.summary;
+  var pa = _simResultA.params;
+  var pb = _simResultB.params;
+
+  cmp.style.display = '';
+  cmp.innerHTML = [
+    '<div class="section-title">Side-by-Side Comparison</div>',
+    '<div class="sim-cmp-grid">',
+    '  <div class="cmp-card">',
+    '    <div class="cmp-label">Scenario A &mdash; Entry ' + pa.entry_threshold + '</div>',
+    '    <div class="cmp-val">$' + fmtK(a.final_portfolio) + '</div>',
+    '    <div class="cmp-sub ret-pos">+' + fmt(a.total_return_pct, 1) + '%</div>',
+    '    <div class="cmp-sub">' + fmt(a.cagr, 1) + '% / yr</div>',
+    '    <div class="cmp-sub">' + a.n_trades + ' trades &nbsp;&middot;&nbsp; ' + fmt(a.pct_positive, 0) + '% wins</div>',
+    '  </div>',
+    '  <div class="cmp-card">',
+    '    <div class="cmp-label">Scenario B &mdash; Entry ' + pb.entry_threshold + '</div>',
+    '    <div class="cmp-val">$' + fmtK(b.final_portfolio) + '</div>',
+    '    <div class="cmp-sub ret-pos">+' + fmt(b.total_return_pct, 1) + '%</div>',
+    '    <div class="cmp-sub">' + fmt(b.cagr, 1) + '% / yr</div>',
+    '    <div class="cmp-sub">' + b.n_trades + ' trades &nbsp;&middot;&nbsp; ' + fmt(b.pct_positive, 0) + '% wins</div>',
+    '  </div>',
+    '</div>',
+    (_simResultA.spy_comparison.final_spy
+      ? '<div style="text-align:center;margin-top:10px;font-size:12px;color:var(--muted);">SPY: $' +
+        fmtK(_simResultA.spy_comparison.final_spy) + ' (+' +
+        fmt(_simResultA.summary.spy_total_return_pct, 1) + '%)</div>'
+      : ''),
+  ].join('\n');
+}
+
+function fmtK(n) {
+  if (n === null || n === undefined) return '—';
+  var v = Math.round(Number(n));
+  if (v >= 1000000) return (v / 1000000).toFixed(2) + 'M';
+  if (v >= 1000)    return (v / 1000).toFixed(0) + 'K';
+  return String(v);
 }
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────────

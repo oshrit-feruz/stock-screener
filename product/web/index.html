@@ -300,6 +300,85 @@
     .form-input:focus { outline: none; border-color: var(--blue); }
     input[type="text"].form-input { text-transform: uppercase; }
 
+    /* ── Simulator ── */
+    .sim-disclaimer {
+      background: rgba(245,158,11,0.08);
+      border: 1px solid rgba(245,158,11,0.3);
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 12px;
+      color: var(--amber);
+      line-height: 1.65;
+      margin-bottom: 10px;
+    }
+    .radio-group { display: flex; flex-wrap: wrap; gap: 8px; }
+    .radio-option {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .radio-option:has(input:checked) {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+    .exit-option { margin-bottom: 10px; font-size: 13px; cursor: pointer; }
+    .exit-option:last-child { margin-bottom: 0; }
+    .exit-option label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; line-height: 1.5; }
+    .exit-option input[type="radio"] { margin-top: 3px; flex-shrink: 0; }
+    .exit-threshold-input {
+      width: 58px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 5px;
+      padding: 3px 7px;
+      font-size: 12px;
+      font-family: monospace;
+      vertical-align: middle;
+    }
+    .sim-cmp-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .cmp-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .cmp-card .cmp-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; }
+    .cmp-val { font-size: 20px; font-weight: 700; font-family: monospace; }
+    .cmp-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .beat-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      margin: 8px 0;
+    }
+    .beat-yes { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+    .beat-no  { background: rgba(239,68,68,0.15);  color: var(--red);   border: 1px solid rgba(239,68,68,0.3); }
+    .yr-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .yr-row:last-child { border-bottom: none; }
+    .yr-year { font-weight: 600; width: 40px; }
+    .yr-bot  { font-family: monospace; width: 60px; }
+    .yr-spy  { font-family: monospace; width: 60px; color: var(--muted); }
+    .yr-tick { font-size: 14px; }
+    .trade-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .trade-row:last-child { border-bottom: none; }
+    .tr-ticker { font-weight: 600; width: 50px; }
+    .tr-date   { color: var(--muted); width: 80px; }
+    .tr-ret    { font-family: monospace; font-weight: 700; width: 58px; text-align: right; }
+    .tr-days   { color: var(--muted); width: 50px; text-align: right; }
+
     /* ── Alert cards ── */
     .alert-card {
       background: var(--surface);
@@ -461,6 +540,134 @@
       <div id="alerts-container"><div class="loading">Checking alerts&hellip;</div></div>
     </div>
 
+    <!-- Tab: Simulator -->
+    <div id="tab-simulator" class="tab-pane">
+      <div class="section-title">Backtest Simulator</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px;line-height:1.6;">
+        Test any entry/exit strategy on 7+ years of real data.
+      </div>
+
+      <div class="sim-disclaimer">
+        &#9888;&#65039; This simulation uses historical data from 2018&ndash;2024, the same period
+        used to build and validate the signal. Results reflect in-sample performance
+        and are optimistically biased. The 2025&ndash;2026 period is partially
+        out-of-sample but has too few closed positions to draw conclusions.
+        Do not treat results as a forecast. This is not investment advice.
+      </div>
+
+      <!-- Entry threshold -->
+      <div class="section-title">Entry Threshold</div>
+      <div class="card">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Only buy when signal strength &ge;</div>
+        <div class="radio-group" id="et-group">
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.60"> 0.60</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.65"> 0.65</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.70"> 0.70</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.75"> 0.75</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.80" checked> 0.80</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.85"> 0.85</label>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;">Production signal BUY threshold: 0.60 (required to enter)</div>
+      </div>
+
+      <!-- Exit rule -->
+      <div class="section-title">Exit Rule</div>
+      <div class="card">
+        <div class="exit-option">
+          <label>
+            <input type="radio" name="exit_mode" value="252d_only" checked>
+            <span>Hold 12 months / 252 trading days <span style="color:var(--muted)">(recommended)</span></span>
+          </label>
+        </div>
+        <div class="exit-option">
+          <label>
+            <input type="radio" name="exit_mode" value="threshold_or_252d">
+            <span>Exit when signal drops below <input type="number" id="exit-thresh-val" class="exit-threshold-input" value="0.40" step="0.05" min="0.10" max="0.59"> OR 12 months, whichever first</span>
+          </label>
+        </div>
+        <div class="exit-option">
+          <label>
+            <input type="radio" name="exit_mode" value="threshold_only">
+            <span>Exit only when signal drops below threshold (no time limit, max 504 days)</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Position size -->
+      <div class="section-title">Position Size</div>
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px;">
+          <input type="range" id="pos-size-slider" min="5" max="25" step="5" value="10"
+                 style="flex:1;" oninput="document.getElementById('pos-size-label').textContent=this.value+'%'">
+          <span id="pos-size-label" style="font-family:monospace;font-size:18px;font-weight:700;min-width:38px;">10%</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted);">% of portfolio per signal &nbsp;&middot;&nbsp; 5% &ndash; 25%</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:3px;">Max positions: 10 concurrent open</div>
+      </div>
+
+      <!-- Date range -->
+      <div class="section-title">Date Range</div>
+      <div class="card">
+        <div class="form-row" style="margin-bottom:8px;">
+          <label class="form-label">From</label>
+          <input type="date" id="sim-start-date" class="form-input" value="2018-01-01" min="2018-01-01" max="2024-01-01">
+        </div>
+        <div class="form-row">
+          <label class="form-label">To</label>
+          <input type="date" id="sim-end-date" class="form-input" value="2026-06-12" min="2019-01-01" max="2026-12-31">
+        </div>
+      </div>
+
+      <!-- Run button -->
+      <button class="btn btn-primary" id="sim-run-btn"
+              style="width:100%;padding:14px;font-size:15px;margin-bottom:12px;"
+              onclick="runSimulation('A')">
+        &#9654; Run Simulation
+      </button>
+
+      <!-- Scenario A results -->
+      <div id="sim-results-A"></div>
+
+      <!-- Add scenario B button -->
+      <div id="sim-add-scenario" style="display:none;text-align:center;margin:16px 0;">
+        <button class="btn btn-ghost" onclick="addScenario()">+ Add scenario to compare</button>
+      </div>
+
+      <!-- Scenario B form -->
+      <div id="sim-scenario-B" style="display:none;">
+        <div class="section-title" style="margin-top:8px;">Scenario B — Entry Threshold</div>
+        <div class="card">
+          <div class="radio-group">
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.60" checked> 0.60</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.65"> 0.65</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.70"> 0.70</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.75"> 0.75</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.80"> 0.80</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.85"> 0.85</label>
+          </div>
+        </div>
+        <div class="section-title">Scenario B — Exit Rule</div>
+        <div class="card">
+          <div class="exit-option">
+            <label><input type="radio" name="exit_mode_B" value="252d_only" checked> Hold 252 days</label>
+          </div>
+          <div class="exit-option">
+            <label><input type="radio" name="exit_mode_B" value="threshold_or_252d"> Signal drops below 0.40 or 252d</label>
+          </div>
+          <div class="exit-option">
+            <label><input type="radio" name="exit_mode_B" value="threshold_only"> Signal drops below 0.40 only</label>
+          </div>
+        </div>
+        <button class="btn btn-primary" style="width:100%;padding:12px;font-size:14px;margin-bottom:12px;"
+                onclick="runSimulation('B')">&#9654; Run Scenario B</button>
+        <div id="sim-results-B"></div>
+      </div>
+
+      <!-- Side-by-side comparison -->
+      <div id="sim-compare" style="display:none;"></div>
+
+    </div>
+
     <!-- Tab: Settings -->
     <div id="tab-settings" class="tab-pane">
       <div class="section-title">My Mode</div>
@@ -501,6 +708,7 @@
     <button class="tab-btn" data-tab="positions" onclick="switchTab('positions')">&#128188; Positions</button>
     <button class="tab-btn" data-tab="portfolio" onclick="switchTab('portfolio')">&#128181; Portfolio</button>
     <button class="tab-btn" data-tab="alerts"    onclick="switchTab('alerts')">&#128276; Alerts</button>
+    <button class="tab-btn" data-tab="simulator" onclick="switchTab('simulator')">&#129514; Sim</button>
     <button class="tab-btn" data-tab="settings"  onclick="switchTab('settings')">&#9881;&#65039; Settings</button>
   </nav>
 
