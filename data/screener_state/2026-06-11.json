@@ -1,0 +1,17 @@
+{
+  "ORCL": {
+    "signal": "WATCH",
+    "composite": 0.55,
+    "date": "2026-06-11"
+  },
+  "ADBE": {
+    "signal": "BUY",
+    "composite": 0.6,
+    "date": "2026-06-11"
+  },
+  "CRM": {
+    "signal": "WATCH",
+    "composite": 0.52,
+    "date": "2026-06-11"
+  }
+}

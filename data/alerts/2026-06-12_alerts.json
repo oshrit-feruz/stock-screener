@@ -1,0 +1,15 @@
+[
+  {
+    "ticker": "ORCL",
+    "entry_date": "2026-06-12",
+    "entry_price": 184.10000610351562,
+    "drawdown_pct": 0.4348588531040663,
+    "composite_score": 0.6,
+    "dip_score": 1.0,
+    "momentum_score": 0.0,
+    "volume_score": 0.5,
+    "gate_passed": true,
+    "signal_type": "NEW_BUY",
+    "formatted_message": "[!] ORCL: Recovery Setup Detected\n\nDown 43.5% from 52-week high.\nQuality: [OK] Revenue positive, Debt low, Margin positive.\nMomentum: returning. Volume: elevated.\nSignal strength: 0.60 / 1.00\n\nWhy now?\nThis pattern has appeared 2,382 times in 7 years of data.\nAverage 12-month return from similar entries: +49.2%\nvs random entry: +22.3% (edge: +26.9 percentage points)\n\nWhat to expect:\nThe stock may drop another 10-15% before recovering.\nThat is normal. Median drawdown before recovery: -15%.\nPlanned hold: 12 months (~252 trading days).\nNo stop-loss. The edge requires holding through the dip.\n\nSimilar historical entries:\n  AVGO Mar 2020: down 48%, signal fired -> +89.9% in 3 months\n  TSLA May 2023: down 49%, signal fired -> +61.5% in 3 months\n  CRM Dec 2022: down 50%, signal fired -> +53.0% in 3 months\n\n[!] This is not a recommendation. You decide.\nThis is a statistical pattern, not a guarantee.\n1 in 4 similar entries ends negative at 12 months.\n\nPast performance in backtesting does not guarantee future results. This is not financial advice."
+  }
+]

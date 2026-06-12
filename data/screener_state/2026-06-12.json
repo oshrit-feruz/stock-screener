@@ -1,0 +1,52 @@
+{
+  "ORCL": {
+    "signal": "BUY",
+    "composite": 0.6,
+    "date": "2026-06-12"
+  },
+  "ADBE": {
+    "signal": "BUY",
+    "composite": 0.6,
+    "date": "2026-06-12"
+  },
+  "CRM": {
+    "signal": "WATCH",
+    "composite": 0.525,
+    "date": "2026-06-12"
+  },
+  "TSLA": {
+    "signal": "SKIP",
+    "composite": 0.105,
+    "date": "2026-06-12"
+  },
+  "AAPL": {
+    "signal": "WATCH",
+    "composite": 0.1,
+    "date": "2026-06-12"
+  },
+  "MSFT": {
+    "signal": "WATCH",
+    "composite": 0.1,
+    "date": "2026-06-12"
+  },
+  "NVDA": {
+    "signal": "WATCH",
+    "composite": 0.1,
+    "date": "2026-06-12"
+  },
+  "GOOGL": {
+    "signal": "WATCH",
+    "composite": 0.1,
+    "date": "2026-06-12"
+  },
+  "META": {
+    "signal": "WATCH",
+    "composite": 0.1,
+    "date": "2026-06-12"
+  },
+  "AMZN": {
+    "signal": "WATCH",
+    "composite": 0.06,
+    "date": "2026-06-12"
+  }
+}
