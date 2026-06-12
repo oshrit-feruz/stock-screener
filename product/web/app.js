@@ -562,22 +562,32 @@ function toggleAlertBody(id, btn) {
 var _simResultA = null;
 var _simResultB = null;
 
+function toggleTpInput(inputId, checkbox) {
+  var el = document.getElementById(inputId);
+  if (el) el.disabled = !checkbox.checked;
+}
+
 function _getSimParams(suffix) {
   suffix = suffix || '';
-  var etName = 'entry_threshold' + (suffix ? '_' + suffix : '');
-  var emName = 'exit_mode'       + (suffix ? '_' + suffix : '');
-  var etEl   = document.querySelector('input[name="' + etName + '"]:checked');
-  var emEl   = document.querySelector('input[name="' + emName + '"]:checked');
-  var et     = etEl ? parseFloat(etEl.value) : 0.80;
-  var em     = emEl ? emEl.value : '252d_only';
-  var ps     = parseFloat((document.getElementById('pos-size-slider') || {}).value || 10);
-  var sd     = (document.getElementById('sim-start-date') || {}).value || '2018-01-01';
-  var ed     = (document.getElementById('sim-end-date')   || {}).value || '2026-06-12';
-  var exv    = parseFloat((document.getElementById('exit-thresh-val') || {}).value || 0.40);
+  var etName    = 'entry_threshold' + (suffix ? '_' + suffix : '');
+  var emName    = 'exit_mode'       + (suffix ? '_' + suffix : '');
+  var tpEnId    = 'tp-enable'  + (suffix ? '-' + suffix : '');
+  var tpValId   = 'tp-pct'     + (suffix ? '-' + suffix : '');
+  var etEl      = document.querySelector('input[name="' + etName + '"]:checked');
+  var emEl      = document.querySelector('input[name="' + emName + '"]:checked');
+  var tpEnabled = (document.getElementById(tpEnId) || {}).checked;
+  var tpVal     = tpEnabled ? parseFloat((document.getElementById(tpValId) || {}).value || 30) : 0;
+  var et        = etEl ? parseFloat(etEl.value) : 0.80;
+  var em        = emEl ? emEl.value : '252d_only';
+  var ps        = parseFloat((document.getElementById('pos-size-slider') || {}).value || 10);
+  var sd        = (document.getElementById('sim-start-date') || {}).value || '2018-01-01';
+  var ed        = (document.getElementById('sim-end-date')   || {}).value || '2026-06-12';
+  var exv       = parseFloat((document.getElementById('exit-thresh-val') || {}).value || 0.40);
   return {
     entry_threshold:   et,
     exit_threshold:    exv,
     exit_mode:         em,
+    take_profit_pct:   tpVal,
     position_size_pct: ps,
     max_positions:     10,
     start_date:        sd,
@@ -657,6 +667,9 @@ function renderSimResults(data, scenario) {
     'threshold_or_252d': 'Threshold or 12m',
     'threshold_only':   'Threshold exit',
   }[params.exit_mode] || params.exit_mode;
+  if (params.take_profit_pct && params.take_profit_pct > 0) {
+    exitLabel += ' · TP +' + fmt(params.take_profit_pct, 0) + '%';
+  }
 
   var hasOpen   = s.final_portfolio !== s.final_portfolio_realized;
   var beatLabel = hasOpen
@@ -777,6 +790,7 @@ function renderSimResults(data, scenario) {
     detailRow('Win rate',         fmt(s.pct_positive, 0) + '%'),
     detailRow('Avg return/trade', (s.mean_return_pct >= 0 ? '+' : '') + fmt(s.mean_return_pct, 1) + '%'),
     detailRow('Time in market',   fmt(s.pct_time_invested, 0) + '%'),
+    (s.pct_take_profit > 0 ? detailRow('Exited via TP', fmt(s.pct_take_profit, 0) + '%') : ''),
     detailRow('Max drawdown',     fmt(s.max_drawdown_pct, 1) + '%'),
     detailRow('Sharpe ratio',     fmt(s.sharpe, 2)),
     (s.best_year  ? detailRow('Best year',  s.best_year.year  + '  ' + (s.best_year.return_pct  >= 0 ? '+' : '') + s.best_year.return_pct  + '%') : ''),
@@ -836,7 +850,8 @@ function tradeRowHTML(t, isOpen) {
     datesStr = 'entered ' + entryMo + ' &middot; ' + t.hold_days + 'd held';
   } else {
     var reasonTag = '';
-    if (t.exit_reason === 'threshold' || t.exit_reason === 'stop_loss') reasonTag = ' &middot; early exit';
+    if (t.exit_reason === 'take_profit') reasonTag = ' &middot; TP &#9650;';
+    else if (t.exit_reason === 'threshold' || t.exit_reason === 'stop_loss') reasonTag = ' &middot; early exit';
     datesStr = entryMo + ' &rarr; ' + exitMo + ' &middot; ' + t.hold_days + 'd' + reasonTag;
   }
 

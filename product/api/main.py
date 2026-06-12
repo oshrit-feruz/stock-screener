@@ -73,6 +73,7 @@ class BacktestParams(BaseModel):
     entry_threshold:  float = 0.80
     exit_threshold:   float = 0.40
     exit_mode:        str   = "252d_only"   # "252d_only" | "threshold_or_252d" | "threshold_only"
+    take_profit_pct:  float = 0.0           # 0 = disabled; e.g. 30 = exit at +30%
     position_size_pct: float = 10.0
     max_positions:    int   = 10
     start_date:       str   = "2018-01-01"

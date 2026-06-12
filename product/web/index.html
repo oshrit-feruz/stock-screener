@@ -603,6 +603,15 @@
             <span>Exit only when signal drops below threshold (no time limit, max 504 days)</span>
           </label>
         </div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+            <input type="checkbox" id="tp-enable" onchange="toggleTpInput('tp-pct', this)">
+            <span>Take profit at +</span>
+            <input type="number" id="tp-pct" class="exit-threshold-input" value="30" min="5" max="300" step="5" disabled>
+            <span>%</span>
+          </label>
+          <div style="font-size:11px;color:var(--muted);margin-top:5px;padding-left:22px;">Exit as soon as the position gains this much — overrides all other exit rules</div>
+        </div>
       </div>
 
       <!-- Position size -->
@@ -668,6 +677,14 @@
           </div>
           <div class="exit-option">
             <label><input type="radio" name="exit_mode_B" value="threshold_only"> Signal drops below 0.40 only</label>
+          </div>
+          <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+              <input type="checkbox" id="tp-enable-B" onchange="toggleTpInput('tp-pct-B', this)">
+              <span>Take profit at +</span>
+              <input type="number" id="tp-pct-B" class="exit-threshold-input" value="30" min="5" max="300" step="5" disabled>
+              <span>%</span>
+            </label>
           </div>
         </div>
         <button class="btn btn-primary" style="width:100%;padding:12px;font-size:14px;margin-bottom:12px;"
