@@ -573,10 +573,14 @@ function _getSimParams(suffix) {
   var emName    = 'exit_mode'       + (suffix ? '_' + suffix : '');
   var tpEnId    = 'tp-enable'  + (suffix ? '-' + suffix : '');
   var tpValId   = 'tp-pct'     + (suffix ? '-' + suffix : '');
+  var slEnId    = 'sl-enable'  + (suffix ? '-' + suffix : '');
+  var slValId   = 'sl-pct'     + (suffix ? '-' + suffix : '');
   var etEl      = document.querySelector('input[name="' + etName + '"]:checked');
   var emEl      = document.querySelector('input[name="' + emName + '"]:checked');
   var tpEnabled = (document.getElementById(tpEnId) || {}).checked;
   var tpVal     = tpEnabled ? parseFloat((document.getElementById(tpValId) || {}).value || 30) : 0;
+  var slEnabled = (document.getElementById(slEnId) || {}).checked;
+  var slVal     = slEnabled ? parseFloat((document.getElementById(slValId) || {}).value || 20) : 0;
   var et        = etEl ? parseFloat(etEl.value) : 0.80;
   var em        = emEl ? emEl.value : '252d_only';
   var ps        = parseFloat((document.getElementById('pos-size-slider') || {}).value || 10);
@@ -588,6 +592,7 @@ function _getSimParams(suffix) {
     exit_threshold:    exv,
     exit_mode:         em,
     take_profit_pct:   tpVal,
+    stop_loss_pct:     slVal,
     position_size_pct: ps,
     max_positions:     10,
     start_date:        sd,
@@ -669,6 +674,9 @@ function renderSimResults(data, scenario) {
   }[params.exit_mode] || params.exit_mode;
   if (params.take_profit_pct && params.take_profit_pct > 0) {
     exitLabel += ' · TP +' + fmt(params.take_profit_pct, 0) + '%';
+  }
+  if (params.stop_loss_pct && params.stop_loss_pct > 0) {
+    exitLabel += ' · SL −' + fmt(params.stop_loss_pct, 0) + '%';
   }
 
   var hasOpen   = s.final_portfolio !== s.final_portfolio_realized;
@@ -790,7 +798,8 @@ function renderSimResults(data, scenario) {
     detailRow('Win rate',         fmt(s.pct_positive, 0) + '%'),
     detailRow('Avg return/trade', (s.mean_return_pct >= 0 ? '+' : '') + fmt(s.mean_return_pct, 1) + '%'),
     detailRow('Time in market',   fmt(s.pct_time_invested, 0) + '%'),
-    (s.pct_take_profit > 0 ? detailRow('Exited via TP', fmt(s.pct_take_profit, 0) + '%') : ''),
+    (s.pct_stop_loss   > 0 ? detailRow('Stopped out (SL)',  fmt(s.pct_stop_loss, 0)   + '%') : ''),
+    (s.pct_take_profit > 0 ? detailRow('Exited via TP',    fmt(s.pct_take_profit, 0) + '%') : ''),
     detailRow('Max drawdown',     fmt(s.max_drawdown_pct, 1) + '%'),
     detailRow('Sharpe ratio',     fmt(s.sharpe, 2)),
     (s.best_year  ? detailRow('Best year',  s.best_year.year  + '  ' + (s.best_year.return_pct  >= 0 ? '+' : '') + s.best_year.return_pct  + '%') : ''),

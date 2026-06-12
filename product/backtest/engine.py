@@ -118,6 +118,10 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     tp_raw = params.get("take_profit_pct", 0.0)
     take_profit_pct: float = float(tp_raw) / 100.0 if float(tp_raw or 0) > 1 else float(tp_raw or 0)
 
+    # Stop loss — 0 means disabled; value is a fraction (e.g. 0.20 = exit at -20%)
+    sl_raw = params.get("stop_loss_pct", 0.0)
+    stop_loss_pct: float = float(sl_raw) / 100.0 if float(sl_raw or 0) > 1 else float(sl_raw or 0)
+
     # ── Trading calendar ───────────────────────────────────────────────────────
     if spy_ohlcv is not None and not spy_ohlcv.empty:
         trading_dates = [
@@ -191,14 +195,18 @@ def _simulate(preloaded: dict, params: dict) -> dict:
 
             reason: Optional[str] = None
 
-            # Take profit fires first, regardless of other exit rules
-            if take_profit_pct > 0 and cp / pos["entry_price"] - 1 >= take_profit_pct:
+            gain = cp / pos["entry_price"] - 1
+
+            # TP and SL fire before any other exit rule
+            if take_profit_pct > 0 and gain >= take_profit_pct:
                 reason = "take_profit"
+            elif stop_loss_pct > 0 and gain <= -stop_loss_pct:
+                reason = "stop_loss"
             elif hold_days_param is not None:
                 # Optimization mode
                 if hold >= hold_days_param:
                     reason = f"{hold_days_param}d"
-                elif exit_rule == "B" and cp / pos["entry_price"] - 1 <= -0.40:
+                elif exit_rule == "B" and gain <= -0.40:
                     reason = "stop_loss"
             else:
                 # Legacy UI mode
@@ -326,7 +334,9 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     mean_ret     = float(np.mean(rets))                                   if rets   else 0.0
     pct_pos      = float(sum(1 for r in rets if r > 0) / max(1, n_trades) * 100)
     avg_hold     = float(np.mean([t["hold_days"] for t in trades]))        if trades else 0.0
-    pct_thresh      = float(sum(1 for t in trades if t["exit_reason"] in ("threshold", "stop_loss"))
+    pct_thresh      = float(sum(1 for t in trades if t["exit_reason"] == "threshold")
+                            / max(1, n_trades) * 100)
+    pct_stop_loss   = float(sum(1 for t in trades if t["exit_reason"] == "stop_loss")
                             / max(1, n_trades) * 100)
     pct_take_profit = float(sum(1 for t in trades if t["exit_reason"] == "take_profit")
                             / max(1, n_trades) * 100)
@@ -396,6 +406,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "n_trades":               n_trades,
             "avg_hold_days":          round(avg_hold, 1),
             "pct_exit_via_threshold": round(pct_thresh, 1),
+            "pct_stop_loss":          round(pct_stop_loss, 1),
             "pct_take_profit":        round(pct_take_profit, 1),
             "mean_return_pct":        round(mean_ret, 2),
             "pct_positive":           round(pct_pos, 1),

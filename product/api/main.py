@@ -74,6 +74,7 @@ class BacktestParams(BaseModel):
     exit_threshold:   float = 0.40
     exit_mode:        str   = "252d_only"   # "252d_only" | "threshold_or_252d" | "threshold_only"
     take_profit_pct:  float = 0.0           # 0 = disabled; e.g. 30 = exit at +30%
+    stop_loss_pct:    float = 0.0           # 0 = disabled; e.g. 20 = exit at -20%
     position_size_pct: float = 10.0
     max_positions:    int   = 10
     start_date:       str   = "2018-01-01"
@@ -430,6 +431,7 @@ def backtest(body: BacktestParams) -> dict:
         "exit_threshold":   body.exit_threshold,
         "exit_mode":        body.exit_mode,
         "take_profit_pct":  body.take_profit_pct,
+        "stop_loss_pct":    body.stop_loss_pct,
         "position_size_pct": body.position_size_pct,
         "max_positions":    body.max_positions,
         "start_date":       body.start_date,
