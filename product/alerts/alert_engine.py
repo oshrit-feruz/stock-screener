@@ -18,7 +18,12 @@ from typing import Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from product.screener.daily_screener import ScreenerResult, ScreenerRow, run_screener
-from product.alerts.alert_templates import format_new_buy_alert
+from product.alerts.alert_templates import (
+    format_new_buy_alert,
+    format_price_alert,
+    format_signal_on_held_ticker,
+)
+from core.data.prices import PriceData
 
 _STATE_DIR = Path(__file__).parent.parent.parent / "data" / "screener_state"
 
@@ -40,6 +45,16 @@ class Alert:
     gate_passed: bool
     signal_type: str             # "NEW_BUY"
     formatted_message: str       # full formatted text block from alert_templates
+
+
+@dataclass
+class PortfolioAlert:
+    """A single alert generated from a user's portfolio holding."""
+
+    ticker: str
+    alert_type: str       # PRICE_TARGET_UP | PRICE_TARGET_DOWN | SIGNAL_ON_HELD_TICKER
+    headline: str
+    body: str
 
 
 @dataclass
@@ -98,14 +113,11 @@ class AlertEngine:
 
     def run_daily_alert_check(
         self,
-        watchlist: List[str],
         as_of_date: Optional[date] = None,
     ) -> AlertEngineResult:
-        """Run the full daily alert check for a watchlist.
+        """Run the full daily alert check across the entire screener universe.
 
         Args:
-            watchlist:    Tickers to monitor.  Must be a subset of
-                          VALIDATION_UNIVERSE (others are silently skipped).
             as_of_date:   Date to evaluate. Defaults to today.
 
         Returns:
@@ -115,16 +127,13 @@ class AlertEngine:
         if as_of_date is None:
             as_of_date = date.today()
 
-        watchlist_upper = [t.upper() for t in watchlist]
-
-        # 1. Run today's screener (full universe, filter to watchlist)
+        # 1. Run today's screener (full 50-ticker universe)
         logger.info("Running screener for %s", as_of_date)
         result = run_screener(as_of_date=as_of_date)
 
         today_rows: Dict[str, ScreenerRow] = {
             r.ticker: r
             for r in result.full_ranking
-            if r.ticker in watchlist_upper
         }
 
         # 2. Build today's state dict and persist it
@@ -171,6 +180,94 @@ class AlertEngine:
             continuing_signals = sorted(continuing_signals),
             dropped_signals  = sorted(dropped_signals),
         )
+
+    def portfolio_alert_check(
+        self,
+        portfolio: List[dict],
+        as_of_date: Optional[date] = None,
+    ) -> List[PortfolioAlert]:
+        """Check price thresholds and recovery signals for portfolio holdings.
+
+        Args:
+            portfolio:  List of holding dicts with keys: ticker, entry_price,
+                        alert_up_pct, alert_down_pct.
+            as_of_date: Date to evaluate. Defaults to today.
+
+        Returns:
+            List of PortfolioAlert (price targets and signal-on-held alerts).
+        """
+        if as_of_date is None:
+            as_of_date = date.today()
+        if not portfolio:
+            return []
+
+        result   = run_screener(as_of_date=as_of_date)
+        buy_set  = {r.ticker for r in result.full_ranking if r.signal == "BUY"}
+        score_map: Dict[str, tuple] = {
+            r.ticker: (r.composite_score or 0.0, r.drawdown_pct)
+            for r in result.full_ranking
+        }
+        prices   = PriceData()
+        from datetime import timedelta
+        today_str    = as_of_date.isoformat()
+        lookback_str = (as_of_date - timedelta(days=10)).isoformat()
+
+        alerts: List[PortfolioAlert] = []
+        for h in portfolio:
+            ticker      = (h.get("ticker") or "").upper()
+            entry_price = h.get("entry_price")
+            alert_up    = float(h.get("alert_up_pct")  or 20.0)
+            alert_down  = float(h.get("alert_down_pct") or 10.0)
+
+            if not ticker or entry_price is None:
+                continue
+
+            # Fetch current price (prefer screener universe, fall back to PriceData)
+            cur_price: Optional[float] = None
+            screener_row = next((r for r in result.full_ranking if r.ticker == ticker), None)
+            if screener_row is not None:
+                cur_price = screener_row.current_price
+            else:
+                try:
+                    ohlcv = prices.get_prices(ticker, lookback_str, today_str)
+                    if ohlcv is not None and not ohlcv.empty:
+                        cur_price = float(ohlcv["Close"].iloc[-1])
+                except Exception:
+                    pass
+
+            if cur_price is None:
+                continue
+
+            ret_pct = (cur_price / float(entry_price) - 1) * 100
+
+            if ret_pct >= alert_up:
+                copy = format_price_alert(ticker, "UP", alert_up, ret_pct)
+                alerts.append(PortfolioAlert(
+                    ticker     = ticker,
+                    alert_type = "PRICE_TARGET_UP",
+                    headline   = copy["headline"],
+                    body       = copy["body"] + "\n\n" + copy["disclaimer"],
+                ))
+            elif ret_pct <= -alert_down:
+                copy = format_price_alert(ticker, "DOWN", alert_down, ret_pct)
+                alerts.append(PortfolioAlert(
+                    ticker     = ticker,
+                    alert_type = "PRICE_TARGET_DOWN",
+                    headline   = copy["headline"],
+                    body       = copy["body"] + "\n\n" + copy["disclaimer"],
+                ))
+
+            if ticker in buy_set:
+                comp, dd = score_map.get(ticker, (0.0, 0.0))
+                copy = format_signal_on_held_ticker(ticker, comp, dd)
+                alerts.append(PortfolioAlert(
+                    ticker     = ticker,
+                    alert_type = "SIGNAL_ON_HELD_TICKER",
+                    headline   = copy["headline"],
+                    body       = copy["body"] + "\n\n" + copy["disclaimer"],
+                ))
+
+        return alerts
 
     def _build_alert(self, row: ScreenerRow, run_date: date) -> Alert:
         """Build an Alert from a ScreenerRow."""

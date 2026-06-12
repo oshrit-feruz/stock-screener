@@ -2,8 +2,8 @@
 """Daily run: alert engine + exit tracker for the stock screener.
 
 Entry point to run every trading day (cron or manual).
-Loads the user watchlist, runs the alert engine to detect new BUY signals,
-runs the exit tracker for open positions, and prints a daily summary.
+Runs the alert engine across all 50 tickers to detect new BUY signals,
+runs the exit tracker for open positions, and checks portfolio price alerts.
 
 Usage:
     python product/run_daily.py
@@ -18,22 +18,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from product.alerts.alert_engine import AlertEngine, Alert
+from product.alerts.alert_engine import AlertEngine, Alert, PortfolioAlert
 from product.exit.exit_tracker import ExitTracker, ExitAlert
 
-_WATCHLIST_FILE = Path(__file__).parent.parent / "data" / "user_watchlist.json"
-_ALERTS_DIR     = Path(__file__).parent.parent / "data" / "alerts"
+_ALERTS_DIR      = Path(__file__).parent.parent / "data" / "alerts"
+_PORTFOLIO_FILE  = Path(__file__).parent.parent / "data" / "portfolio" / "portfolio.json"
+_OPEN_POS_FILE   = Path(__file__).parent.parent / "data" / "positions" / "open_positions.json"
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
 
-def load_watchlist() -> list[str]:
-    if not _WATCHLIST_FILE.exists():
-        print(f"[WARN] Watchlist file not found at {_WATCHLIST_FILE}. Using default.")
-        return ["NVDA", "AAPL", "MSFT", "GOOGL", "META", "AMZN", "TSLA", "CRM", "ADBE", "ORCL"]
-    with open(_WATCHLIST_FILE) as fh:
-        data = json.load(fh)
-    return data.get("watchlist", [])
+def load_portfolio() -> list:
+    if not _PORTFOLIO_FILE.exists():
+        return []
+    try:
+        data = json.loads(_PORTFOLIO_FILE.read_text())
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 
 def save_alerts(today: date, alerts: list[Alert], exit_alerts: list[ExitAlert]) -> None:
@@ -45,16 +47,16 @@ def save_alerts(today: date, alerts: list[Alert], exit_alerts: list[ExitAlert]) 
         payload = []
         for a in alerts:
             payload.append({
-                "ticker":          a.ticker,
-                "entry_date":      a.entry_date.isoformat(),
-                "entry_price":     a.entry_price,
-                "drawdown_pct":    a.drawdown_pct,
-                "composite_score": a.composite_score,
-                "dip_score":       a.dip_score,
-                "momentum_score":  a.momentum_score,
-                "volume_score":    a.volume_score,
-                "gate_passed":     a.gate_passed,
-                "signal_type":     a.signal_type,
+                "ticker":            a.ticker,
+                "entry_date":        a.entry_date.isoformat(),
+                "entry_price":       a.entry_price,
+                "drawdown_pct":      a.drawdown_pct,
+                "composite_score":   a.composite_score,
+                "dip_score":         a.dip_score,
+                "momentum_score":    a.momentum_score,
+                "volume_score":      a.volume_score,
+                "gate_passed":       a.gate_passed,
+                "signal_type":       a.signal_type,
                 "formatted_message": a.formatted_message,
             })
         with open(path, "w") as fh:
@@ -102,50 +104,72 @@ def print_exit_alert(e: ExitAlert) -> None:
     print(sep)
 
 
+def print_portfolio_alert(a: PortfolioAlert) -> None:
+    sep = "~" * 72
+    print()
+    print(sep)
+    print(f"PORTFOLIO {a.alert_type}  --  {a.ticker}")
+    print(sep)
+    print(a.body)
+    print(sep)
+
+
 def main() -> None:
     today     = date.today()
-    watchlist = load_watchlist()
+    portfolio = load_portfolio()
 
     print(f"\nDAILY RUN  --  {today}")
-    print(f"Watchlist: {', '.join(watchlist)}")
+    print(f"Portfolio holdings: {len(portfolio)} ticker(s)")
     print()
 
-    # Step 1: Alert engine
+    # Step 1: Alert engine (full 50-ticker universe)
     print("Running alert engine...")
-    engine = AlertEngine()
-    engine_result = engine.run_daily_alert_check(watchlist, as_of_date=today)
+    engine        = AlertEngine()
+    engine_result = engine.run_daily_alert_check(as_of_date=today)
 
     # Step 2: Exit tracker
     print("Running exit tracker...")
     tracker = ExitTracker()
-    # Build current prices from screener result for the exit tracker
-    # (open positions may include tickers outside the watchlist)
     from product.screener.daily_screener import run_screener
     screener_result = run_screener(as_of_date=today)
-    current_prices = {r.ticker: r.current_price for r in screener_result.full_ranking}
-    exit_alerts = tracker.check_exits(today, current_prices=current_prices)
+    current_prices  = {r.ticker: r.current_price for r in screener_result.full_ranking}
+    exit_alerts     = tracker.check_exits(today, current_prices=current_prices)
 
-    # Step 3: Print new alerts
+    # Step 3: Portfolio alerts
+    portfolio_alerts: list[PortfolioAlert] = []
+    if portfolio:
+        print("Running portfolio alert check...")
+        portfolio_alerts = engine.portfolio_alert_check(portfolio, as_of_date=today)
+
+    # Step 4: Print new BUY alerts
     if engine_result.new_alerts:
         for alert in engine_result.new_alerts:
             print_alert(alert)
     else:
         print("No new BUY signals detected today.")
 
-    # Step 4: Print exit alerts
+    # Step 5: Print exit alerts
     if exit_alerts:
         for ea in exit_alerts:
             print_exit_alert(ea)
     else:
         print("No exit alerts today.")
 
-    # Step 5: Save to disk
+    # Step 6: Print portfolio alerts
+    if portfolio_alerts:
+        for pa in portfolio_alerts:
+            print_portfolio_alert(pa)
+    elif portfolio:
+        print("No portfolio alerts today.")
+
+    # Step 7: Save to disk
     save_alerts(today, engine_result.new_alerts, exit_alerts)
 
-    # Step 6: Daily summary
-    open_count = len(json.loads(
-        (Path(__file__).parent.parent / "data" / "positions" / "open_positions.json").read_text()
-    ) if (Path(__file__).parent.parent / "data" / "positions" / "open_positions.json").exists() else "[]")
+    # Step 8: Daily summary
+    try:
+        open_count = len(json.loads(_OPEN_POS_FILE.read_text())) if _OPEN_POS_FILE.exists() else 0
+    except Exception:
+        open_count = 0
 
     print()
     print("=" * 72)
@@ -157,6 +181,7 @@ def main() -> None:
     print(f"Dropped signals:     {len(engine_result.dropped_signals)}"
           + (f"  ({', '.join(engine_result.dropped_signals)})" if engine_result.dropped_signals else ""))
     print(f"Exit alerts:         {len(exit_alerts)}")
+    print(f"Portfolio alerts:    {len(portfolio_alerts)}")
     print(f"Positions tracked:   {open_count}")
     print("=" * 72)
 

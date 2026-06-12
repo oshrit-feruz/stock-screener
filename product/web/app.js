@@ -5,8 +5,8 @@ var _sigCache   = null;
 var _sigCacheTs = 0;
 var CACHE_TTL   = 60 * 60 * 1000; // 1 hour
 
-var _watchlist  = [];
-var _wlTimer    = null;
+var _userMode  = null;
+var _portfolio = []; // [{ticker, entry_price, alert_up_pct, alert_down_pct}]
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 function showToast(msg, ms) {
@@ -30,13 +30,94 @@ function fmtRet(pct) {
   return { str: s, cls: cls };
 }
 
+function escHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ── Mode / Onboarding ─────────────────────────────────────────────────────────
+function checkMode() {
+  var mode = localStorage.getItem('user_mode');
+  if (!mode) {
+    showOnboarding();
+    return;
+  }
+  _userMode = mode;
+  hideOnboarding();
+  updateTabBar();
+  activateDefaultTab();
+}
+
+function showOnboarding() {
+  var el = document.getElementById('onboarding');
+  if (el) el.style.display = 'flex';
+}
+
+function hideOnboarding() {
+  var el = document.getElementById('onboarding');
+  if (el) el.style.display = 'none';
+}
+
+function setMode(mode) {
+  _userMode = mode;
+  localStorage.setItem('user_mode', mode);
+  hideOnboarding();
+  updateTabBar();
+  activateDefaultTab();
+}
+
+var _MODE_LABELS = {
+  fresh:     'Fresh Start — see recovery signals',
+  portfolio: 'Portfolio — monitor my holdings',
+  both:      'Both — signals + portfolio monitoring'
+};
+
+function updateTabBar() {
+  var showSignals   = (_userMode === 'fresh'     || _userMode === 'both');
+  var showPositions = (_userMode === 'fresh'     || _userMode === 'both');
+  var showPortfolio = (_userMode === 'portfolio' || _userMode === 'both');
+  var showAlerts    = (_userMode === 'portfolio' || _userMode === 'both');
+
+  function setVis(tab, show) {
+    var btn = document.querySelector('[data-tab="' + tab + '"]');
+    if (btn) btn.style.display = show ? '' : 'none';
+  }
+  setVis('signals',   showSignals);
+  setVis('positions', showPositions);
+  setVis('portfolio', showPortfolio);
+  setVis('alerts',    showAlerts);
+  // Settings always visible
+
+  var lbl = document.getElementById('current-mode-label');
+  if (lbl) lbl.textContent = 'Mode: ' + (_MODE_LABELS[_userMode] || _userMode);
+}
+
+function activateDefaultTab() {
+  if (_userMode === 'fresh' || _userMode === 'both') {
+    switchTab('signals');
+    loadSignals();
+  } else {
+    switchTab('portfolio');
+    loadPortfolio();
+  }
+}
+
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(tab) {
   document.querySelectorAll('.tab-pane').forEach(function (el) { el.classList.remove('active'); });
   document.querySelectorAll('.tab-btn').forEach(function (el)  { el.classList.remove('active'); });
-  document.getElementById('tab-' + tab).classList.add('active');
-  document.querySelector('[data-tab="' + tab + '"]').classList.add('active');
+  var pane = document.getElementById('tab-' + tab);
+  if (pane) pane.classList.add('active');
+  var btn = document.querySelector('[data-tab="' + tab + '"]');
+  if (btn) btn.classList.add('active');
+
   if (tab === 'positions') loadPositions();
+  if (tab === 'portfolio') loadPortfolio();
+  if (tab === 'alerts')    loadPortfolioAlerts();
 }
 
 // ── Signals ────────────────────────────────────────────────────────────────────
@@ -257,7 +338,7 @@ function posCardHTML(p) {
     '  </div>',
     '  <div class="prog-label">Day ' + p.days_held + ' of 252 &mdash; ' + p.days_remaining + ' days remaining</div>',
     '  <div style="font-size:11px;color:var(--muted);margin-top:3px;">Historical avg at day ' + p.days_held + ': <span style="font-family:monospace;color:var(--text)">' + exp + '</span></div>',
-    p.context_message ? '  <div class="context-msg">&ldquo;' + p.context_message + '&rdquo;</div>' : '',
+    p.context_message ? '  <div class="context-msg">&ldquo;' + escHtml(p.context_message) + '&rdquo;</div>' : '',
     '  <div class="card-actions" style="margin-top:12px;">',
     '    <button class="btn btn-danger btn-sm" onclick="closePosition(\'' + p.ticker + '\')">Close position</button>',
     '  </div>',
@@ -288,67 +369,197 @@ function closePosition(ticker) {
     .catch(function () { showToast('Failed to close position.'); });
 }
 
-// ── Watchlist ──────────────────────────────────────────────────────────────────
-function loadWatchlist() {
-  fetch('/api/watchlist')
+// ── Portfolio ──────────────────────────────────────────────────────────────────
+function loadPortfolio() {
+  var ctr = document.getElementById('portfolio-container');
+  if (ctr) ctr.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  fetch('/api/portfolio')
     .then(function (r) { return r.json(); })
     .then(function (data) {
-      _watchlist = data.tickers || [];
-      renderWatchlist();
+      _portfolio = (data.holdings || []).map(function (h) {
+        return {
+          ticker:        h.ticker,
+          entry_price:   h.entry_price,
+          alert_up_pct:  h.alert_up_pct,
+          alert_down_pct: h.alert_down_pct,
+        };
+      });
+      renderPortfolio(data.holdings || []);
     })
-    .catch(function () {});
+    .catch(function () {
+      if (ctr) ctr.innerHTML = '<div class="err-box">Failed to load portfolio.</div>';
+    });
 }
 
-function renderWatchlist() {
-  var ctr = document.getElementById('wl-chips');
+function renderPortfolio(holdings) {
+  var ctr = document.getElementById('portfolio-container');
   if (!ctr) return;
-  if (_watchlist.length === 0) {
-    ctr.innerHTML = '<span style="font-size:12px;color:var(--muted);">Watching all 50 tickers</span>';
+  if (!holdings || holdings.length === 0) {
+    ctr.innerHTML = [
+      '<div class="empty">',
+      '  <div class="em-h">No holdings yet.</div>',
+      '  <p>Add stocks you own below.<br><br>',
+      '  You\'ll get alerts when they hit<br>',
+      '  your price targets or trigger<br>',
+      '  a recovery signal.</p>',
+      '</div>'
+    ].join('\n');
     return;
   }
-  ctr.innerHTML = _watchlist.map(function (t) {
-    return '<div class="chip">' + t + '<button class="chip-x" onclick="removeTicker(\'' + t + '\')" title="Remove">&times;</button></div>';
-  }).join('');
+  ctr.innerHTML = holdings.map(portfolioCardHTML).join('');
 }
 
-function addTicker() {
-  var inp    = document.getElementById('wl-input');
-  var ticker = (inp.value || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
-  if (!ticker) return;
-  if (_watchlist.indexOf(ticker) !== -1) { showToast(ticker + ' already in watchlist'); inp.value = ''; return; }
-  _watchlist = _watchlist.concat([ticker]);
-  inp.value  = '';
-  renderWatchlist();
-  scheduleWlSave();
-  showToast(ticker + ' added');
+function portfolioCardHTML(h) {
+  var r   = fmtRet(h.current_return_pct);
+  var cur = h.current_price ? '$' + fmt(h.current_price, 2) : 'unavailable';
+  var ent = h.entry_price   ? '$' + fmt(h.entry_price, 2)   : 'no entry set';
+  return [
+    '<div class="card">',
+    '  <div class="ph-header">',
+    '    <div class="ph-ticker">' + h.ticker + '</div>',
+    '    <div class="ret-badge ' + r.cls + '">' + r.str + '</div>',
+    '  </div>',
+    '  <div class="ph-meta">',
+    '    Entry <b>' + ent + '</b> &nbsp;&middot;&nbsp; Now <b>' + cur + '</b>',
+    '  </div>',
+    '  <div class="ph-alerts-row">',
+    '    Alert up: <b>+' + fmt(h.alert_up_pct || 20, 0) + '%</b>',
+    '    &nbsp;&middot;&nbsp; Alert down: <b>-' + fmt(h.alert_down_pct || 10, 0) + '%</b>',
+    '  </div>',
+    '  <div class="card-actions" style="margin-top:10px;">',
+    '    <button class="btn btn-danger btn-sm" onclick="removeHolding(\'' + h.ticker + '\')">Remove</button>',
+    '  </div>',
+    '</div>'
+  ].join('\n');
 }
 
-function removeTicker(ticker) {
-  _watchlist = _watchlist.filter(function (t) { return t !== ticker; });
-  renderWatchlist();
-  scheduleWlSave();
-  showToast(ticker + ' removed');
+function addHolding() {
+  var tickerEl = document.getElementById('ph-ticker');
+  var ticker   = (tickerEl.value || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
+  if (!ticker) { showToast('Enter a ticker'); return; }
+
+  var already = _portfolio.some(function (h) { return h.ticker === ticker; });
+  if (already) { showToast(ticker + ' already in portfolio'); return; }
+
+  var priceVal   = document.getElementById('ph-price').value;
+  var entryPrice = priceVal ? parseFloat(priceVal) : null;
+  var alertUp    = parseFloat(document.getElementById('ph-alert-up').value)   || 20;
+  var alertDown  = parseFloat(document.getElementById('ph-alert-down').value) || 10;
+
+  _portfolio = _portfolio.concat([{
+    ticker:         ticker,
+    entry_price:    entryPrice,
+    alert_up_pct:   alertUp,
+    alert_down_pct: alertDown,
+  }]);
+
+  tickerEl.value = '';
+  document.getElementById('ph-price').value = '';
+  savePortfolio();
 }
 
-function scheduleWlSave() {
-  clearTimeout(_wlTimer);
-  _wlTimer = setTimeout(saveWatchlist, 500);
+function removeHolding(ticker) {
+  if (!confirm('Remove ' + ticker + ' from portfolio?')) return;
+  _portfolio = _portfolio.filter(function (h) { return h.ticker !== ticker; });
+  savePortfolioQuiet();
 }
 
-function saveWatchlist() {
-  fetch('/api/watchlist', {
+function savePortfolio() {
+  fetch('/api/portfolio', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ tickers: _watchlist })
-  }).catch(function () {});
+    body:    JSON.stringify({ holdings: _portfolio }),
+  })
+    .then(function (r) { return r.json(); })
+    .then(function () { loadPortfolio(); showToast('Portfolio saved'); })
+    .catch(function () { showToast('Failed to save portfolio'); });
+}
+
+function savePortfolioQuiet() {
+  fetch('/api/portfolio', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ holdings: _portfolio }),
+  })
+    .then(function (r) { return r.json(); })
+    .then(function () { loadPortfolio(); })
+    .catch(function () { showToast('Failed to save portfolio'); });
+}
+
+// ── Portfolio Alerts ───────────────────────────────────────────────────────────
+function loadPortfolioAlerts() {
+  var ctr = document.getElementById('alerts-container');
+  if (ctr) ctr.innerHTML = '<div class="loading">Checking alerts&hellip;</div>';
+  fetch('/api/portfolio/alerts')
+    .then(function (r) { return r.json(); })
+    .then(function (data) { renderPortfolioAlerts(data.alerts || []); })
+    .catch(function () {
+      if (ctr) ctr.innerHTML = '<div class="err-box">Failed to load alerts.</div>';
+    });
+}
+
+function renderPortfolioAlerts(alerts) {
+  var ctr = document.getElementById('alerts-container');
+  if (!ctr) return;
+  if (!alerts || alerts.length === 0) {
+    ctr.innerHTML = [
+      '<div class="empty">',
+      '  <div class="em-h">No alerts right now.</div>',
+      '  <p>We check your holdings for price targets,<br>',
+      '  recovery signals, and recent news.<br><br>',
+      '  All clear for today.</p>',
+      '</div>'
+    ].join('\n');
+    return;
+  }
+  ctr.innerHTML = alerts.map(alertCardHTML).join('');
+}
+
+var _ALERT_LABELS = {
+  PRICE_TARGET_UP:       'Price Target UP',
+  PRICE_TARGET_DOWN:     'Price Target DOWN',
+  SIGNAL_ON_HELD_TICKER: 'Recovery Signal',
+  NEWS:                  'News',
+};
+var _ALERT_CLS = {
+  PRICE_TARGET_UP:       'at-up',
+  PRICE_TARGET_DOWN:     'at-down',
+  SIGNAL_ON_HELD_TICKER: 'at-signal',
+  NEWS:                  'at-news',
+};
+
+function alertCardHTML(a) {
+  var id       = 'ab-' + a.ticker + '-' + a.type;
+  var label    = _ALERT_LABELS[a.type] || a.type;
+  var cls      = _ALERT_CLS[a.type]   || '';
+  var newsLink = (a.type === 'NEWS' && a.url)
+    ? '<a href="' + escHtml(a.url) + '" target="_blank" rel="noopener noreferrer" style="color:var(--blue);font-size:12px;display:block;margin-top:6px;">Read article &#8599;</a>'
+    : '';
+  return [
+    '<div class="alert-card">',
+    '  <span class="alert-type-badge ' + cls + '">' + label + '</span>',
+    '  <div class="alert-headline">' + escHtml(a.headline || '') + '</div>',
+    newsLink,
+    '  <button class="btn btn-ghost btn-sm" style="margin-top:10px;" onclick="toggleAlertBody(\'' + id + '\', this)">Details</button>',
+    '  <div class="alert-body" id="' + id + '">' + escHtml(a.body || '') + '</div>',
+    '  <div class="disclaimer" style="margin-top:6px;">&#9888;&#65039; Informational only. Not investment advice.</div>',
+    '</div>'
+  ].join('\n');
+}
+
+function toggleAlertBody(id, btn) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  var open = el.classList.toggle('open');
+  if (btn) btn.textContent = open ? 'Hide' : 'Details';
 }
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
-  var wlInput = document.getElementById('wl-input');
-  if (wlInput) {
-    wlInput.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') addTicker();
+  var phTicker = document.getElementById('ph-ticker');
+  if (phTicker) {
+    phTicker.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') addHolding();
     });
   }
 });

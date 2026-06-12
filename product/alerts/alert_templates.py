@@ -215,3 +215,103 @@ def format_exit_alert(
     )
     disclaimer = load_copy_framework()["disclaimer_variations"]["medium"]
     return {"headline": headline, "body": body, "disclaimer": disclaimer}
+
+
+def format_price_alert(
+    ticker: str,
+    direction: str,
+    threshold_pct: float,
+    current_return_pct: float,
+) -> Dict[str, str]:
+    """Render a portfolio price-threshold alert (UP or DOWN).
+
+    Args:
+        ticker:              Stock ticker symbol.
+        direction:           "UP" or "DOWN".
+        threshold_pct:       The alert threshold in percent (e.g. 20).
+        current_return_pct:  Current return from entry in percent (e.g. 23.4).
+
+    Returns:
+        Dict with keys: "headline", "body", "disclaimer".
+    """
+    sign = "+" if current_return_pct >= 0 else ""
+    if direction == "UP":
+        headline = f"{ticker} is up {sign}{current_return_pct:.1f}% from your entry"
+        body = (
+            f"{ticker} has reached your +{threshold_pct:.0f}% price target.\n"
+            f"Current return from entry: {sign}{current_return_pct:.1f}%\n\n"
+            f"This alert is informational only. No action is required.\n"
+            f"You decide when and whether to act."
+        )
+    else:
+        headline = f"{ticker} is down {abs(current_return_pct):.1f}% from your entry"
+        body = (
+            f"{ticker} has fallen to your -{threshold_pct:.0f}% alert level.\n"
+            f"Current return from entry: {sign}{current_return_pct:.1f}%\n\n"
+            f"This alert is informational only. No action is required.\n"
+            f"Re-check the thesis: is the company still fundamentally sound?"
+        )
+    disclaimer = load_copy_framework()["disclaimer_variations"]["short"]
+    return {"headline": headline, "body": body, "disclaimer": disclaimer}
+
+
+def format_news_alert(
+    ticker: str,
+    headline: str,
+    url: str = "",
+    source: str = "",
+) -> Dict[str, str]:
+    """Render a news alert for a portfolio holding.
+
+    News alerts are informational only -- never say buy or sell based on news.
+
+    Args:
+        ticker:    Stock ticker symbol.
+        headline:  News headline text.
+        url:       Article URL (optional).
+        source:    Publication name (optional).
+
+    Returns:
+        Dict with keys: "headline", "body", "disclaimer".
+    """
+    alert_headline = f"{ticker}: {headline}"
+    source_line = f"Source: {source}\n" if source else ""
+    url_line    = f"{url}\n"            if url    else ""
+    body = (
+        f"{ticker}: {headline}\n"
+        f"{source_line}"
+        f"{url_line}"
+        f"\nThis is a news alert -- informational only.\n"
+        f"No action is required from the signal.\n"
+        f"Past performance does not guarantee future results."
+    )
+    disclaimer = load_copy_framework()["disclaimer_variations"]["short"]
+    return {"headline": alert_headline, "body": body, "disclaimer": disclaimer}
+
+
+def format_signal_on_held_ticker(
+    ticker: str,
+    composite_score: float,
+    drawdown_pct: float,
+) -> Dict[str, str]:
+    """Render an alert when a recovery signal fires on a portfolio holding.
+
+    Args:
+        ticker:          Stock ticker symbol.
+        composite_score: Recovery composite score (0-1).
+        drawdown_pct:    Current drawdown from 52w high as a fraction (e.g. 0.38).
+
+    Returns:
+        Dict with keys: "headline", "body", "disclaimer".
+    """
+    headline = f"{ticker} (held) has triggered a recovery signal today"
+    body = (
+        f"{ticker} -- which you hold -- has triggered a recovery signal today.\n"
+        f"Down {abs(drawdown_pct) * 100:.1f}% from 52-week high.\n"
+        f"Signal score: {composite_score:.2f} / 1.00\n\n"
+        f"This does not change your current position.\n"
+        f"It means the signal sees a recovery setup forming.\n\n"
+        f"[!] This is not advice. You decide."
+    )
+    disclaimer = load_copy_framework()["disclaimer_variations"]["short"]
+    return {"headline": headline, "body": body, "disclaimer": disclaimer}
