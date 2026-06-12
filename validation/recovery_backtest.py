@@ -21,11 +21,11 @@ _RANDOM_PROB  = 0.10
 _WARMUP_START = "2016-01-01"
 
 CASE_STUDIES = [
-    ("BA",   date(2020, 3, 23),  "COVID crash bottom"),
-    ("NVDA", date(2022, 10, 13), "2022 bear market bottom"),
-    ("META", date(2022, 11, 3),  "2022 restructuring bottom"),
-    ("AAPL", date(2023, 1, 6),   "2023 recovery start"),
-    ("NFLX", date(2022, 5, 12),  "2022 subscriber-shock bottom"),
+    ("AVGO", date(2020, 3, 18),  "COVID crash bottom"),
+    ("TSLA", date(2023, 5, 3),   "2022-23 growth correction"),
+    ("CRM",  date(2022, 12, 28), "2022 software bear market bottom"),
+    ("NKE",  date(2022, 10, 20), "2022 bear market bottom"),
+    ("NVDA", date(2019, 1, 3),   "2018 semiconductor correction"),
 ]
 _CASE_WINDOW_DAYS = 10  # ±10 trading days for "within 2 weeks" check
 

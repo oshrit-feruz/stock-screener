@@ -46,13 +46,15 @@ def _dip_score_series(close: pd.Series) -> pd.Series:
     high_52w     = close.rolling(252).max()
     drawdown_abs = ((high_52w - close) / high_52w).clip(lower=0)
 
+    # Tier structure validated by sensitivity analysis (pre-Stage 6).
+    # Sweet spot 40-60%; 20-30% shallow band dropped (negative spread in testing).
     score = pd.Series(np.nan, index=close.index, dtype=float)
     valid = drawdown_abs.notna()
-    score[valid & (drawdown_abs < 0.20)]                             = 0.0
-    score[valid & (drawdown_abs >= 0.20) & (drawdown_abs < 0.30)]   = 0.7
-    score[valid & (drawdown_abs >= 0.30) & (drawdown_abs <= 0.50)]  = 1.0
-    score[valid & (drawdown_abs > 0.50)  & (drawdown_abs <= 0.70)]  = 0.5
-    score[valid & (drawdown_abs > 0.70)]                             = 0.0
+    score[valid & (drawdown_abs <  0.30)]                            = 0.0
+    score[valid & (drawdown_abs >= 0.30) & (drawdown_abs <  0.40)]  = 0.7
+    score[valid & (drawdown_abs >= 0.40) & (drawdown_abs <= 0.60)]  = 1.0
+    score[valid & (drawdown_abs >  0.60) & (drawdown_abs <= 0.70)]  = 0.5
+    score[valid & (drawdown_abs >  0.70)]                            = 0.0
     return score
 
 
