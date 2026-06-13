@@ -126,6 +126,10 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     ts_raw = params.get("trailing_stop_pct", 0.0)
     trailing_stop_pct: float = float(ts_raw) / 100.0 if float(ts_raw or 0) > 1 else float(ts_raw or 0)
 
+    # Short mode — open short positions on signals (+1=long, -1=short)
+    short_mode: bool = bool(params.get("short_mode", False))
+    direction:  int  = -1 if short_mode else 1
+
     # ── Trading calendar ───────────────────────────────────────────────────────
     if spy_ohlcv is not None and not spy_ohlcv.empty:
         trading_dates = [
@@ -174,7 +178,11 @@ def _simulate(preloaded: dict, params: dict) -> dict:
         pos_value = 0.0
         for tkr, pos in positions.items():
             cp = _cur_price(tkr, today_ts)
-            pos_value += (pos["shares"] * cp) if cp else pos["position_value"]
+            d  = pos.get("direction", 1)
+            if cp:
+                pos_value += pos["position_value"] + d * pos["shares"] * (cp - pos["entry_price"])
+            else:
+                pos_value += pos["position_value"]
         pv = cash + pos_value
         portfolio_daily[today] = pv
         daily_pv.append(pv)
@@ -197,22 +205,26 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             comp = _safe_float(row.get("composite_score"))
             hold = int(np.busday_count(pos["entry_date"].isoformat(), today.isoformat()))
 
-            # Update peak price (high-water mark since entry)
-            if cp > pos.get("peak_price", pos["entry_price"]):
+            # Update extreme price: peak (max) for longs, trough (min) for shorts
+            d           = pos.get("direction", 1)
+            cur_extreme = pos.get("peak_price", pos["entry_price"])
+            if d == 1 and cp > cur_extreme:
+                pos["peak_price"] = cp
+            elif d == -1 and cp < cur_extreme:
                 pos["peak_price"] = cp
 
             reason: Optional[str] = None
 
-            gain        = cp / pos["entry_price"] - 1
-            peak        = pos.get("peak_price", pos["entry_price"])
-            from_peak   = cp / peak - 1  # always ≤ 0 on the day it triggers
+            extreme      = pos.get("peak_price", pos["entry_price"])
+            gain         = d * (cp / pos["entry_price"] - 1)
+            from_extreme = d * (cp / extreme - 1)  # ≤ 0 when at/near the best price
 
             # TP, SL, and trailing stop fire before any other exit rule
             if take_profit_pct > 0 and gain >= take_profit_pct:
                 reason = "take_profit"
             elif stop_loss_pct > 0 and gain <= -stop_loss_pct:
                 reason = "stop_loss"
-            elif trailing_stop_pct > 0 and from_peak <= -trailing_stop_pct:
+            elif trailing_stop_pct > 0 and from_extreme <= -trailing_stop_pct:
                 reason = "trailing_stop"
             elif hold_days_param is not None:
                 # Optimization mode
@@ -241,8 +253,9 @@ def _simulate(preloaded: dict, params: dict) -> dict:
 
         for tkr, cp, hold, reason in to_close:
             pos  = positions.pop(tkr)
-            ret  = cp / pos["entry_price"] - 1
-            cash += pos["shares"] * cp
+            d    = pos.get("direction", 1)
+            ret  = d * (cp / pos["entry_price"] - 1)
+            cash += pos["position_value"] + d * pos["shares"] * (cp - pos["entry_price"])
             trades.append({
                 "ticker":      tkr,
                 "entry_date":  pos["entry_date"].isoformat(),
@@ -252,6 +265,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                 "hold_days":   hold,
                 "return_pct":  round(ret * 100, 2),
                 "exit_reason": reason,
+                "direction":   d,
             })
 
         # ── Identify today's BUY signals ───────────────────────────────────
@@ -300,6 +314,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                     "peak_price":     cp,
                     "shares":         shares,
                     "position_value": alloc,
+                    "direction":      direction,
                 }
 
     # ── Realized-only value: open positions returned at cost (no unrealized P&L) ─
@@ -309,10 +324,11 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     last_date = trading_dates[-1]
     last_ts   = pd.Timestamp(last_date)
     for tkr, pos in list(positions.items()):
-        cp = _cur_price(tkr, last_ts) or pos["entry_price"]
+        cp   = _cur_price(tkr, last_ts) or pos["entry_price"]
         hold = int(np.busday_count(pos["entry_date"].isoformat(), last_date.isoformat()))
-        ret  = cp / pos["entry_price"] - 1
-        cash += pos["shares"] * cp
+        d    = pos.get("direction", 1)
+        ret  = d * (cp / pos["entry_price"] - 1)
+        cash += pos["position_value"] + d * pos["shares"] * (cp - pos["entry_price"])
         trades.append({
             "ticker":      tkr,
             "entry_date":  pos["entry_date"].isoformat(),
@@ -322,6 +338,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "hold_days":   hold,
             "return_pct":  round(ret * 100, 2),
             "exit_reason": "open_at_end",
+            "direction":   d,
         })
     positions.clear()
 
