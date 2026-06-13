@@ -473,28 +473,176 @@
       transition: opacity 0.25s;
     }
     .toast.hidden { opacity: 0; pointer-events: none; }
+
+    /* ── New 3-screen onboarding ── */
+    .ob-screen { max-width: 400px; width: 100%; max-height: 92dvh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    .ob-screen-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px 20px 20px; }
+    .ob-icon { font-size: 34px; margin-bottom: 10px; }
+    .ob-h2 { font-size: 21px; font-weight: 700; line-height: 1.25; margin-bottom: 8px; }
+    .ob-lead { font-size: 14px; color: var(--muted); }
+    .ob-big { font-size: 18px; font-weight: 600; line-height: 1.4; margin: 8px 0 12px; }
+    .ob-big em { color: var(--blue); font-style: normal; }
+    .ob-body { font-size: 13px; color: var(--muted); line-height: 1.65; margin-bottom: 14px; }
+    .ob-stat-row { display: flex; gap: 7px; margin: 14px 0; }
+    .ob-stat { flex: 1; background: var(--bg); border-radius: 8px; padding: 10px 6px; text-align: center; }
+    .ob-stat-val { font-size: 14px; font-weight: 700; font-family: monospace; color: var(--green); }
+    .ob-stat-lbl { font-size: 10px; color: var(--muted); margin-top: 3px; line-height: 1.3; }
+    .ob-divider { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+    .ob-not-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted); margin-bottom: 8px; }
+    .ob-not-list { font-size: 13px; color: var(--red); line-height: 2.1; margin-bottom: 12px; }
+    .ob-caveat { font-size: 13px; color: var(--amber); margin-bottom: 18px; line-height: 1.5; }
+    .ob-next-btn { width: 100%; padding: 13px; font-size: 15px; justify-content: center; }
+    .ob-back-solo { width: 100%; margin-top: 10px; justify-content: center; }
+    .ob-horizon-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+    .ob-horizon-opt { display: flex; align-items: center; gap: 10px; background: var(--bg); border: 1.5px solid var(--border); border-radius: 10px; padding: 12px 14px; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+    .ob-horizon-opt:has(input:checked) { border-color: var(--blue); background: rgba(59,130,246,0.07); }
+    .ob-horizon-opt input[type="radio"] { flex-shrink: 0; accent-color: var(--blue); width: 16px; height: 16px; }
+    .ob-horizon-body { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+    .ob-horizon-label { font-size: 14px; }
+    .ob-horizon-ret { font-size: 12px; font-family: monospace; color: var(--muted); white-space: nowrap; }
+    .ob-horizon-note { font-size: 12px; color: var(--muted); line-height: 1.7; margin-bottom: 16px; }
+    .ob-nav-row { display: flex; gap: 8px; }
+    .ob-nav-row .btn { flex: 1; justify-content: center; padding: 12px; }
+    .ob-mode-cards { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+    /* Time horizon banners on signal cards */
+    .th-warning-banner { background: rgba(245,158,11,0.09); border: 1px solid rgba(245,158,11,0.35); border-radius: 7px; padding: 10px 12px; font-size: 12px; color: var(--amber); line-height: 1.65; margin-bottom: 12px; }
+    .th-info-banner { background: rgba(59,130,246,0.07); border: 1px solid rgba(59,130,246,0.25); border-radius: 7px; padding: 10px 12px; font-size: 12px; color: var(--blue); line-height: 1.65; margin-bottom: 12px; }
+    /* First signal tooltip */
+    .fst-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 80; display: flex; align-items: flex-start; justify-content: center; padding: 70px 16px 20px; }
+    .fst-card { max-width: 380px; width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 18px; }
+    .fst-icon { font-size: 26px; margin-bottom: 8px; }
+    .fst-title { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+    .fst-body { font-size: 13px; color: var(--muted); line-height: 1.7; margin-bottom: 16px; }
+    /* Settings selects */
+    .settings-select { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 8px; font-size: 12px; font-family: inherit; }
   </style>
 </head>
 <body>
 <div id="app">
 
-  <!-- Onboarding overlay (hidden after first visit) -->
+  <!-- Onboarding overlay — 3 screens, shown on first visit only -->
   <div id="onboarding" class="onboarding-overlay" style="display:none;">
-    <div class="onboarding-card">
-      <h2>&#128200; Recovery Detector</h2>
-      <p class="ob-sub">How would you like to use this?</p>
-      <button class="ob-option" onclick="setMode('fresh')">
-        <div class="ob-title">&#128315; Fresh Start</div>
-        <div class="ob-desc">See today's recovery buy signals across 50 large-cap stocks and track positions you enter.</div>
-      </button>
-      <button class="ob-option" onclick="setMode('portfolio')">
-        <div class="ob-title">&#128188; I Have a Portfolio</div>
-        <div class="ob-desc">Monitor stocks you already own — price alerts, news, and recovery signals on your holdings.</div>
-      </button>
-      <button class="ob-option" onclick="setMode('both')">
-        <div class="ob-title">&#128202; Both</div>
-        <div class="ob-desc">See new recovery signals AND monitor your existing holdings at the same time.</div>
-      </button>
+
+    <!-- Screen 1: What this is -->
+    <div id="ob-screen-1" class="ob-screen">
+      <div class="ob-screen-card">
+        <div class="ob-icon">&#128185;</div>
+        <h2 class="ob-h2">Recovery Detector</h2>
+        <p class="ob-lead">This app does one thing:</p>
+        <p class="ob-big">It tells you <em>WHEN</em> to buy<br>a stock &mdash; not which one.</p>
+        <p class="ob-body">We scan 50 large-cap stocks every day and find the ones in a deep dip with early signs of recovery.</p>
+        <div class="ob-stat-row">
+          <div class="ob-stat">
+            <div class="ob-stat-val">+49.2%</div>
+            <div class="ob-stat-lbl">avg 12m return</div>
+          </div>
+          <div class="ob-stat">
+            <div class="ob-stat-val">+22.3%</div>
+            <div class="ob-stat-lbl">random entry</div>
+          </div>
+          <div class="ob-stat">
+            <div class="ob-stat-val">7 yrs</div>
+            <div class="ob-stat-lbl">validated</div>
+          </div>
+        </div>
+        <hr class="ob-divider">
+        <div class="ob-not-title">What this is NOT:</div>
+        <div class="ob-not-list">
+          ✗ Not a guarantee<br>
+          ✗ Not investment advice<br>
+          ✗ Not a stock picker<br>
+          ✗ Not for short-term trading
+        </div>
+        <div class="ob-caveat">1 in 4 signals ends negative.<br>You always decide.</div>
+        <button class="btn btn-primary ob-next-btn" onclick="obNext(2)">Next &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Screen 2: Time horizon -->
+    <div id="ob-screen-2" class="ob-screen" style="display:none;">
+      <div class="ob-screen-card">
+        <h2 class="ob-h2">One important question<br>before you start.</h2>
+        <p class="ob-lead" style="margin-bottom:16px;">How long are you willing to hold a position?</p>
+        <div class="ob-horizon-group">
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="under_3m">
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">Less than 3 months</span>
+              <span class="ob-horizon-ret">avg +6.4%</span>
+            </span>
+          </label>
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="3_to_6m">
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">3 to 6 months</span>
+              <span class="ob-horizon-ret">avg +11.9%</span>
+            </span>
+          </label>
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="6_to_12m" checked>
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">6 to 12 months</span>
+              <span class="ob-horizon-ret" style="color:var(--green);">avg +49.2% &#10003;</span>
+            </span>
+          </label>
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="over_12m">
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">More than 12 months</span>
+              <span class="ob-horizon-ret">avg +49.2%*</span>
+            </span>
+          </label>
+        </div>
+        <hr class="ob-divider">
+        <p class="ob-horizon-note">
+          This signal works best at 12 months (+49.2% avg).<br>
+          At 3 months: +6.4% avg &nbsp;&middot;&nbsp; At 6 months: +11.9% avg.<br><br>
+          If you select under 6 months, every signal card will show a caution warning &mdash; the edge is weak at short horizons.
+        </p>
+        <div class="ob-nav-row">
+          <button class="btn btn-ghost" onclick="obBack(1)">&larr; Back</button>
+          <button class="btn btn-primary" onclick="obNext(3)">Next &rarr;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen 3: Mode selection — tap a card to complete -->
+    <div id="ob-screen-3" class="ob-screen" style="display:none;">
+      <div class="ob-screen-card">
+        <h2 class="ob-h2">How do you want<br>to start?</h2>
+        <div class="ob-mode-cards">
+          <button class="ob-option" onclick="completeOnboarding('fresh')">
+            <div class="ob-title">&#127378; Starting fresh</div>
+            <div class="ob-desc">I have no positions. Show me today's best opportunities.</div>
+          </button>
+          <button class="ob-option" onclick="completeOnboarding('existing')">
+            <div class="ob-title">&#128203; I have existing stocks</div>
+            <div class="ob-desc">I hold stocks already. Alert me when something happens to them.</div>
+          </button>
+          <button class="ob-option" onclick="completeOnboarding('both')">
+            <div class="ob-title">&#128256; Both</div>
+            <div class="ob-desc">Show opportunities AND monitor my holdings.</div>
+          </button>
+        </div>
+        <button class="btn btn-ghost ob-back-solo" onclick="obBack(2)">&larr; Back</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- First-signal tooltip (shown once, after onboarding) -->
+  <div id="first-signal-tooltip" class="fst-overlay" style="display:none;">
+    <div class="fst-card">
+      <div class="fst-icon">&#128161;</div>
+      <div class="fst-title">How to read this</div>
+      <div class="fst-body">
+        This stock is in a significant dip and showing early recovery signs.<br><br>
+        Tap <b>Why now?</b> for the full analysis.<br>
+        Tap <b>Track</b> to record your entry if you buy.<br><br>
+        Remember: hold 12 months. Expect a bumpy ride.<br>
+        1 in 4 signals ends negative.
+      </div>
+      <button class="btn btn-primary" style="width:100%;padding:12px;font-size:14px;justify-content:center;" onclick="dismissFirstSignalTooltip()">Got it</button>
     </div>
   </div>
 
@@ -723,11 +871,41 @@
 
     <!-- Tab: Settings -->
     <div id="tab-settings" class="tab-pane">
-      <div class="section-title">My Mode</div>
+      <div class="section-title">My Profile</div>
       <div class="card">
-        <div style="font-size:13px;color:var(--muted);margin-bottom:10px;" id="current-mode-label">Mode: &mdash;</div>
-        <button class="btn btn-ghost btn-sm" onclick="showOnboarding()">Change mode</button>
+        <div class="about-row">
+          <span>Time horizon</span>
+          <select id="settings-horizon" class="settings-select" onchange="saveTimeHorizon(this.value)">
+            <option value="under_3m">Under 3 months</option>
+            <option value="3_to_6m">3 to 6 months</option>
+            <option value="6_to_12m">6 to 12 months</option>
+            <option value="over_12m">Over 12 months</option>
+          </select>
+        </div>
+        <div class="about-row">
+          <span>Mode</span>
+          <select id="settings-mode" class="settings-select" onchange="saveMode(this.value)">
+            <option value="fresh">Fresh start</option>
+            <option value="existing">Existing stocks</option>
+            <option value="both">Both</option>
+          </select>
+        </div>
       </div>
+
+      <div class="section-title">Reset</div>
+      <div class="card">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">Clears all preferences and restarts the onboarding flow.</div>
+        <button class="btn btn-danger btn-sm" onclick="resetOnboarding()">Start onboarding again</button>
+      </div>
+
+      <div id="settings-portfolio-section" style="display:none;">
+        <div class="section-title">My Portfolio</div>
+        <div class="card" id="settings-portfolio-list">
+          <div class="loading" style="padding:10px 0;">Loading&hellip;</div>
+        </div>
+      </div>
+
+      <div id="current-mode-label" style="display:none;"></div>
 
       <div class="section-title">About This Signal</div>
       <div class="card">

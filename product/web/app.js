@@ -39,22 +39,27 @@ function escHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-// ── Mode / Onboarding ─────────────────────────────────────────────────────────
+// ── Onboarding ────────────────────────────────────────────────────────────────
+
 function checkMode() {
-  var mode = localStorage.getItem('user_mode');
-  if (!mode) {
+  if (localStorage.getItem('onboarding_complete') === 'true') {
+    var mode = localStorage.getItem('user_mode') || 'fresh';
+    if (mode === 'portfolio') {        // backward compat: old value → new name
+      mode = 'existing';
+      localStorage.setItem('user_mode', 'existing');
+    }
+    _userMode = mode;
+    updateTabBar();
+    activateDefaultTab();
+  } else {
     showOnboarding();
-    return;
   }
-  _userMode = mode;
-  hideOnboarding();
-  updateTabBar();
-  activateDefaultTab();
 }
 
 function showOnboarding() {
   var el = document.getElementById('onboarding');
   if (el) el.style.display = 'flex';
+  showOnboardingScreen(1);
 }
 
 function hideOnboarding() {
@@ -62,27 +67,42 @@ function hideOnboarding() {
   if (el) el.style.display = 'none';
 }
 
-function setMode(mode) {
-  _userMode = mode;
+function showOnboardingScreen(n) {
+  [1, 2, 3].forEach(function (i) {
+    var s = document.getElementById('ob-screen-' + i);
+    if (s) s.style.display = (i === n) ? '' : 'none';
+  });
+}
+
+function obNext(toScreen) { showOnboardingScreen(toScreen); }
+function obBack(toScreen)  { showOnboardingScreen(toScreen); }
+
+function completeOnboarding(mode) {
+  var sel = document.querySelector('input[name="time_horizon"]:checked');
+  var th  = sel ? sel.value : '6_to_12m';
+  localStorage.setItem('user_time_horizon', th);
   localStorage.setItem('user_mode', mode);
+  localStorage.setItem('onboarding_complete', 'true');
   hideOnboarding();
+  _userMode = mode;
   updateTabBar();
   activateDefaultTab();
 }
 
 var _MODE_LABELS = {
-  fresh:     'Fresh Start — see recovery signals',
-  portfolio: 'Portfolio — monitor my holdings',
-  both:      'Both — signals + portfolio monitoring'
+  fresh:    'Fresh Start — see recovery signals',
+  existing: 'Existing Stocks — monitor my holdings',
+  portfolio: 'Existing Stocks — monitor my holdings',  // backward compat
+  both:     'Both — signals + portfolio monitoring'
 };
 
 function updateTabBar() {
-  var showSignals   = (_userMode === 'fresh'     || _userMode === 'both');
-  var showPositions = (_userMode === 'fresh'     || _userMode === 'both');
-  var showPortfolio = (_userMode === 'portfolio' || _userMode === 'both');
-  var showAlerts    = (_userMode === 'portfolio' || _userMode === 'both');
-  var showSimulator = (_userMode === 'fresh'     || _userMode === 'both');
-  // Settings always visible
+  var isExisting  = (_userMode === 'existing' || _userMode === 'portfolio');
+  var showSignals   = (_userMode === 'fresh' || _userMode === 'both');
+  var showPositions = (_userMode === 'fresh');    // positions tab only for fresh mode
+  var showPortfolio = (isExisting || _userMode === 'both');
+  var showAlerts    = (isExisting || _userMode === 'both');
+  // simulator + settings always visible
 
   function setVis(tab, show) {
     var btn = document.querySelector('[data-tab="' + tab + '"]');
@@ -92,19 +112,16 @@ function updateTabBar() {
   setVis('positions', showPositions);
   setVis('portfolio', showPortfolio);
   setVis('alerts',    showAlerts);
-  setVis('simulator', showSimulator);
-
-  var lbl = document.getElementById('current-mode-label');
-  if (lbl) lbl.textContent = 'Mode: ' + (_MODE_LABELS[_userMode] || _userMode);
 }
 
 function activateDefaultTab() {
-  if (_userMode === 'fresh' || _userMode === 'both') {
-    switchTab('signals');
-    loadSignals();
-  } else {
+  var isExisting = (_userMode === 'existing' || _userMode === 'portfolio');
+  if (isExisting) {
     switchTab('portfolio');
     loadPortfolio();
+  } else {
+    switchTab('signals');
+    loadSignals();
   }
 }
 
@@ -120,6 +137,7 @@ function switchTab(tab) {
   if (tab === 'positions') loadPositions();
   if (tab === 'portfolio') loadPortfolio();
   if (tab === 'alerts')    loadPortfolioAlerts();
+  if (tab === 'settings')  loadSettings();
   var simBtn = document.getElementById('sim-run-btn');
   if (tab !== 'simulator' && simBtn) simBtn.disabled = false;
 }
@@ -165,12 +183,46 @@ function renderSignals(data) {
   }
 
   ctr.innerHTML = data.buy_signals.map(sigCardHTML).join('');
+  maybeShowFirstSignalTooltip();
+}
+
+function timeHorizonBannerHTML() {
+  var th = localStorage.getItem('user_time_horizon') || '6_to_12m';
+  if (th === 'under_3m' || th === '3_to_6m') {
+    return '<div class="th-warning-banner">'
+      + '&#9888;&#65039; Your time horizon is under 6 months. '
+      + 'This signal\'s edge is strongest at 12 months. '
+      + 'At 3&ndash;6 months: avg +6&ndash;12%. Proceed with extra caution.'
+      + '</div>';
+  }
+  if (th === 'over_12m') {
+    return '<div class="th-info-banner">'
+      + '&#8505;&#65039; You plan to hold beyond 12 months. '
+      + 'The signal has no validated edge past 252 days. '
+      + 'You may hold longer at your own discretion.'
+      + '</div>';
+  }
+  return '';
+}
+
+function maybeShowFirstSignalTooltip() {
+  if (localStorage.getItem('first_signal_seen') === 'true') return;
+  var el = document.getElementById('first-signal-tooltip');
+  if (el) el.style.display = 'flex';
+}
+
+function dismissFirstSignalTooltip() {
+  localStorage.setItem('first_signal_seen', 'true');
+  var el = document.getElementById('first-signal-tooltip');
+  if (el) el.style.display = 'none';
 }
 
 function sigCardHTML(s) {
   var pct = Math.round((s.composite_score || 0) * 100);
+  var thBanner = timeHorizonBannerHTML();
   return [
     '<div class="card" id="card-' + s.ticker + '">',
+    thBanner,
     '  <div class="sig-ticker">',
     '    <span>&#128315; ' + s.ticker + '</span>',
     '    <span class="buy-badge">BUY</span>',
@@ -936,6 +988,102 @@ function fmtK(n) {
   if (v >= 1000000) return (v / 1000000).toFixed(2) + 'M';
   if (v >= 1000)    return (v / 1000).toFixed(0) + 'K';
   return String(v);
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+function loadSettings() {
+  var hEl = document.getElementById('settings-horizon');
+  var mEl = document.getElementById('settings-mode');
+  var th  = localStorage.getItem('user_time_horizon') || '6_to_12m';
+  var m   = localStorage.getItem('user_mode') || 'fresh';
+  if (m === 'portfolio') m = 'existing';
+  if (hEl) hEl.value = th;
+  if (mEl) mEl.value = m;
+
+  // Show/hide portfolio section based on mode
+  var isExisting = (m === 'existing' || m === 'both');
+  var sec = document.getElementById('settings-portfolio-section');
+  if (sec) {
+    sec.style.display = isExisting ? '' : 'none';
+    if (isExisting) loadSettingsPortfolio();
+  }
+}
+
+function loadSettingsPortfolio() {
+  var ctr = document.getElementById('settings-portfolio-list');
+  if (!ctr) return;
+  fetch('/api/portfolio')
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      var holdings = data.holdings || [];
+      if (!holdings.length) {
+        ctr.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:4px 0;">No holdings yet. Add them in the Portfolio tab.</div>';
+        return;
+      }
+      ctr.innerHTML = holdings.map(function (h) {
+        var retStr = h.current_return_pct !== null && h.current_return_pct !== undefined
+          ? ' <span style="font-family:monospace;font-size:12px;color:' + (h.current_return_pct >= 0 ? 'var(--green)' : 'var(--red)') + ';">'
+            + (h.current_return_pct >= 0 ? '+' : '') + h.current_return_pct.toFixed(1) + '%</span>'
+          : '';
+        return '<div class="about-row" style="align-items:center;">'
+          + '<span style="font-weight:600;">' + escHtml(h.ticker) + retStr + '</span>'
+          + '<button class="btn btn-danger btn-sm" onclick="settingsRemoveHolding(\'' + escHtml(h.ticker) + '\')">Remove</button>'
+          + '</div>';
+      }).join('');
+    })
+    .catch(function () {
+      if (ctr) ctr.innerHTML = '<div style="font-size:12px;color:var(--muted);">Could not load portfolio.</div>';
+    });
+}
+
+function settingsRemoveHolding(ticker) {
+  if (!confirm('Remove ' + ticker + ' from portfolio?')) return;
+  _portfolio = _portfolio.filter(function (h) { return h.ticker !== ticker; });
+  // If _portfolio is empty (not loaded yet), fetch first then remove
+  fetch('/api/portfolio')
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      var remaining = (data.holdings || []).filter(function (h) { return h.ticker !== ticker; });
+      return fetch('/api/portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ holdings: remaining }),
+      });
+    })
+    .then(function () {
+      loadSettingsPortfolio();
+      showToast(ticker + ' removed');
+    })
+    .catch(function () { showToast('Failed to remove'); });
+}
+
+function saveTimeHorizon(val) {
+  localStorage.setItem('user_time_horizon', val);
+  showToast('Time horizon updated');
+}
+
+function saveMode(val) {
+  localStorage.setItem('user_mode', val);
+  _userMode = val;
+  updateTabBar();
+  showToast('Mode updated');
+  // Show/hide portfolio section in settings
+  var isExisting = (val === 'existing' || val === 'both');
+  var sec = document.getElementById('settings-portfolio-section');
+  if (sec) {
+    sec.style.display = isExisting ? '' : 'none';
+    if (isExisting) loadSettingsPortfolio();
+  }
+}
+
+function resetOnboarding() {
+  if (!confirm('Restart onboarding?\nThis will clear your preferences.')) return;
+  localStorage.removeItem('onboarding_complete');
+  localStorage.removeItem('user_mode');
+  localStorage.removeItem('user_time_horizon');
+  localStorage.removeItem('first_signal_seen');
+  location.reload();
 }
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────────
