@@ -390,12 +390,6 @@
       background: rgba(245,158,11,0.15); color: var(--amber);
       border: 1px solid rgba(245,158,11,0.3); white-space: nowrap;
     }
-    .short-badge {
-      font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
-      padding: 1px 5px; border-radius: 3px;
-      background: rgba(239,68,68,0.15); color: var(--red);
-      border: 1px solid rgba(239,68,68,0.3); white-space: nowrap;
-    }
 
     /* ── Alert cards ── */
     .alert-card {
@@ -630,13 +624,6 @@
           </label>
           <div style="font-size:11px;color:var(--muted);margin-top:5px;padding-left:22px;">TP / SL / trailing stop override all other exit rules when triggered</div>
         </div>
-        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
-            <input type="checkbox" id="short-enable">
-            <span>Short mode &mdash; short the signal instead of going long <span style="color:var(--muted);font-size:11px;">(experimental)</span></span>
-          </label>
-          <div style="font-size:11px;color:var(--muted);margin-top:5px;padding-left:22px;">Profit when signal stocks fall. TP/SL/TS directions invert automatically.</div>
-        </div>
       </div>
 
       <!-- Position size -->
@@ -721,12 +708,6 @@
               <span>Trailing stop &minus;</span>
               <input type="number" id="ts-pct-B" class="exit-threshold-input" value="25" min="5" max="80" step="5" disabled>
               <span>% from peak</span>
-            </label>
-          </div>
-          <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
-              <input type="checkbox" id="short-enable-B">
-              <span>Short mode <span style="color:var(--muted);font-size:11px;">(experimental)</span></span>
             </label>
           </div>
         </div>

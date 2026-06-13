@@ -577,7 +577,6 @@ function _getSimParams(suffix) {
   var slValId   = 'sl-pct'     + (suffix ? '-' + suffix : '');
   var tsEnId    = 'ts-enable'  + (suffix ? '-' + suffix : '');
   var tsValId   = 'ts-pct'     + (suffix ? '-' + suffix : '');
-  var shortEnId = 'short-enable' + (suffix ? '-' + suffix : '');
   var etEl      = document.querySelector('input[name="' + etName + '"]:checked');
   var emEl      = document.querySelector('input[name="' + emName + '"]:checked');
   var tpEnabled = (document.getElementById(tpEnId) || {}).checked;
@@ -586,7 +585,6 @@ function _getSimParams(suffix) {
   var slVal     = slEnabled ? parseFloat((document.getElementById(slValId) || {}).value || 20) : 0;
   var tsEnabled = (document.getElementById(tsEnId) || {}).checked;
   var tsVal     = tsEnabled ? parseFloat((document.getElementById(tsValId) || {}).value || 25) : 0;
-  var shortMode = !!(document.getElementById(shortEnId) || {}).checked;
   var et        = etEl ? parseFloat(etEl.value) : 0.80;
   var em        = emEl ? emEl.value : '252d_only';
   var ps        = parseFloat((document.getElementById('pos-size-slider') || {}).value || 10);
@@ -600,7 +598,6 @@ function _getSimParams(suffix) {
     take_profit_pct:   tpVal,
     stop_loss_pct:      slVal,
     trailing_stop_pct:  tsVal,
-    short_mode:         shortMode,
     position_size_pct:  ps,
     max_positions:     10,
     start_date:        sd,
@@ -675,12 +672,11 @@ function renderSimResults(data, scenario) {
   var params = data.params;
   scenario = scenario || 'A';
 
-  var isShort = !!(params.short_mode);
-  var exitLabel = (isShort ? 'SHORT · ' : '') + ({
+  var exitLabel = {
     '252d_only':        'Hold 12 months',
     'threshold_or_252d': 'Threshold or 12m',
     'threshold_only':   'Threshold exit',
-  }[params.exit_mode] || params.exit_mode);
+  }[params.exit_mode] || params.exit_mode;
   if (params.take_profit_pct && params.take_profit_pct > 0) {
     exitLabel += ' · TP +' + fmt(params.take_profit_pct, 0) + '%';
   }
@@ -688,7 +684,7 @@ function renderSimResults(data, scenario) {
     exitLabel += ' · SL −' + fmt(params.stop_loss_pct, 0) + '%';
   }
   if (params.trailing_stop_pct && params.trailing_stop_pct > 0) {
-    exitLabel += ' · TS −' + fmt(params.trailing_stop_pct, 0) + '% from ' + (isShort ? 'trough' : 'peak');
+    exitLabel += ' · TS −' + fmt(params.trailing_stop_pct, 0) + '% from peak';
   }
 
   var hasOpen   = s.final_portfolio !== s.final_portfolio_realized;
@@ -857,13 +853,12 @@ function detailRow(label, val) {
 }
 
 function tradeRowHTML(t, isOpen) {
-  var isShort  = t.direction === -1;
-  var cls      = t.return_pct >= 0 ? 'ret-pos' : 'ret-neg';
-  var retStr   = (t.return_pct >= 0 ? '+' : '') + fmt(t.return_pct, 1) + '%';
+  var cls    = t.return_pct >= 0 ? 'ret-pos' : 'ret-neg';
+  var retStr = (t.return_pct >= 0 ? '+' : '') + fmt(t.return_pct, 1) + '%';
   var retLabel = retStr + (isOpen ? ' <span style="font-size:10px;font-weight:400;color:var(--muted);">unrealized</span>' : '');
 
-  var entryPx   = '$' + fmt(t.entry_price, 2);
-  var exitPx    = '$' + fmt(t.exit_price,  2);
+  var entryPx = '$' + fmt(t.entry_price, 2);
+  var exitPx  = '$' + fmt(t.exit_price,  2);
   var pricesStr = entryPx + ' &rarr; ' + exitPx + (isOpen ? ' <span style="color:var(--muted);">(now)</span>' : '');
 
   var entryMo = (t.entry_date || '').substring(0, 10);
@@ -873,10 +868,10 @@ function tradeRowHTML(t, isOpen) {
     datesStr = 'entered ' + entryMo + ' &middot; ' + t.hold_days + 'd held';
   } else {
     var reasonTag = '';
-    if (t.exit_reason === 'take_profit')         reasonTag = ' &middot; TP &#9650;';
-    else if (t.exit_reason === 'trailing_stop')  reasonTag = ' &middot; TS &#9660;';
-    else if (t.exit_reason === 'stop_loss')      reasonTag = ' &middot; SL &#9660;';
-    else if (t.exit_reason === 'threshold')      reasonTag = ' &middot; signal exit';
+    if (t.exit_reason === 'take_profit')    reasonTag = ' &middot; TP &#9650;';
+    else if (t.exit_reason === 'trailing_stop') reasonTag = ' &middot; TS &#9660;';
+    else if (t.exit_reason === 'stop_loss')     reasonTag = ' &middot; SL &#9660;';
+    else if (t.exit_reason === 'threshold')     reasonTag = ' &middot; signal exit';
     datesStr = entryMo + ' &rarr; ' + exitMo + ' &middot; ' + t.hold_days + 'd' + reasonTag;
   }
 
@@ -884,8 +879,7 @@ function tradeRowHTML(t, isOpen) {
     '<div class="trade-row' + (isOpen ? ' tr-open-pos' : '') + '">',
     '  <div class="tr-main">',
     '    <span class="tr-ticker">' + t.ticker + '</span>',
-    (isShort  ? '    <span class="short-badge">SHORT</span>' : ''),
-    (isOpen   ? '    <span class="open-badge">OPEN</span>'  : ''),
+    (isOpen ? '    <span class="open-badge">OPEN</span>' : ''),
     '    <span class="tr-ret ' + cls + '">' + retLabel + '</span>',
     '  </div>',
     '  <div class="tr-sub">',
