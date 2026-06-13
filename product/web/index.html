@@ -616,7 +616,13 @@
             <input type="number" id="sl-pct" class="exit-threshold-input" value="20" min="5" max="80" step="5" disabled>
             <span>%</span>
           </label>
-          <div style="font-size:11px;color:var(--muted);margin-top:5px;padding-left:22px;">TP and SL override all other exit rules when triggered</div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-top:10px;">
+            <input type="checkbox" id="ts-enable" onchange="toggleTpInput('ts-pct', this)">
+            <span>Trailing stop &minus;</span>
+            <input type="number" id="ts-pct" class="exit-threshold-input" value="25" min="5" max="80" step="5" disabled>
+            <span>% from peak</span>
+          </label>
+          <div style="font-size:11px;color:var(--muted);margin-top:5px;padding-left:22px;">TP / SL / trailing stop override all other exit rules when triggered</div>
         </div>
       </div>
 
@@ -696,6 +702,12 @@
               <span>Stop loss at &minus;</span>
               <input type="number" id="sl-pct-B" class="exit-threshold-input" value="20" min="5" max="80" step="5" disabled>
               <span>%</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-top:10px;">
+              <input type="checkbox" id="ts-enable-B" onchange="toggleTpInput('ts-pct-B', this)">
+              <span>Trailing stop &minus;</span>
+              <input type="number" id="ts-pct-B" class="exit-threshold-input" value="25" min="5" max="80" step="5" disabled>
+              <span>% from peak</span>
             </label>
           </div>
         </div>

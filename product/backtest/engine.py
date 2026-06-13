@@ -122,6 +122,10 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     sl_raw = params.get("stop_loss_pct", 0.0)
     stop_loss_pct: float = float(sl_raw) / 100.0 if float(sl_raw or 0) > 1 else float(sl_raw or 0)
 
+    # Trailing stop — 0 means disabled; exits when price drops X% from peak since entry
+    ts_raw = params.get("trailing_stop_pct", 0.0)
+    trailing_stop_pct: float = float(ts_raw) / 100.0 if float(ts_raw or 0) > 1 else float(ts_raw or 0)
+
     # ── Trading calendar ───────────────────────────────────────────────────────
     if spy_ohlcv is not None and not spy_ohlcv.empty:
         trading_dates = [
@@ -193,15 +197,23 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             comp = _safe_float(row.get("composite_score"))
             hold = int(np.busday_count(pos["entry_date"].isoformat(), today.isoformat()))
 
+            # Update peak price (high-water mark since entry)
+            if cp > pos.get("peak_price", pos["entry_price"]):
+                pos["peak_price"] = cp
+
             reason: Optional[str] = None
 
-            gain = cp / pos["entry_price"] - 1
+            gain        = cp / pos["entry_price"] - 1
+            peak        = pos.get("peak_price", pos["entry_price"])
+            from_peak   = cp / peak - 1  # always ≤ 0 on the day it triggers
 
-            # TP and SL fire before any other exit rule
+            # TP, SL, and trailing stop fire before any other exit rule
             if take_profit_pct > 0 and gain >= take_profit_pct:
                 reason = "take_profit"
             elif stop_loss_pct > 0 and gain <= -stop_loss_pct:
                 reason = "stop_loss"
+            elif trailing_stop_pct > 0 and from_peak <= -trailing_stop_pct:
+                reason = "trailing_stop"
             elif hold_days_param is not None:
                 # Optimization mode
                 if hold >= hold_days_param:
@@ -285,6 +297,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                 positions[tkr] = {
                     "entry_date":     today,
                     "entry_price":    cp,
+                    "peak_price":     cp,
                     "shares":         shares,
                     "position_value": alloc,
                 }
@@ -334,12 +347,14 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     mean_ret     = float(np.mean(rets))                                   if rets   else 0.0
     pct_pos      = float(sum(1 for r in rets if r > 0) / max(1, n_trades) * 100)
     avg_hold     = float(np.mean([t["hold_days"] for t in trades]))        if trades else 0.0
-    pct_thresh      = float(sum(1 for t in trades if t["exit_reason"] == "threshold")
-                            / max(1, n_trades) * 100)
-    pct_stop_loss   = float(sum(1 for t in trades if t["exit_reason"] == "stop_loss")
-                            / max(1, n_trades) * 100)
-    pct_take_profit = float(sum(1 for t in trades if t["exit_reason"] == "take_profit")
-                            / max(1, n_trades) * 100)
+    pct_thresh         = float(sum(1 for t in trades if t["exit_reason"] == "threshold")
+                               / max(1, n_trades) * 100)
+    pct_stop_loss      = float(sum(1 for t in trades if t["exit_reason"] == "stop_loss")
+                               / max(1, n_trades) * 100)
+    pct_trailing_stop  = float(sum(1 for t in trades if t["exit_reason"] == "trailing_stop")
+                               / max(1, n_trades) * 100)
+    pct_take_profit    = float(sum(1 for t in trades if t["exit_reason"] == "take_profit")
+                               / max(1, n_trades) * 100)
     pct_time_inv = n_days_invested / max(1, len(trading_dates)) * 100
 
     # SPY metrics
@@ -407,6 +422,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "avg_hold_days":          round(avg_hold, 1),
             "pct_exit_via_threshold": round(pct_thresh, 1),
             "pct_stop_loss":          round(pct_stop_loss, 1),
+            "pct_trailing_stop":      round(pct_trailing_stop, 1),
             "pct_take_profit":        round(pct_take_profit, 1),
             "mean_return_pct":        round(mean_ret, 2),
             "pct_positive":           round(pct_pos, 1),

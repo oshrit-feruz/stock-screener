@@ -575,12 +575,16 @@ function _getSimParams(suffix) {
   var tpValId   = 'tp-pct'     + (suffix ? '-' + suffix : '');
   var slEnId    = 'sl-enable'  + (suffix ? '-' + suffix : '');
   var slValId   = 'sl-pct'     + (suffix ? '-' + suffix : '');
+  var tsEnId    = 'ts-enable'  + (suffix ? '-' + suffix : '');
+  var tsValId   = 'ts-pct'     + (suffix ? '-' + suffix : '');
   var etEl      = document.querySelector('input[name="' + etName + '"]:checked');
   var emEl      = document.querySelector('input[name="' + emName + '"]:checked');
   var tpEnabled = (document.getElementById(tpEnId) || {}).checked;
   var tpVal     = tpEnabled ? parseFloat((document.getElementById(tpValId) || {}).value || 30) : 0;
   var slEnabled = (document.getElementById(slEnId) || {}).checked;
   var slVal     = slEnabled ? parseFloat((document.getElementById(slValId) || {}).value || 20) : 0;
+  var tsEnabled = (document.getElementById(tsEnId) || {}).checked;
+  var tsVal     = tsEnabled ? parseFloat((document.getElementById(tsValId) || {}).value || 25) : 0;
   var et        = etEl ? parseFloat(etEl.value) : 0.80;
   var em        = emEl ? emEl.value : '252d_only';
   var ps        = parseFloat((document.getElementById('pos-size-slider') || {}).value || 10);
@@ -592,8 +596,9 @@ function _getSimParams(suffix) {
     exit_threshold:    exv,
     exit_mode:         em,
     take_profit_pct:   tpVal,
-    stop_loss_pct:     slVal,
-    position_size_pct: ps,
+    stop_loss_pct:      slVal,
+    trailing_stop_pct:  tsVal,
+    position_size_pct:  ps,
     max_positions:     10,
     start_date:        sd,
     end_date:          ed,
@@ -677,6 +682,9 @@ function renderSimResults(data, scenario) {
   }
   if (params.stop_loss_pct && params.stop_loss_pct > 0) {
     exitLabel += ' · SL −' + fmt(params.stop_loss_pct, 0) + '%';
+  }
+  if (params.trailing_stop_pct && params.trailing_stop_pct > 0) {
+    exitLabel += ' · TS −' + fmt(params.trailing_stop_pct, 0) + '% from peak';
   }
 
   var hasOpen   = s.final_portfolio !== s.final_portfolio_realized;
@@ -798,7 +806,8 @@ function renderSimResults(data, scenario) {
     detailRow('Win rate',         fmt(s.pct_positive, 0) + '%'),
     detailRow('Avg return/trade', (s.mean_return_pct >= 0 ? '+' : '') + fmt(s.mean_return_pct, 1) + '%'),
     detailRow('Time in market',   fmt(s.pct_time_invested, 0) + '%'),
-    (s.pct_stop_loss   > 0 ? detailRow('Stopped out (SL)',  fmt(s.pct_stop_loss, 0)   + '%') : ''),
+    (s.pct_stop_loss     > 0 ? detailRow('Stopped out (SL)',       fmt(s.pct_stop_loss, 0)     + '%') : ''),
+    (s.pct_trailing_stop > 0 ? detailRow('Trailing stop hit',      fmt(s.pct_trailing_stop, 0) + '%') : ''),
     (s.pct_take_profit > 0 ? detailRow('Exited via TP',    fmt(s.pct_take_profit, 0) + '%') : ''),
     detailRow('Max drawdown',     fmt(s.max_drawdown_pct, 1) + '%'),
     detailRow('Sharpe ratio',     fmt(s.sharpe, 2)),
@@ -859,8 +868,10 @@ function tradeRowHTML(t, isOpen) {
     datesStr = 'entered ' + entryMo + ' &middot; ' + t.hold_days + 'd held';
   } else {
     var reasonTag = '';
-    if (t.exit_reason === 'take_profit') reasonTag = ' &middot; TP &#9650;';
-    else if (t.exit_reason === 'threshold' || t.exit_reason === 'stop_loss') reasonTag = ' &middot; early exit';
+    if (t.exit_reason === 'take_profit')    reasonTag = ' &middot; TP &#9650;';
+    else if (t.exit_reason === 'trailing_stop') reasonTag = ' &middot; TS &#9660;';
+    else if (t.exit_reason === 'stop_loss')     reasonTag = ' &middot; SL &#9660;';
+    else if (t.exit_reason === 'threshold')     reasonTag = ' &middot; signal exit';
     datesStr = entryMo + ' &rarr; ' + exitMo + ' &middot; ' + t.hold_days + 'd' + reasonTag;
   }
 
