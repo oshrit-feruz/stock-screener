@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0f1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.json">
+  <title>Recovery Detector</title>
+  <style>
+    :root {
+      --bg:      #0f1117;
+      --surface: #1a1d27;
+      --border:  #2a2d3a;
+      --text:    #e8eaf0;
+      --muted:   #8b8fa8;
+      --green:   #22c55e;
+      --red:     #ef4444;
+      --amber:   #f59e0b;
+      --blue:    #3b82f6;
+      --white:   #ffffff;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #app {
+      max-width: 480px;
+      margin: 0 auto;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Onboarding overlay ── */
+    .onboarding-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .onboarding-card {
+      max-width: 380px;
+      width: 100%;
+    }
+    .onboarding-card h2 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+    .ob-sub { font-size: 14px; color: var(--muted); margin-bottom: 24px; line-height: 1.5; }
+    .ob-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      font-family: inherit;
+      color: var(--text);
+      transition: border-color 0.15s;
+    }
+    .ob-option:hover { border-color: var(--blue); }
+    .ob-option:active { opacity: 0.75; }
+    .ob-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+    .ob-desc  { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+    /* ── Header ── */
+    .header {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: var(--bg);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .header h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+    .header .sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* ── Content ── */
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 12px 90px;
+    }
+
+    /* ── Tab panes ── */
+    .tab-pane { display: none; padding-top: 12px; }
+    .tab-pane.active { display: block; }
+
+    /* ── Tab bar ── */
+    .tab-bar {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      z-index: 20;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 11px 4px 13px;
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: color 0.15s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tab-btn.active { color: var(--blue); font-weight: 600; }
+
+    /* ── Section title ── */
+    .section-title {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin: 16px 0 8px;
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+
+    /* ── Score / progress bars ── */
+    .bar-row { display: flex; align-items: center; gap: 8px; }
+    .bar-label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .bar-track {
+      flex: 1;
+      height: 5px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .bar-fill { height: 100%; border-radius: 3px; }
+    .bar-fill-blue   { background: var(--blue); }
+    .bar-fill-green  { background: var(--green); }
+    .bar-fill-amber  { background: var(--amber); }
+    .bar-val {
+      font-size: 12px;
+      font-family: monospace;
+      min-width: 32px;
+      text-align: right;
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 14px;
+      border-radius: 7px;
+      border: none;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.12s;
+    }
+    .btn:active { opacity: 0.65; }
+    .btn-ghost   { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .btn-primary { background: var(--blue); color: var(--white); }
+    .btn-danger  { background: transparent; border: 1px solid var(--red); color: var(--red); }
+    .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+    /* ── Signal card ── */
+    .sig-ticker {
+      font-size: 19px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .buy-badge {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(59,130,246,0.15);
+      color: var(--blue);
+      border: 1px solid rgba(59,130,246,0.3);
+    }
+    .sig-dd { font-size: 13px; color: var(--muted); margin-top: 3px; }
+    .sig-score-row { margin-top: 10px; }
+    .card-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+    /* ── Signal detail (expanded) ── */
+    .sig-detail { display: none; padding-top: 14px; margin-top: 14px; border-top: 1px solid var(--border); }
+    .sig-detail.open { display: block; }
+
+    .detail-row { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; }
+    .detail-row .dl { color: var(--muted); }
+    .detail-row .dv { font-family: monospace; }
+
+    .subsection { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted); margin: 14px 0 7px; }
+
+    .check { font-size: 13px; margin-bottom: 4px; }
+    .comp-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
+    .comp-label { color: var(--muted); width: 88px; flex-shrink: 0; }
+
+    .edge-box {
+      background: var(--bg);
+      border-radius: 7px;
+      padding: 10px 12px;
+      margin: 6px 0;
+    }
+    .edge-row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; }
+    .edge-row:last-child { margin-bottom: 0; }
+    .ev-green { font-family: monospace; color: var(--green); }
+    .ev-muted { font-family: monospace; color: var(--muted); }
+
+    .warn-text { font-size: 12px; color: var(--amber); margin: 10px 0; line-height: 1.65; }
+    .case { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+    .case-ret { color: var(--green); font-family: monospace; }
+
+    /* ── Track form (inline) ── */
+    .track-form { display: none; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .track-form.open { display: flex; }
+    .track-form label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .track-form input {
+      width: 110px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-family: monospace;
+    }
+    .track-form input:focus { outline: none; border-color: var(--blue); }
+
+    /* ── Position card ── */
+    .pos-header { display: flex; justify-content: space-between; align-items: flex-start; }
+    .pos-ticker { font-size: 18px; font-weight: 700; }
+    .ret-badge  { font-family: monospace; font-size: 15px; font-weight: 700; }
+    .ret-pos { color: var(--green); }
+    .ret-neg { color: var(--red);   }
+    .ret-neu { color: var(--muted); }
+    .pos-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .pos-meta b { font-family: monospace; color: var(--text); font-weight: 400; }
+    .prog-label { font-size: 11px; color: var(--muted); margin-top: 3px; text-align: right; }
+    .context-msg { font-size: 12px; color: var(--muted); font-style: italic; margin: 8px 0 0; line-height: 1.55; }
+
+    /* ── Portfolio cards ── */
+    .ph-header { display: flex; justify-content: space-between; align-items: flex-start; }
+    .ph-ticker { font-size: 18px; font-weight: 700; }
+    .ph-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .ph-meta b { font-family: monospace; color: var(--text); font-weight: 400; }
+    .ph-alerts-row { font-size: 11px; color: var(--muted); margin-top: 5px; }
+
+    /* ── Portfolio add-holding form ── */
+    .form-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .form-label {
+      font-size: 12px;
+      color: var(--muted);
+      width: 88px;
+      flex-shrink: 0;
+    }
+    .form-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 13px;
+      font-family: monospace;
+    }
+    .form-input:focus { outline: none; border-color: var(--blue); }
+    input[type="text"].form-input { text-transform: uppercase; }
+
+    /* ── Simulator ── */
+    .sim-disclaimer {
+      background: rgba(245,158,11,0.08);
+      border: 1px solid rgba(245,158,11,0.3);
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 12px;
+      color: var(--amber);
+      line-height: 1.65;
+      margin-bottom: 10px;
+    }
+    .radio-group { display: flex; flex-wrap: wrap; gap: 8px; }
+    .radio-option {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .radio-option:has(input:checked) {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+    .exit-option { margin-bottom: 10px; font-size: 13px; cursor: pointer; }
+    .exit-option:last-child { margin-bottom: 0; }
+    .exit-option label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; line-height: 1.5; }
+    .exit-option input[type="radio"] { margin-top: 3px; flex-shrink: 0; }
+    .exit-threshold-input {
+      width: 58px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 5px;
+      padding: 3px 7px;
+      font-size: 12px;
+      font-family: monospace;
+      vertical-align: middle;
+    }
+    .sim-cmp-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .sim-cmp-3col {
+      grid-template-columns: 1fr 1fr 1fr;
+    }
+    .sim-cmp-4col {
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+    }
+    .cmp-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .cmp-card .cmp-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; }
+    .cmp-val { font-size: 20px; font-weight: 700; font-family: monospace; }
+    .cmp-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .beat-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      margin: 8px 0;
+    }
+    .beat-yes { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+    .beat-no  { background: rgba(239,68,68,0.15);  color: var(--red);   border: 1px solid rgba(239,68,68,0.3); }
+    .yr-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .yr-row:last-child { border-bottom: none; }
+    .yr-year { font-weight: 600; width: 40px; }
+    .yr-bot  { font-family: monospace; width: 60px; }
+    .yr-spy  { font-family: monospace; width: 60px; color: var(--muted); }
+    .yr-tick { font-size: 14px; }
+    .trade-row { padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .trade-row:last-child { border-bottom: none; }
+    .tr-open-pos { background: rgba(59,130,246,0.05); border-radius: 6px; padding: 8px 6px; margin: 2px -4px; }
+    .tr-main { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+    .tr-sub  { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); gap: 6px; }
+    .tr-ticker { font-weight: 700; font-size: 13px; min-width: 44px; }
+    .tr-ret    { font-family: monospace; font-weight: 700; font-size: 13px; margin-left: auto; white-space: nowrap; }
+    .tr-prices { font-family: monospace; white-space: nowrap; }
+    .tr-dates  { text-align: right; white-space: nowrap; }
+    .open-badge {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+      padding: 1px 5px; border-radius: 3px;
+      background: rgba(245,158,11,0.15); color: var(--amber);
+      border: 1px solid rgba(245,158,11,0.3); white-space: nowrap;
+    }
+
+    /* ── Alert cards ── */
+    .alert-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+    .alert-type-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-bottom: 6px;
+    }
+    .at-up     { background: rgba(34,197,94,0.15);  color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+    .at-down   { background: rgba(239,68,68,0.15);  color: var(--red);   border: 1px solid rgba(239,68,68,0.3); }
+    .at-signal { background: rgba(59,130,246,0.15); color: var(--blue);  border: 1px solid rgba(59,130,246,0.3); }
+    .at-news   { background: rgba(245,158,11,0.15); color: var(--amber); border: 1px solid rgba(245,158,11,0.3); }
+    .alert-headline { font-size: 14px; font-weight: 500; line-height: 1.4; }
+    .alert-body {
+      display: none;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: pre-line;
+      margin-top: 10px;
+      line-height: 1.65;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+    }
+    .alert-body.open { display: block; }
+
+    /* ── Empty / loading / error states ── */
+    .empty { text-align: center; padding: 44px 20px; color: var(--muted); }
+    .empty .em-h { font-size: 16px; color: var(--text); margin-bottom: 10px; font-weight: 600; }
+    .empty p { font-size: 13px; line-height: 1.65; }
+    .loading { text-align: center; padding: 44px; color: var(--muted); font-size: 13px; }
+    .err-box {
+      background: rgba(239,68,68,0.08);
+      border: 1px solid var(--red);
+      border-radius: 8px;
+      padding: 12px 14px;
+      color: var(--red);
+      font-size: 13px;
+      margin: 14px 0;
+    }
+
+    /* ── Disclaimer ── */
+    .disclaimer { font-size: 11px; color: var(--muted); line-height: 1.55; margin-top: 12px; }
+
+    /* ── Cold-start loading banner ── */
+    #loading-banner {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 9999;
+      background: #1a1d27;
+      border-bottom: 1px solid var(--border);
+      padding: 14px 20px;
+      text-align: center;
+    }
+    #loading-banner .lb-icon { font-size: 22px; margin-bottom: 4px; }
+    #loading-banner .lb-title { font-size: 14px; font-weight: 600; color: var(--text); }
+    #loading-banner .lb-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    /* ── About rows ── */
+    .about-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .about-row:last-child { border-bottom: none; }
+    .about-val { font-family: monospace; color: var(--green); }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed;
+      bottom: 76px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 13px;
+      z-index: 50;
+      max-width: 88%;
+      text-align: center;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+      pointer-events: none;
+      transition: opacity 0.25s;
+    }
+    .toast.hidden { opacity: 0; pointer-events: none; }
+
+    /* ── New 3-screen onboarding ── */
+    .ob-screen { max-width: 400px; width: 100%; max-height: 92dvh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    .ob-screen-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px 20px 20px; }
+    .ob-icon { font-size: 34px; margin-bottom: 10px; }
+    .ob-h2 { font-size: 21px; font-weight: 700; line-height: 1.25; margin-bottom: 8px; }
+    .ob-lead { font-size: 14px; color: var(--muted); }
+    .ob-big { font-size: 18px; font-weight: 600; line-height: 1.4; margin: 8px 0 12px; }
+    .ob-big em { color: var(--blue); font-style: normal; }
+    .ob-body { font-size: 13px; color: var(--muted); line-height: 1.65; margin-bottom: 14px; }
+    .ob-stat-row { display: flex; gap: 7px; margin: 14px 0; }
+    .ob-stat { flex: 1; background: var(--bg); border-radius: 8px; padding: 10px 6px; text-align: center; }
+    .ob-stat-val { font-size: 14px; font-weight: 700; font-family: monospace; color: var(--green); }
+    .ob-stat-lbl { font-size: 10px; color: var(--muted); margin-top: 3px; line-height: 1.3; }
+    .ob-divider { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+    .ob-not-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted); margin-bottom: 8px; }
+    .ob-not-list { font-size: 13px; color: var(--red); line-height: 2.1; margin-bottom: 12px; }
+    .ob-caveat { font-size: 13px; color: var(--amber); margin-bottom: 18px; line-height: 1.5; }
+    .ob-next-btn { width: 100%; padding: 13px; font-size: 15px; justify-content: center; }
+    .ob-back-solo { width: 100%; margin-top: 10px; justify-content: center; }
+    .ob-horizon-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+    .ob-horizon-opt { display: flex; align-items: center; gap: 10px; background: var(--bg); border: 1.5px solid var(--border); border-radius: 10px; padding: 12px 14px; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+    .ob-horizon-opt:has(input:checked) { border-color: var(--blue); background: rgba(59,130,246,0.07); }
+    .ob-horizon-opt input[type="radio"] { flex-shrink: 0; accent-color: var(--blue); width: 16px; height: 16px; }
+    .ob-horizon-body { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+    .ob-horizon-label { font-size: 14px; }
+    .ob-horizon-ret { font-size: 12px; font-family: monospace; color: var(--muted); white-space: nowrap; }
+    .ob-horizon-note { font-size: 12px; color: var(--muted); line-height: 1.7; margin-bottom: 16px; }
+    .ob-nav-row { display: flex; gap: 8px; }
+    .ob-nav-row .btn { flex: 1; justify-content: center; padding: 12px; }
+    .ob-mode-cards { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+    /* Time horizon banners on signal cards */
+    .th-warning-banner { background: rgba(245,158,11,0.09); border: 1px solid rgba(245,158,11,0.35); border-radius: 7px; padding: 10px 12px; font-size: 12px; color: var(--amber); line-height: 1.65; margin-bottom: 12px; }
+    .th-info-banner { background: rgba(59,130,246,0.07); border: 1px solid rgba(59,130,246,0.25); border-radius: 7px; padding: 10px 12px; font-size: 12px; color: var(--blue); line-height: 1.65; margin-bottom: 12px; }
+    /* First signal tooltip */
+    .fst-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 80; display: flex; align-items: flex-start; justify-content: center; padding: 70px 16px 20px; }
+    .fst-card { max-width: 380px; width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 18px; }
+    .fst-icon { font-size: 26px; margin-bottom: 8px; }
+    .fst-title { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+    .fst-body { font-size: 13px; color: var(--muted); line-height: 1.7; margin-bottom: 16px; }
+    /* Settings selects */
+    .settings-select { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 8px; font-size: 12px; font-family: inherit; }
+  </style>
+</head>
+<body>
+
+<!-- Cold-start loading banner (Render free tier wake-up) -->
+<div id="loading-banner">
+  <div class="lb-icon">&#8987;</div>
+  <div class="lb-title" id="loading-banner-title">Starting up&hellip; (~30 seconds on first visit)</div>
+  <div class="lb-sub">Free tier wakes on first visit. This only happens once per session.</div>
+</div>
+
+<div id="app">
+
+  <!-- Onboarding overlay — 3 screens, shown on first visit only -->
+  <div id="onboarding" class="onboarding-overlay" style="display:none;">
+
+    <!-- Screen 1: What this is -->
+    <div id="ob-screen-1" class="ob-screen">
+      <div class="ob-screen-card">
+        <div class="ob-icon">&#128185;</div>
+        <h2 class="ob-h2">Recovery Detector</h2>
+        <p class="ob-lead">This app does one thing:</p>
+        <p class="ob-big">It tells you <em>WHEN</em> to buy<br>a stock &mdash; not which one.</p>
+        <p class="ob-body">We scan 50 large-cap stocks every day and find the ones in a deep dip with early signs of recovery.</p>
+        <div class="ob-stat-row">
+          <div class="ob-stat">
+            <div class="ob-stat-val">+49.2%</div>
+            <div class="ob-stat-lbl">avg 12m return</div>
+          </div>
+          <div class="ob-stat">
+            <div class="ob-stat-val">+22.3%</div>
+            <div class="ob-stat-lbl">random entry</div>
+          </div>
+          <div class="ob-stat">
+            <div class="ob-stat-val">7 yrs</div>
+            <div class="ob-stat-lbl">validated</div>
+          </div>
+        </div>
+        <hr class="ob-divider">
+        <div class="ob-not-title">What this is NOT:</div>
+        <div class="ob-not-list">
+          ✗ Not a guarantee<br>
+          ✗ Not investment advice<br>
+          ✗ Not a stock picker<br>
+          ✗ Not for short-term trading
+        </div>
+        <div class="ob-caveat">1 in 4 signals ends negative.<br>You always decide.</div>
+        <button class="btn btn-primary ob-next-btn" onclick="obNext(2)">Next &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Screen 2: Time horizon -->
+    <div id="ob-screen-2" class="ob-screen" style="display:none;">
+      <div class="ob-screen-card">
+        <h2 class="ob-h2">One important question<br>before you start.</h2>
+        <p class="ob-lead" style="margin-bottom:16px;">How long are you willing to hold a position?</p>
+        <div class="ob-horizon-group">
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="under_3m">
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">Less than 3 months</span>
+              <span class="ob-horizon-ret">avg +6.4%</span>
+            </span>
+          </label>
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="3_to_6m">
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">3 to 6 months</span>
+              <span class="ob-horizon-ret">avg +11.9%</span>
+            </span>
+          </label>
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="6_to_12m" checked>
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">6 to 12 months</span>
+              <span class="ob-horizon-ret" style="color:var(--green);">avg +49.2% &#10003;</span>
+            </span>
+          </label>
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="over_12m">
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">More than 12 months</span>
+              <span class="ob-horizon-ret">avg +49.2%*</span>
+            </span>
+          </label>
+        </div>
+        <hr class="ob-divider">
+        <p class="ob-horizon-note">
+          This signal works best at 12 months (+49.2% avg).<br>
+          At 3 months: +6.4% avg &nbsp;&middot;&nbsp; At 6 months: +11.9% avg.<br><br>
+          If you select under 6 months, every signal card will show a caution warning &mdash; the edge is weak at short horizons.
+        </p>
+        <div class="ob-nav-row">
+          <button class="btn btn-ghost" onclick="obBack(1)">&larr; Back</button>
+          <button class="btn btn-primary" onclick="obNext(3)">Next &rarr;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen 3: Mode selection — tap a card to complete -->
+    <div id="ob-screen-3" class="ob-screen" style="display:none;">
+      <div class="ob-screen-card">
+        <h2 class="ob-h2">How do you want<br>to start?</h2>
+        <div class="ob-mode-cards">
+          <button class="ob-option" onclick="completeOnboarding('fresh')">
+            <div class="ob-title">&#127378; Starting fresh</div>
+            <div class="ob-desc">I have no positions. Show me today's best opportunities.</div>
+          </button>
+          <button class="ob-option" onclick="completeOnboarding('existing')">
+            <div class="ob-title">&#128203; I have existing stocks</div>
+            <div class="ob-desc">I hold stocks already. Alert me when something happens to them.</div>
+          </button>
+          <button class="ob-option" onclick="completeOnboarding('both')">
+            <div class="ob-title">&#128256; Both</div>
+            <div class="ob-desc">Show opportunities AND monitor my holdings.</div>
+          </button>
+        </div>
+        <button class="btn btn-ghost ob-back-solo" onclick="obBack(2)">&larr; Back</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- First-signal tooltip (shown once, after onboarding) -->
+  <div id="first-signal-tooltip" class="fst-overlay" style="display:none;">
+    <div class="fst-card">
+      <div class="fst-icon">&#128161;</div>
+      <div class="fst-title">How to read this</div>
+      <div class="fst-body">
+        This stock is in a significant dip and showing early recovery signs.<br><br>
+        Tap <b>Why now?</b> for the full analysis.<br>
+        Tap <b>Track</b> to record your entry if you buy.<br><br>
+        Remember: hold 12 months. Expect a bumpy ride.<br>
+        1 in 4 signals ends negative.
+      </div>
+      <button class="btn btn-primary" style="width:100%;padding:12px;font-size:14px;justify-content:center;" onclick="dismissFirstSignalTooltip()">Got it</button>
+    </div>
+  </div>
+
+  <header class="header">
+    <h1>&#128200; Recovery Detector</h1>
+    <div class="sub" id="last-updated">Loading...</div>
+  </header>
+
+  <main class="content">
+
+    <!-- Tab: Signals -->
+    <div id="tab-signals" class="tab-pane">
+      <div class="section-title">Today's BUY Signals</div>
+      <div id="signals-container"><div class="loading">Scanning 50 tickers&hellip;</div></div>
+    </div>
+
+    <!-- Tab: Positions -->
+    <div id="tab-positions" class="tab-pane">
+      <div class="section-title">Open Positions</div>
+      <div id="positions-container"><div class="loading">Loading&hellip;</div></div>
+    </div>
+
+    <!-- Tab: Portfolio -->
+    <div id="tab-portfolio" class="tab-pane">
+      <div class="section-title">My Holdings</div>
+      <div id="portfolio-container"><div class="loading">Loading&hellip;</div></div>
+
+      <div class="section-title" style="margin-top:20px;">Add Holding</div>
+      <div class="card">
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <div class="form-row">
+            <label class="form-label">Ticker</label>
+            <input type="text" id="ph-ticker" class="form-input" placeholder="e.g. NVDA" maxlength="6">
+          </div>
+          <div class="form-row">
+            <label class="form-label">Entry price</label>
+            <input type="number" id="ph-price" class="form-input" placeholder="Leave blank = current" step="0.01" min="0">
+          </div>
+          <div class="form-row">
+            <label class="form-label">Alert up %</label>
+            <input type="number" id="ph-alert-up" class="form-input" value="20" step="1" min="1">
+          </div>
+          <div class="form-row">
+            <label class="form-label">Alert down %</label>
+            <input type="number" id="ph-alert-down" class="form-input" value="10" step="1" min="1">
+          </div>
+        </div>
+        <button class="btn btn-primary" style="margin-top:14px;width:100%;" onclick="addHolding()">Add to Portfolio</button>
+      </div>
+    </div>
+
+    <!-- Tab: Alerts -->
+    <div id="tab-alerts" class="tab-pane">
+      <div class="section-title">Portfolio Alerts</div>
+      <div id="alerts-container"><div class="loading">Checking alerts&hellip;</div></div>
+    </div>
+
+    <!-- Tab: Simulator -->
+    <div id="tab-simulator" class="tab-pane">
+      <div class="section-title">Backtest Simulator</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px;line-height:1.6;">
+        Test any entry/exit strategy on 7+ years of real data.
+      </div>
+
+      <div class="sim-disclaimer">
+        &#9888;&#65039; This simulation uses historical data from 2018&ndash;2024, the same period
+        used to build and validate the signal. Results reflect in-sample performance
+        and are optimistically biased. The 2025&ndash;2026 period is partially
+        out-of-sample but has too few closed positions to draw conclusions.
+        Do not treat results as a forecast. This is not investment advice.
+      </div>
+
+      <!-- Entry threshold -->
+      <div class="section-title">Entry Threshold</div>
+      <div class="card">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Only buy when signal strength &ge;</div>
+        <div class="radio-group" id="et-group">
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.60"> 0.60</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.65"> 0.65</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.70"> 0.70</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.75"> 0.75</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.80" checked> 0.80</label>
+          <label class="radio-option"><input type="radio" name="entry_threshold" value="0.85"> 0.85</label>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;">Production signal BUY threshold: 0.60 (required to enter)</div>
+      </div>
+
+      <!-- Exit rule -->
+      <div class="section-title">Exit Rule</div>
+      <div class="card">
+        <div class="exit-option">
+          <label>
+            <input type="radio" name="exit_mode" value="252d_only" checked>
+            <span>Hold 12 months / 252 trading days <span style="color:var(--muted)">(recommended)</span></span>
+          </label>
+        </div>
+        <div class="exit-option">
+          <label>
+            <input type="radio" name="exit_mode" value="threshold_or_252d">
+            <span>Exit when signal drops below <input type="number" id="exit-thresh-val" class="exit-threshold-input" value="0.40" step="0.05" min="0.10" max="0.59"> OR 12 months, whichever first</span>
+          </label>
+        </div>
+        <div class="exit-option">
+          <label>
+            <input type="radio" name="exit_mode" value="threshold_only">
+            <span>Exit only when signal drops below threshold (no time limit, max 504 days)</span>
+          </label>
+        </div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+            <input type="checkbox" id="tp-enable" onchange="toggleTpInput('tp-pct', this)">
+            <span>Take profit at +</span>
+            <input type="number" id="tp-pct" class="exit-threshold-input" value="30" min="5" max="300" step="5" disabled>
+            <span>%</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-top:10px;">
+            <input type="checkbox" id="sl-enable" onchange="toggleTpInput('sl-pct', this)">
+            <span>Stop loss at &minus;</span>
+            <input type="number" id="sl-pct" class="exit-threshold-input" value="20" min="5" max="80" step="5" disabled>
+            <span>%</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-top:10px;">
+            <input type="checkbox" id="ts-enable" onchange="toggleTpInput('ts-pct', this)">
+            <span>Trailing stop &minus;</span>
+            <input type="number" id="ts-pct" class="exit-threshold-input" value="25" min="5" max="80" step="5" disabled>
+            <span>% from peak</span>
+          </label>
+          <div style="font-size:11px;color:var(--muted);margin-top:5px;padding-left:22px;">TP / SL / trailing stop override all other exit rules when triggered</div>
+        </div>
+      </div>
+
+      <!-- Position size -->
+      <div class="section-title">Position Size</div>
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px;">
+          <input type="range" id="pos-size-slider" min="5" max="25" step="5" value="10"
+                 style="flex:1;" oninput="document.getElementById('pos-size-label').textContent=this.value+'%'">
+          <span id="pos-size-label" style="font-family:monospace;font-size:18px;font-weight:700;min-width:38px;">10%</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted);">% of portfolio per signal &nbsp;&middot;&nbsp; 5% &ndash; 25%</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:3px;">Max positions: 10 concurrent open</div>
+      </div>
+
+      <!-- Date range -->
+      <div class="section-title">Date Range</div>
+      <div class="card">
+        <div class="form-row" style="margin-bottom:8px;">
+          <label class="form-label">From</label>
+          <input type="date" id="sim-start-date" class="form-input" value="2018-01-01" min="2010-01-01" max="2025-01-01">
+        </div>
+        <div class="form-row">
+          <label class="form-label">To</label>
+          <input type="date" id="sim-end-date" class="form-input" value="2026-06-12" min="2019-01-01" max="2026-12-31">
+        </div>
+      </div>
+
+      <!-- Tax calculation toggle -->
+      <div class="section-title">Tax Calculation (optional)</div>
+      <div class="card">
+        <label class="radio-option" style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;">
+          <input type="radio" name="tax_mode" value="none" checked onchange="setTaxMode(this.value)" style="margin-top:3px;">
+          <span>No tax adjustment</span>
+        </label>
+        <label class="radio-option" style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;">
+          <input type="radio" name="tax_mode" value="israel_25" onchange="setTaxMode(this.value)" style="margin-top:3px;">
+          <span>Israel capital gains tax &mdash; 25% on real gains<br>
+            <span style="font-size:11px;color:var(--muted);">With annual loss offset. Display only &mdash; does not change simulation.</span>
+          </span>
+        </label>
+      </div>
+
+      <!-- Run button -->
+      <button class="btn btn-primary" id="sim-run-btn"
+              style="width:100%;padding:14px;font-size:15px;margin-bottom:12px;"
+              onclick="runSimulation('A')">
+        &#9654; Run Simulation
+      </button>
+
+      <!-- Scenario A results -->
+      <div id="sim-results-A"></div>
+
+      <!-- Add scenario B button -->
+      <div id="sim-add-scenario" style="display:none;text-align:center;margin:16px 0;">
+        <button class="btn btn-ghost" onclick="addScenario()">+ Add scenario to compare</button>
+      </div>
+
+      <!-- Scenario B form -->
+      <div id="sim-scenario-B" style="display:none;">
+        <div class="section-title" style="margin-top:8px;">Scenario B — Entry Threshold</div>
+        <div class="card">
+          <div class="radio-group">
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.60" checked> 0.60</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.65"> 0.65</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.70"> 0.70</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.75"> 0.75</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.80"> 0.80</label>
+            <label class="radio-option"><input type="radio" name="entry_threshold_B" value="0.85"> 0.85</label>
+          </div>
+        </div>
+        <div class="section-title">Scenario B — Exit Rule</div>
+        <div class="card">
+          <div class="exit-option">
+            <label><input type="radio" name="exit_mode_B" value="252d_only" checked> Hold 252 days</label>
+          </div>
+          <div class="exit-option">
+            <label><input type="radio" name="exit_mode_B" value="threshold_or_252d"> Signal drops below 0.40 or 252d</label>
+          </div>
+          <div class="exit-option">
+            <label><input type="radio" name="exit_mode_B" value="threshold_only"> Signal drops below 0.40 only</label>
+          </div>
+          <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+              <input type="checkbox" id="tp-enable-B" onchange="toggleTpInput('tp-pct-B', this)">
+              <span>Take profit at +</span>
+              <input type="number" id="tp-pct-B" class="exit-threshold-input" value="30" min="5" max="300" step="5" disabled>
+              <span>%</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-top:10px;">
+              <input type="checkbox" id="sl-enable-B" onchange="toggleTpInput('sl-pct-B', this)">
+              <span>Stop loss at &minus;</span>
+              <input type="number" id="sl-pct-B" class="exit-threshold-input" value="20" min="5" max="80" step="5" disabled>
+              <span>%</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-top:10px;">
+              <input type="checkbox" id="ts-enable-B" onchange="toggleTpInput('ts-pct-B', this)">
+              <span>Trailing stop &minus;</span>
+              <input type="number" id="ts-pct-B" class="exit-threshold-input" value="25" min="5" max="80" step="5" disabled>
+              <span>% from peak</span>
+            </label>
+          </div>
+        </div>
+        <button class="btn btn-primary" style="width:100%;padding:12px;font-size:14px;margin-bottom:12px;"
+                onclick="runSimulation('B')">&#9654; Run Scenario B</button>
+        <div id="sim-results-B"></div>
+      </div>
+
+      <!-- Side-by-side comparison -->
+      <div id="sim-compare" style="display:none;"></div>
+
+    </div>
+
+    <!-- Tab: Settings -->
+    <div id="tab-settings" class="tab-pane">
+      <div class="section-title">My Profile</div>
+      <div class="card">
+        <div class="about-row">
+          <span>Time horizon</span>
+          <select id="settings-horizon" class="settings-select" onchange="saveTimeHorizon(this.value)">
+            <option value="under_3m">Under 3 months</option>
+            <option value="3_to_6m">3 to 6 months</option>
+            <option value="6_to_12m">6 to 12 months</option>
+            <option value="over_12m">Over 12 months</option>
+          </select>
+        </div>
+        <div class="about-row">
+          <span>Mode</span>
+          <select id="settings-mode" class="settings-select" onchange="saveMode(this.value)">
+            <option value="fresh">Fresh start</option>
+            <option value="existing">Existing stocks</option>
+            <option value="both">Both</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="section-title">Reset</div>
+      <div class="card">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">Clears all preferences and restarts the onboarding flow.</div>
+        <button class="btn btn-danger btn-sm" onclick="resetOnboarding()">Start onboarding again</button>
+      </div>
+
+      <div id="settings-portfolio-section" style="display:none;">
+        <div class="section-title">My Portfolio</div>
+        <div class="card" id="settings-portfolio-list">
+          <div class="loading" style="padding:10px 0;">Loading&hellip;</div>
+        </div>
+      </div>
+
+      <div id="current-mode-label" style="display:none;"></div>
+
+      <div class="section-title">About This App</div>
+      <div class="card">
+        <div class="about-row"><span>Version</span><span class="about-val">MVP (June 2026)</span></div>
+        <div class="about-row"><span>Hosting</span><span class="about-val">Render.com free tier</span></div>
+        <div style="margin-top:10px;font-size:12px;color:var(--muted);line-height:1.6;">
+          &#9888;&#65039; Known limitations:<br>
+          &bull; First visit may take ~30 seconds (server wake-up)<br>
+          &bull; Signals update once per day<br>
+          &bull; Data covers 50 large-cap US stocks only<br>
+          &bull; Validated on 2018&ndash;2024 data<br>
+          &bull; Past performance does not guarantee future results
+        </div>
+      </div>
+
+      <div class="section-title">About This Signal</div>
+      <div class="card">
+        <div class="about-row"><span>Signal validated</span><span class="about-val">2018&ndash;2024</span></div>
+        <div class="about-row"><span>Universe</span><span class="about-val">50 large-cap stocks</span></div>
+        <div class="about-row"><span>Avg 12-month return (BUY)</span><span class="about-val">+49.2%</span></div>
+        <div class="about-row"><span>Avg 12-month return (random)</span><span class="about-val">+22.3%</span></div>
+        <div class="about-row"><span>Edge vs random</span><span class="about-val">+26.9 pp</span></div>
+        <div class="about-row"><span>% positive at 12 months</span><span class="about-val">78.9%</span></div>
+        <div class="about-row"><span>Median drawdown before recovery</span><span class="about-val">-15.0%</span></div>
+        <div class="about-row"><span>BUY threshold</span><span class="about-val">score &ge; 0.60</span></div>
+        <div class="about-row"><span>Hold rule</span><span class="about-val">252 trading days, no stop-loss</span></div>
+      </div>
+
+      <div class="card">
+        <div class="disclaimer">
+          &#9888;&#65039; Not investment advice. Signal performance is based on historical
+          backtesting (2018&ndash;2024, 50 large-cap US stocks). Backtested returns are
+          hypothetical and do not account for transaction costs, taxes, or slippage.
+          Past performance does not guarantee future results. Individual results will
+          vary. Always consult a qualified financial advisor before making investment
+          decisions.
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <nav class="tab-bar" id="tab-bar">
+    <button class="tab-btn" data-tab="signals"   onclick="switchTab('signals')">&#128202; Signals</button>
+    <button class="tab-btn" data-tab="positions" onclick="switchTab('positions')">&#128188; Positions</button>
+    <button class="tab-btn" data-tab="portfolio" onclick="switchTab('portfolio')">&#128181; Portfolio</button>
+    <button class="tab-btn" data-tab="alerts"    onclick="switchTab('alerts')">&#128276; Alerts</button>
+    <button class="tab-btn" data-tab="simulator" onclick="switchTab('simulator')">&#129514; Sim</button>
+    <button class="tab-btn" data-tab="settings"  onclick="switchTab('settings')">&#9881;&#65039; Settings</button>
+  </nav>
+
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(function(){});
+  }
+  checkMode();
+</script>
+</body>
+</html>

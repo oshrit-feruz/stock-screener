@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -36,6 +38,7 @@ class FundamentalSnapshot:
     debt_to_equity: float | None
     roe: float | None
     net_margin: float | None
+    filed_date: date | None = None  # SEC filing date (EDGAR only)
 
 
 def _safe_get(df: pd.DataFrame, keys: list[str], col) -> float | None:
