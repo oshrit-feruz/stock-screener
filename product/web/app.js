@@ -806,6 +806,9 @@ function addScenario() {
 }
 
 function renderSimResults(data, scenario) {
+  if (!data || !data.params || !data.summary) {
+    return '<div class="err-box">&#9888;&#65039; Unexpected result format — try running the simulation again.</div>';
+  }
   var s = data.summary;
   var params = data.params;
   scenario = scenario || 'A';
