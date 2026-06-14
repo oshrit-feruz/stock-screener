@@ -669,6 +669,9 @@ function runSimulation(scenario) {
   if (new Date(params.end_date) <= new Date(params.start_date)) {
     showToast('End date must be after start date'); return;
   }
+  if (params.start_date < '2010-01-01') {
+    showToast('Start date cannot be before 2010 — our universe has reliable data from 2010 onwards'); return;
+  }
 
   var btn = document.getElementById('sim-run-btn');
   var rContainer = document.getElementById('sim-results-' + scenario);

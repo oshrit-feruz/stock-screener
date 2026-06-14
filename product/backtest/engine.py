@@ -98,7 +98,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     quality_cache = preloaded["quality_cache"]
 
     if not scored_data:
-        return {"error": "No price data available"}
+        return {"error": "No price data found for this date range. The backtest universe covers large-cap US equities with reliable data from 2010 onwards — try a start date of 2010 or later."}
 
     entry_threshold = float(params.get("entry_threshold", 0.60))
     pos_size_pct    = float(params.get("position_size_pct", 10.0)) / 100.0
@@ -148,7 +148,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
         ]
 
     if not trading_dates:
-        return {"error": "No trading dates found in the specified range"}
+        return {"error": "No trading dates found in the specified range. Try a start date of 2010 or later."}
 
     start_year = start_date.year
     end_year   = end_date.year
