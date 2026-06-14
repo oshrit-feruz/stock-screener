@@ -833,7 +833,7 @@ function renderSimResults(data, scenario) {
     }
 
     var numCols = (hasOpen ? 3 : 2) + (_taxMode === 'israel_25' ? 1 : 0);
-    var gridClass = numCols >= 3 ? 'sim-cmp-3col' : '';
+    var gridClass = numCols >= 4 ? 'sim-cmp-4col' : numCols === 3 ? 'sim-cmp-3col' : '';
     cmpGrid = [
       '<div class="sim-cmp-grid ' + gridClass + '" style="margin-top:12px;">',
       '  <div class="cmp-card">',
