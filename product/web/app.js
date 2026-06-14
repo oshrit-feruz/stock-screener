@@ -613,6 +613,56 @@ function toggleAlertBody(id, btn) {
 // ── Simulator ─────────────────────────────────────────────────────────────────
 var _simResultA = null;
 var _simResultB = null;
+var _taxMode = localStorage.getItem('tax_mode') || 'none';
+
+function setTaxMode(val) {
+  _taxMode = val;
+  localStorage.setItem('tax_mode', val);
+  if (_simResultA) document.getElementById('sim-results-A').innerHTML = renderSimResults(_simResultA, 'A');
+  if (_simResultB) document.getElementById('sim-results-B').innerHTML = renderSimResults(_simResultB, 'B');
+  if (_simResultA && _simResultB) renderComparison();
+}
+
+function computeIsraelTax(data) {
+  var trades   = data.trades || [];
+  var s        = data.summary;
+  var params   = data.params;
+  var INITIAL  = 100000;
+
+  // Only tax closed trades (exclude open_at_end)
+  var yearlyGains  = {};
+  var yearlyLosses = {};
+  trades.forEach(function (t) {
+    if (t.exit_reason === 'open_at_end') return;
+    var year = (t.exit_date || '').substring(0, 4);
+    if (!year) return;
+    var pnl = t.pnl_usd || 0;
+    if (!yearlyGains[year])  yearlyGains[year]  = 0;
+    if (!yearlyLosses[year]) yearlyLosses[year] = 0;
+    if (pnl > 0) yearlyGains[year]  += pnl;
+    else         yearlyLosses[year] += pnl;
+  });
+
+  var totalTax = 0;
+  Object.keys(yearlyGains).forEach(function (year) {
+    var net = Math.max(0, (yearlyGains[year] || 0) + (yearlyLosses[year] || 0));
+    totalTax += net * 0.25;
+  });
+
+  var finalPortfolio    = s.final_portfolio;
+  var afterTaxPortfolio = finalPortfolio - totalTax;
+  var afterTaxReturnPct = (afterTaxPortfolio / INITIAL - 1) * 100;
+
+  var years = Math.max(1, (new Date(params.end_date) - new Date(params.start_date)) / (365.25 * 86400000));
+  var afterTaxCagr = (Math.pow(Math.max(0.01, afterTaxPortfolio / INITIAL), 1 / years) - 1) * 100;
+
+  return {
+    totalTax:         Math.round(totalTax),
+    afterTaxPortfolio: Math.round(afterTaxPortfolio),
+    afterTaxReturnPct: afterTaxReturnPct,
+    afterTaxCagr:      afterTaxCagr,
+  };
+}
 
 function toggleTpInput(inputId, checkbox) {
   var el = document.getElementById(inputId);
@@ -850,6 +900,34 @@ function renderSimResults(data, scenario) {
     ? 'Closed Trades (' + closedTrades.length + ')'
     : 'All Trades (' + allTrades.length + (openTrades.length > 0 ? ', ' + openTrades.length + ' open at end' : '') + ')';
 
+  var taxHtml = '';
+  if (_taxMode === 'israel_25') {
+    var tax = computeIsraelTax(data);
+    var preTaxRet  = s.total_return_pct;
+    var preTaxCagr = s.cagr;
+    var atCls = tax.afterTaxReturnPct >= 0 ? 'ret-pos' : 'ret-neg';
+    taxHtml = [
+      '<div class="section-title">Israel Tax Estimate (25%)</div>',
+      '<div class="card">',
+      detailRow('Pre-tax return',    (preTaxRet  >= 0 ? '+' : '') + fmt(preTaxRet,  1) + '%'),
+      detailRow('Pre-tax CAGR',      fmt(preTaxCagr, 1) + '% / yr'),
+      detailRow('Tax paid (est.)',   '&minus;$' + fmtK(tax.totalTax)),
+      detailRow('After-tax portfolio', '$' + fmtK(tax.afterTaxPortfolio)),
+      '<div class="about-row">',
+      '  <span>After-tax return</span>',
+      '  <span class="about-val ' + atCls + '" style="font-family:monospace;">' +
+          (tax.afterTaxReturnPct >= 0 ? '+' : '') + fmt(tax.afterTaxReturnPct, 1) + '%</span>',
+      '</div>',
+      detailRow('After-tax CAGR',    fmt(tax.afterTaxCagr, 1) + '% / yr'),
+      '<div class="disclaimer" style="margin-top:12px;font-size:11px;">',
+      '  &#9888;&#65039; Tax estimate only. Based on 25% Israel capital gains rate with annual loss offset. ',
+      '  Does not account for currency gains, inflation adjustment (infl. linkage), or personal tax bracket. ',
+      '  Consult a tax advisor.',
+      '</div>',
+      '</div>',
+    ].join('\n');
+  }
+
   return [
     '<div class="section-title" style="margin-top:16px;">Results &mdash; Entry &ge;' + params.entry_threshold + ' | ' + exitLabel + '</div>',
 
@@ -892,6 +970,8 @@ function renderSimResults(data, scenario) {
     hiddenHtml,
     moreBtn,
     '</div>',
+
+    taxHtml,
 
     '<div class="sim-disclaimer" style="margin-top:12px;">',
     '  &#9888;&#65039; Historical simulation on the same data used to build the signal. ',
@@ -1100,4 +1180,9 @@ document.addEventListener('DOMContentLoaded', function () {
       if (e.key === 'Enter') addHolding();
     });
   }
+
+  // Restore tax mode radio from localStorage
+  var savedTax = localStorage.getItem('tax_mode') || 'none';
+  var taxRadio = document.querySelector('input[name="tax_mode"][value="' + savedTax + '"]');
+  if (taxRadio) taxRadio.checked = true;
 });

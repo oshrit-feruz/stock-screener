@@ -259,6 +259,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                 "exit_price":  round(cp, 2),
                 "hold_days":   hold,
                 "return_pct":  round(ret * 100, 2),
+                "pnl_usd":     round((cp - pos["entry_price"]) * pos["shares"], 2),
                 "exit_reason": reason,
             })
 
@@ -329,6 +330,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "exit_price":  round(cp, 2),
             "hold_days":   hold,
             "return_pct":  round(ret * 100, 2),
+            "pnl_usd":     round((cp - pos["entry_price"]) * pos["shares"], 2),
             "exit_reason": "open_at_end",
         })
     positions.clear()

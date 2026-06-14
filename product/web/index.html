@@ -799,6 +799,21 @@
         </div>
       </div>
 
+      <!-- Tax calculation toggle -->
+      <div class="section-title">Tax Calculation (optional)</div>
+      <div class="card">
+        <label class="radio-option" style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;">
+          <input type="radio" name="tax_mode" value="none" checked onchange="setTaxMode(this.value)" style="margin-top:3px;">
+          <span>No tax adjustment</span>
+        </label>
+        <label class="radio-option" style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;">
+          <input type="radio" name="tax_mode" value="israel_25" onchange="setTaxMode(this.value)" style="margin-top:3px;">
+          <span>Israel capital gains tax &mdash; 25% on real gains<br>
+            <span style="font-size:11px;color:var(--muted);">With annual loss offset. Display only &mdash; does not change simulation.</span>
+          </span>
+        </label>
+      </div>
+
       <!-- Run button -->
       <button class="btn btn-primary" id="sim-run-btn"
               style="width:100%;padding:14px;font-size:15px;margin-bottom:12px;"
