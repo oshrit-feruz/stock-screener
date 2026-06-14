@@ -127,20 +127,23 @@ function hideLoadingBanner() {
 }
 
 function checkServerAndLoad() {
-  showLoadingBanner('Starting up… (~30 seconds on first visit)');
-  fetch('/api/health', { signal: AbortSignal.timeout(60000) })
+  var isExisting = (_userMode === 'existing' || _userMode === 'portfolio');
+
+  // Quick probe — no timeout object (avoids Safari compat issues)
+  fetch('/api/health')
     .then(function (res) {
       if (res.ok) {
         hideLoadingBanner();
-        var isExisting = (_userMode === 'existing' || _userMode === 'portfolio');
         if (isExisting) { loadPortfolio(); } else { loadSignals(); }
       } else {
-        showLoadingBanner('Server is starting up. Please wait…');
-        setTimeout(checkServerAndLoad, 5000);
+        // Server up but unhealthy — just load anyway
+        hideLoadingBanner();
+        if (isExisting) { loadPortfolio(); } else { loadSignals(); }
       }
     })
     .catch(function () {
-      showLoadingBanner('Server is starting up. Please wait…');
+      // Server not yet awake — show banner and retry
+      showLoadingBanner('Starting up… (~30 seconds on first visit)');
       setTimeout(checkServerAndLoad, 5000);
     });
 }
