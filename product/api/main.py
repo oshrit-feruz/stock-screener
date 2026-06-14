@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import sys
+import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -32,7 +34,22 @@ from product.alerts.alert_templates import _pct_rank, _interp_expected_return
 from product.backtest.engine import run_backtest
 from core.data.prices import PriceData
 
-app = FastAPI(title="Recovery Detector API", version="1.0")
+
+def _warm_screener_cache() -> None:
+    """Run screener at startup in background so first user request is instant."""
+    try:
+        run_screener()
+    except Exception:
+        pass
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    threading.Thread(target=_warm_screener_cache, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Recovery Detector API", version="1.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
