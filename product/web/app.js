@@ -816,8 +816,26 @@ function renderSimResults(data, scenario) {
     var spyCls     = s.spy_total_return_pct >= 0 ? 'ret-pos' : 'ret-neg';
     var botRetCls  = s.total_return_pct    >= 0 ? 'ret-pos' : 'ret-neg';
     var realRetCls = (s.total_return_realized_pct >= 0) ? 'ret-pos' : 'ret-neg';
+
+    // Tax column
+    var taxColHtml = '';
+    if (_taxMode === 'israel_25') {
+      var taxData = computeIsraelTax(data);
+      var atCls = taxData.afterTaxReturnPct >= 0 ? 'ret-pos' : 'ret-neg';
+      taxColHtml = [
+        '  <div class="cmp-card" style="border:1px solid var(--accent);border-radius:8px;">',
+        '    <div class="cmp-label">After Tax (IL 25%)</div>',
+        '    <div class="cmp-val">$' + fmtK(taxData.afterTaxPortfolio) + '</div>',
+        '    <div class="cmp-sub ' + atCls + '">' + (taxData.afterTaxReturnPct >= 0 ? '+' : '') + fmt(taxData.afterTaxReturnPct, 1) + '%</div>',
+        '    <div class="cmp-sub">' + fmt(taxData.afterTaxCagr, 1) + '% / yr</div>',
+        '  </div>',
+      ].join('\n');
+    }
+
+    var numCols = (hasOpen ? 3 : 2) + (_taxMode === 'israel_25' ? 1 : 0);
+    var gridClass = numCols >= 3 ? 'sim-cmp-3col' : '';
     cmpGrid = [
-      '<div class="sim-cmp-grid' + (hasOpen ? ' sim-cmp-3col' : '') + '" style="margin-top:12px;">',
+      '<div class="sim-cmp-grid ' + gridClass + '" style="margin-top:12px;">',
       '  <div class="cmp-card">',
       '    <div class="cmp-label">Bot (incl. open)</div>',
       '    <div class="cmp-val">$' + fmtK(s.final_portfolio) + '</div>',
@@ -832,6 +850,7 @@ function renderSimResults(data, scenario) {
         '    <div class="cmp-sub">' + fmt(s.cagr_realized, 1) + '% / yr</div>',
         '  </div>',
       ].join('\n') : ''),
+      taxColHtml,
       '  <div class="cmp-card">',
       '    <div class="cmp-label">S&P 500 (SPY)</div>',
       '    <div class="cmp-val">$' + fmtK(data.spy_comparison.final_spy) + '</div>',
