@@ -427,6 +427,14 @@ def portfolio_alerts() -> dict:
 
 @app.post("/api/backtest")
 def backtest(body: BacktestParams) -> dict:
+    try:
+        start = date.fromisoformat(body.start_date)
+        end   = date.fromisoformat(body.end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {exc}")
+    if end <= start:
+        raise HTTPException(status_code=400, detail="End date must be after start date")
+
     params = {
         "entry_threshold":  body.entry_threshold,
         "exit_threshold":   body.exit_threshold,

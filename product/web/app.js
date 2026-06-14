@@ -666,6 +666,9 @@ function runSimulation(scenario) {
   if (params.exit_mode !== '252d_only' && params.exit_threshold >= params.entry_threshold) {
     showToast('Exit threshold must be lower than entry threshold'); return;
   }
+  if (new Date(params.end_date) <= new Date(params.start_date)) {
+    showToast('End date must be after start date'); return;
+  }
 
   var btn = document.getElementById('sim-run-btn');
   var rContainer = document.getElementById('sim-results-' + scenario);

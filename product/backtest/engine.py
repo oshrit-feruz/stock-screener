@@ -36,7 +36,8 @@ def _safe_float(v) -> Optional[float]:
         return None
 
 
-def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_year: int) -> dict:
+def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_year: int,
+                        start_date: Optional[date] = None) -> dict:
     """Pre-load OHLCV, compute signals, and pre-fetch quality gates for all tickers.
 
     Expensive step done once for batch runs — amortizes across all simulations.
@@ -44,10 +45,17 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     prices       = PriceData()
     fundamentals = EdgarFundamentals(fallback=PointInTimeFundamentals())
 
+    # Fetch start: at least 365 days before backtest start for warmup, but never after end_date
+    if start_date is not None:
+        warmup_start = min(date.fromisoformat(_WARMUP_START), start_date - timedelta(days=365))
+    else:
+        warmup_start = date.fromisoformat(_WARMUP_START)
+    fetch_start = warmup_start.isoformat()
+
     scored_data: dict[str, pd.DataFrame] = {}
     for ticker in VALIDATION_UNIVERSE:
         try:
-            ohlcv = prices.get_prices(ticker, _WARMUP_START, end_date.isoformat())
+            ohlcv = prices.get_prices(ticker, fetch_start, end_date.isoformat())
             if ohlcv is None or ohlcv.empty or len(ohlcv) < 252:
                 continue
             with warnings.catch_warnings():
@@ -57,7 +65,7 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
         except Exception:
             continue
 
-    spy_ohlcv = prices.get_prices("SPY", _WARMUP_START, end_date.isoformat())
+    spy_ohlcv = prices.get_prices("SPY", fetch_start, end_date.isoformat())
 
     quality_cache: dict[tuple, bool | None] = {}
     for ticker in scored_data:
@@ -462,21 +470,33 @@ def run_backtest_batch(params_list: list) -> list:
     if not params_list:
         return []
 
-    end_date_str = params_list[0].get("end_date", "2024-12-31")
-    end_date     = date.fromisoformat(end_date_str)
-    start_year   = date.fromisoformat(params_list[0].get("start_date", "2018-01-01")).year
-    end_year     = end_date.year
+    end_date_str   = params_list[0].get("end_date", "2024-12-31")
+    start_date_str = params_list[0].get("start_date", "2018-01-01")
+    end_date   = date.fromisoformat(end_date_str)
+    start_date = date.fromisoformat(start_date_str)
 
-    preloaded = _load_backtest_data(end_date, start_year, end_year)
+    if end_date <= start_date:
+        return [{"error": "end_date must be after start_date"} for _ in params_list]
+
+    start_year = start_date.year
+    end_year   = end_date.year
+
+    preloaded = _load_backtest_data(end_date, start_year, end_year, start_date)
     return [_simulate(preloaded, p) for p in params_list]
 
 
 def run_backtest(params: dict) -> dict:
     """Run a single backtest simulation (backward-compatible entry point)."""
-    end_date_str = params.get("end_date", "2026-06-12")
-    end_date     = date.fromisoformat(end_date_str)
-    start_year   = date.fromisoformat(params.get("start_date", "2018-01-01")).year
-    end_year     = end_date.year
+    end_date_str   = params.get("end_date", "2026-06-12")
+    start_date_str = params.get("start_date", "2018-01-01")
+    end_date   = date.fromisoformat(end_date_str)
+    start_date = date.fromisoformat(start_date_str)
 
-    preloaded = _load_backtest_data(end_date, start_year, end_year)
+    if end_date <= start_date:
+        return {"error": "end_date must be after start_date"}
+
+    start_year = start_date.year
+    end_year   = end_date.year
+
+    preloaded = _load_backtest_data(end_date, start_year, end_year, start_date)
     return _simulate(preloaded, params)
