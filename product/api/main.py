@@ -13,6 +13,9 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import List, Optional
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import numpy as np
 import requests
 from fastapi import FastAPI, HTTPException
@@ -455,3 +458,9 @@ def backtest(body: BacktestParams) -> dict:
 
 # ── Static files — mount LAST so API routes take priority ─────────────────────
 app.mount("/", StaticFiles(directory=str(_WEB_DIR), html=True), name="web")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

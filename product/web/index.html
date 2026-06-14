@@ -446,6 +446,21 @@
     /* ── Disclaimer ── */
     .disclaimer { font-size: 11px; color: var(--muted); line-height: 1.55; margin-top: 12px; }
 
+    /* ── Cold-start loading banner ── */
+    #loading-banner {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 9999;
+      background: #1a1d27;
+      border-bottom: 1px solid var(--border);
+      padding: 14px 20px;
+      text-align: center;
+    }
+    #loading-banner .lb-icon { font-size: 22px; margin-bottom: 4px; }
+    #loading-banner .lb-title { font-size: 14px; font-weight: 600; color: var(--text); }
+    #loading-banner .lb-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
     /* ── About rows ── */
     .about-row {
       display: flex;
@@ -521,6 +536,14 @@
   </style>
 </head>
 <body>
+
+<!-- Cold-start loading banner (Render free tier wake-up) -->
+<div id="loading-banner">
+  <div class="lb-icon">&#8987;</div>
+  <div class="lb-title" id="loading-banner-title">Starting up&hellip; (~30 seconds on first visit)</div>
+  <div class="lb-sub">Free tier wakes on first visit. This only happens once per session.</div>
+</div>
+
 <div id="app">
 
   <!-- Onboarding overlay — 3 screens, shown on first visit only -->
@@ -924,6 +947,20 @@
       </div>
 
       <div id="current-mode-label" style="display:none;"></div>
+
+      <div class="section-title">About This App</div>
+      <div class="card">
+        <div class="about-row"><span>Version</span><span class="about-val">MVP (June 2026)</span></div>
+        <div class="about-row"><span>Hosting</span><span class="about-val">Render.com free tier</span></div>
+        <div style="margin-top:10px;font-size:12px;color:var(--muted);line-height:1.6;">
+          &#9888;&#65039; Known limitations:<br>
+          &bull; First visit may take ~30 seconds (server wake-up)<br>
+          &bull; Signals update once per day<br>
+          &bull; Data covers 50 large-cap US stocks only<br>
+          &bull; Validated on 2018&ndash;2024 data<br>
+          &bull; Past performance does not guarantee future results
+        </div>
+      </div>
 
       <div class="section-title">About This Signal</div>
       <div class="card">

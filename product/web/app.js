@@ -114,15 +114,45 @@ function updateTabBar() {
   setVis('alerts',    showAlerts);
 }
 
+function showLoadingBanner(msg) {
+  var banner = document.getElementById('loading-banner');
+  var title  = document.getElementById('loading-banner-title');
+  if (banner) banner.style.display = 'block';
+  if (title && msg) title.textContent = msg;
+}
+
+function hideLoadingBanner() {
+  var banner = document.getElementById('loading-banner');
+  if (banner) banner.style.display = 'none';
+}
+
+function checkServerAndLoad() {
+  showLoadingBanner('Starting up… (~30 seconds on first visit)');
+  fetch('/api/health', { signal: AbortSignal.timeout(60000) })
+    .then(function (res) {
+      if (res.ok) {
+        hideLoadingBanner();
+        var isExisting = (_userMode === 'existing' || _userMode === 'portfolio');
+        if (isExisting) { loadPortfolio(); } else { loadSignals(); }
+      } else {
+        showLoadingBanner('Server is starting up. Please wait…');
+        setTimeout(checkServerAndLoad, 5000);
+      }
+    })
+    .catch(function () {
+      showLoadingBanner('Server is starting up. Please wait…');
+      setTimeout(checkServerAndLoad, 5000);
+    });
+}
+
 function activateDefaultTab() {
   var isExisting = (_userMode === 'existing' || _userMode === 'portfolio');
   if (isExisting) {
     switchTab('portfolio');
-    loadPortfolio();
   } else {
     switchTab('signals');
-    loadSignals();
   }
+  checkServerAndLoad();
 }
 
 // ── Tab switching ──────────────────────────────────────────────────────────────

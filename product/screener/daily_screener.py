@@ -11,10 +11,11 @@ Signal parameters (FROZEN — do not modify):
 """
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import date
 from pathlib import Path
 from typing import List, Optional
@@ -35,8 +36,46 @@ from core.signals.recovery_score import (
 
 _MIN_HISTORY = 200
 _WARMUP_START = "2016-01-01"
+_CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "screener_cache"
 
 logger = logging.getLogger(__name__)
+
+
+def _cache_path(as_of: date) -> Path:
+    return _CACHE_DIR / f"{as_of.isoformat()}.json"
+
+
+def _load_disk_cache(as_of: date) -> "ScreenerResult | None":
+    path = _cache_path(as_of)
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        def _row(d: dict) -> ScreenerRow:
+            return ScreenerRow(**d)
+        return ScreenerResult(
+            as_of_date   = date.fromisoformat(data["as_of_date"]),
+            buy_signals  = [_row(r) for r in data["buy_signals"]],
+            full_ranking = [_row(r) for r in data["full_ranking"]],
+        )
+    except Exception as exc:
+        logger.warning("screener disk cache load failed: %s", exc)
+        return None
+
+
+def _save_disk_cache(result: "ScreenerResult") -> None:
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _cache_path(result.as_of_date)
+        with open(path, "w") as f:
+            json.dump({
+                "as_of_date":  result.as_of_date.isoformat(),
+                "buy_signals": [asdict(r) for r in result.buy_signals],
+                "full_ranking": [asdict(r) for r in result.full_ranking],
+            }, f)
+    except Exception as exc:
+        logger.warning("screener disk cache save failed: %s", exc)
 
 
 @dataclass
@@ -113,6 +152,13 @@ def run_screener(
     """
     if as_of_date is None:
         as_of_date = date.today()
+
+    # Return disk-cached result immediately if today's run already completed
+    cached = _load_disk_cache(as_of_date)
+    if cached is not None:
+        logger.info("screener: returning disk-cached result for %s", as_of_date)
+        return cached
+
     if prices is None:
         prices = PriceData()
     if fundamentals is None:
@@ -168,11 +214,13 @@ def run_screener(
 
     buy_signals = [r for r in rows if r.signal == "BUY"]
 
-    return ScreenerResult(
-        as_of_date  = as_of_date,
-        buy_signals = buy_signals,
+    result = ScreenerResult(
+        as_of_date   = as_of_date,
+        buy_signals  = buy_signals,
         full_ranking = rows,
     )
+    _save_disk_cache(result)
+    return result
 
 
 def _print_table(result: ScreenerResult) -> None:
