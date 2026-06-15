@@ -36,11 +36,21 @@ from core.data.prices import PriceData
 
 
 def _warm_screener_cache() -> None:
-    """Run screener at startup in background so first user request is instant."""
+    """Run screener in background at startup; populate memory + disk cache."""
+    global _sc_data, _sc_ts, _sc_warming
+    _sc_warming = True
     try:
-        run_screener()
+        result = run_screener()
+        _sc_data = {
+            "as_of":        result.as_of_date.isoformat(),
+            "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
+            "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
+        }
+        _sc_ts = time.time()
     except Exception:
         pass
+    finally:
+        _sc_warming = False
 
 
 @asynccontextmanager
@@ -68,6 +78,7 @@ _WEB_DIR       = Path(__file__).parent.parent / "web"
 # Server-side screener cache (1 hour)
 _sc_data: dict | None = None
 _sc_ts: float = 0.0
+_sc_warming = False          # True while background scan is running
 
 
 # ── Pydantic models ────────────────────────────────────────────────────────────
@@ -183,8 +194,13 @@ def _fetch_news(ticker: str, api_key: str) -> Optional[dict]:
 
 def _get_screener_data() -> dict:
     global _sc_data, _sc_ts
+    # Return memory cache if fresh
     if _sc_data and time.time() - _sc_ts < 3600:
         return _sc_data
+    # Background warming still running — return immediately, client will retry
+    if _sc_warming:
+        return {"warming": True, "message": "Screener is warming up, please wait…"}
+    # No cache and not warming — run synchronously (should be fast from disk cache)
     result = run_screener()
     _sc_data = {
         "as_of":        result.as_of_date.isoformat(),

@@ -179,10 +179,16 @@ function loadSignals() {
     renderSignals(_sigCache);
     return;
   }
-  ctr.innerHTML = '<div class="loading">Scanning 50 tickers&hellip; (10&ndash;20 s first run)</div>';
+  ctr.innerHTML = '<div class="loading">Scanning 50 tickers&hellip; (may take up to 60 s on first visit)</div>';
   fetch('/api/screener')
     .then(function (r) { return r.json(); })
     .then(function (data) {
+      if (data.warming) {
+        // Server still warming up — retry in 15 seconds
+        ctr.innerHTML = '<div class="loading">&#9203; Server is warming up&hellip; checking again in 15 s</div>';
+        setTimeout(loadSignals, 15000);
+        return;
+      }
       _sigCache   = data;
       _sigCacheTs = Date.now();
       document.getElementById('last-updated').textContent = 'Last updated: ' + data.as_of;
