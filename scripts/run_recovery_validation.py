@@ -185,14 +185,16 @@ def _write_drawdown(buf: StringIO, dd: dict, gate_none_dropped: int) -> None:
 def main(
     out_filename: str = "recovery_entry_validation.txt",
     label: str = "Stage 5",
+    tickers: list[str] | None = None,
 ) -> None:
-    print(f"Universe: {len(VALIDATION_UNIVERSE)} tickers")
+    universe = tickers if tickers is not None else VALIDATION_UNIVERSE
+    print(f"Universe: {len(universe)} tickers")
     print("Loading price data and EDGAR fundamentals…\n")
 
     prices       = PriceData()
     fundamentals = EdgarFundamentals(fallback=PointInTimeFundamentals())
     backtester   = RecoveryBacktester(
-        VALIDATION_UNIVERSE, prices, fundamentals,
+        universe, prices, fundamentals,
         start_date="2018-01-01", end_date="2024-12-31",
     )
     results = backtester.run()

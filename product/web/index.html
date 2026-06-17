@@ -738,6 +738,9 @@
         used to build and validate the signal. Results reflect in-sample performance
         and are optimistically biased. The 2025&ndash;2026 period is partially
         out-of-sample but has too few closed positions to draw conclusions.
+        The stock universe is the current S&amp;P 500 constituent list filtered by
+        "Date added" (partial point-in-time); historical removals and delistings
+        are not excluded, so some survivorship bias remains.
         Do not treat results as a forecast. This is not investment advice.
       </div>
 
@@ -956,7 +959,7 @@
           &#9888;&#65039; Known limitations:<br>
           &bull; First visit may take ~30 seconds (server wake-up)<br>
           &bull; Signals update once per day<br>
-          &bull; Data covers 50 large-cap US stocks only<br>
+          &bull; Universe: S&amp;P 500 filtered by "Date added" (partial point-in-time; ~500 tickers for live screener, 50 large-cap for fast simulator)<br>
           &bull; Validated on 2018&ndash;2024 data<br>
           &bull; Past performance does not guarantee future results
         </div>
@@ -965,7 +968,7 @@
       <div class="section-title">About This Signal</div>
       <div class="card">
         <div class="about-row"><span>Signal validated</span><span class="about-val">2018&ndash;2024</span></div>
-        <div class="about-row"><span>Universe</span><span class="about-val">50 large-cap stocks</span></div>
+        <div class="about-row"><span>Universe</span><span class="about-val">S&amp;P 500 (date-filtered PIT) / 50 large-cap for simulator</span></div>
         <div class="about-row"><span>Avg 12-month return (BUY)</span><span class="about-val">+49.2%</span></div>
         <div class="about-row"><span>Avg 12-month return (random)</span><span class="about-val">+22.3%</span></div>
         <div class="about-row"><span>Edge vs random</span><span class="about-val">+26.9 pp</span></div>
@@ -978,7 +981,9 @@
       <div class="card">
         <div class="disclaimer">
           &#9888;&#65039; Not investment advice. Signal performance is based on historical
-          backtesting (2018&ndash;2024, 50 large-cap US stocks). Backtested returns are
+          backtesting (2018&ndash;2024, 50 large-cap US stocks). The live screener uses a
+          broader S&amp;P 500 universe filtered by "Date added" to partially reduce
+          survivorship bias; historical removals are not excluded. Backtested returns are
           hypothetical and do not account for transaction costs, taxes, or slippage.
           Past performance does not guarantee future results. Individual results will
           vary. Always consult a qualified financial advisor before making investment
