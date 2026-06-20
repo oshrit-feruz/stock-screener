@@ -12,7 +12,6 @@ IMPORTANT — in-sample optimization guardrails
 """
 from __future__ import annotations
 
-import os
 import sys
 import time
 from datetime import date
@@ -21,7 +20,7 @@ from pathlib import Path
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
 
-from product.backtest.engine import _load_backtest_data, _simulate, run_backtest_batch
+from product.backtest.engine import _load_backtest_data, _simulate
 
 # ── Grid definition ────────────────────────────────────────────────────────────
 
@@ -120,7 +119,7 @@ def main():
     p("=" * 80)
     p("RECOVERY ENTRY DETECTOR — PARAMETER OPTIMIZATION GRID")
     p(f"In-sample: {IS_START} to {IS_END}")
-    p(f"Universe:  50 tickers (VALIDATION_UNIVERSE)")
+    p("Universe:  50 tickers (VALIDATION_UNIVERSE)")
     p(f"Capital:   $100,000  |  Position size: {POSITION_SIZE_PCT}%  |  Max positions: {MAX_POSITIONS}")
     p(f"Grid:      {len(ENTRY_THRESHOLDS)} entry thresholds x {len(HOLD_PERIODS)} hold periods x {len(EXIT_RULES)} exit rules = {len(ENTRY_THRESHOLDS)*len(HOLD_PERIODS)*len(EXIT_RULES)} combinations")
     p(f"Baseline:  entry={BASELINE[0]:.2f}  hold={BASELINE[1]}d  exit={BASELINE[2]}")
@@ -132,7 +131,7 @@ def main():
     p()
 
     # ── Run in-sample grid ─────────────────────────────────────────────────────
-    p(f"Loading price data and computing signals for in-sample period ...")
+    p("Loading price data and computing signals for in-sample period ...")
     t0 = time.time()
 
     all_is_params = [
@@ -377,7 +376,7 @@ def main():
 
     # ── OOS check: top 5 by CAGR ──────────────────────────────────────────────
     p("-" * 80)
-    p(f"SECTION 5 — OUT-OF-SAMPLE CHECK (top 5 by in-sample CAGR)")
+    p("SECTION 5 — OUT-OF-SAMPLE CHECK (top 5 by in-sample CAGR)")
     p(f"  OOS period: {OOS_START} to {OOS_END}")
     p("-" * 80)
     p()

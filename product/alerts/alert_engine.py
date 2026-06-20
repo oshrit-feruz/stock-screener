@@ -10,20 +10,20 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from product.screener.daily_screener import ScreenerResult, ScreenerRow, run_screener
+from core.data.prices import PriceData
 from product.alerts.alert_templates import (
     format_new_buy_alert,
     format_price_alert,
     format_signal_on_held_ticker,
 )
-from core.data.prices import PriceData
+from product.screener.daily_screener import ScreenerRow, run_screener
 
 _STATE_DIR = Path(__file__).parent.parent.parent / "data" / "screener_state"
 

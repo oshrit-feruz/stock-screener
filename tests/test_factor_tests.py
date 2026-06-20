@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from validation.factor_tests import FACTORS, FactorResult, _year_spread, evaluate_factors
+from validation.factor_tests import _year_spread, evaluate_factors
 
 
 def _make_df(n: int, factor_vals: list[float], fwd_vals: list[float], snap_date="2022-12-31") -> pd.DataFrame:

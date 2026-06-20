@@ -18,8 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from product.alerts.alert_engine import AlertEngine, Alert, PortfolioAlert
-from product.exit.exit_tracker import ExitTracker, ExitAlert
+from product.alerts.alert_engine import Alert, AlertEngine, PortfolioAlert
+from product.exit.exit_tracker import ExitAlert, ExitTracker
 
 _ALERTS_DIR      = Path(__file__).parent.parent / "data" / "alerts"
 _PORTFOLIO_FILE  = Path(__file__).parent.parent / "data" / "portfolio" / "portfolio.json"

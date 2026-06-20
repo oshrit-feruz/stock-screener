@@ -46,8 +46,8 @@ from config.tickers import VALIDATION_UNIVERSE
 from core.data.edgar import EdgarFundamentals
 from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
-from core.signals.recovery_score import BUY_THRESHOLD, LOW_THRESHOLD, WEIGHTS
-from validation.recovery_backtest import CASE_STUDIES, RecoveryBacktestStats, RecoveryBacktester
+from core.signals.recovery_score import BUY_THRESHOLD, WEIGHTS
+from validation.recovery_backtest import RecoveryBacktester, RecoveryBacktestStats
 
 # ── constants ─────────────────────────────────────────────────────────────────
 _RANDOM_MEAN      = 0.223    # Stage 5b constant
@@ -303,7 +303,7 @@ def main() -> None:
     buf.write("\n" + "=" * 70 + "\n")
     buf.write("=== DECISION RULE (vs Stage 5b baseline) ===\n")
     buf.write("=" * 70 + "\n")
-    buf.write(f"Stage 5b baseline spread:  +12.2%   bear: +30%+ required\n")
+    buf.write("Stage 5b baseline spread:  +12.2%   bear: +30%+ required\n")
     buf.write(f"This run spread:           {_pct(spread)}\n")
     buf.write(f"This run bear mean:        {_pct(bear_mean)}\n")
     delta = spread - _BASELINE_SPREAD

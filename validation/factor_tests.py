@@ -3,7 +3,7 @@ from math import ceil
 
 import pandas as pd
 
-from validation.composite import WEIGHTS, build_composite_df
+from validation.composite import build_composite_df
 
 # Direction: +1 = higher value is better signal, -1 = lower value is better.
 # D/E is inverted so that all spreads are directionally comparable:
@@ -90,7 +90,6 @@ def evaluate_composite(df: pd.DataFrame, weights: dict[str, float] | None = None
     If weights is supplied it overrides the defaults in composite.WEIGHTS, allowing
     sensitivity tests without modifying module state.
     """
-    from validation.composite import WEIGHTS as _DEFAULT_WEIGHTS, build_composite_df, score_snapshot
 
     # Temporarily swap weights if an override is given
     if weights is not None:

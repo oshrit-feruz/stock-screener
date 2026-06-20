@@ -16,7 +16,7 @@ from core.data.edgar import EdgarFundamentals
 from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import BUY_THRESHOLD, LOW_THRESHOLD, WEIGHTS
-from validation.recovery_backtest import CASE_STUDIES, RecoveryBacktestStats, RecoveryBacktester
+from validation.recovery_backtest import RecoveryBacktester, RecoveryBacktestStats
 
 _RESULTS_DIR = Path(__file__).parent.parent / "results"
 
@@ -61,8 +61,8 @@ def _write_buckets(buf: StringIO, buckets: dict) -> None:
     c2 = (pos_gap is not None and pos_gap > 0.05)
     buf.write(f"SUCCESS CRITERION 1 (HIGH–RANDOM > +3%):              {'PASS' if c1 else 'FAIL'}\n")
     buf.write(f"SUCCESS CRITERION 2 (HIGH %pos – RANDOM %pos > 5pp):  {'PASS' if c2 else 'FAIL'}\n")
-    buf.write(f"  [Replaced +10%/-10% capture metric: non-discriminative in both regimes\n")
-    buf.write(f"   (bull gap -5.0pp, bear gap +0.3pp — see Stage 5b diagnostics)]\n")
+    buf.write("  [Replaced +10%/-10% capture metric: non-discriminative in both regimes\n")
+    buf.write("   (bull gap -5.0pp, bear gap +0.3pp — see Stage 5b diagnostics)]\n")
 
     w_str = "  ".join(f"{k}={int(v*100)}%" for k, v in WEIGHTS.items())
     buf.write(

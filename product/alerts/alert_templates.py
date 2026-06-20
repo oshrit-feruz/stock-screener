@@ -13,7 +13,6 @@ Copy rules (from copy_framework.json):
 from __future__ import annotations
 
 import json
-import math
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict
@@ -104,9 +103,9 @@ def format_new_buy_alert(
         f"No stop-loss. The edge requires holding through the dip.\n\n"
         f"Similar historical entries:\n"
         + "\n".join(_CASE_STUDY_LINES) + "\n\n"
-        f"[!] This is not a recommendation. You decide.\n"
-        f"This is a statistical pattern, not a guarantee.\n"
-        f"1 in 4 similar entries ends negative at 12 months."
+        "[!] This is not a recommendation. You decide.\n"
+        "This is a statistical pattern, not a guarantee.\n"
+        "1 in 4 similar entries ends negative at 12 months."
     )
     disclaimer = load_copy_framework()["disclaimer_variations"]["short"]
     return {"headline": headline, "body": body, "disclaimer": disclaimer}

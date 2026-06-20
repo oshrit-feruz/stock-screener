@@ -1,4 +1,3 @@
-from datetime import date as _date
 
 VALIDATION_UNIVERSE: list[str] = [
     # Tech (17)

@@ -5,10 +5,8 @@ import pytest
 
 from core.signals.entry_score import (
     BUY_THRESHOLD,
-    EntrySignal,
     compute_signals,
 )
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

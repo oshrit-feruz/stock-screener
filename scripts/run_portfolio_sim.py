@@ -441,7 +441,7 @@ def print_report(
     print(f"  {'-'*62}")
 
     def _fmt(a, b):
-        return f"  {{:<30}}  {{:>16}}  {{}}".format(a, b[0], b[1])
+        return "  {:<30}  {:>16}  {}".format(a, b[0], b[1])
 
     rows = [
         ("Final value ($100k start)", (f"${m['final_value']:>,.0f}", f"${spy_m['final_value']:>,.0f}")),
@@ -482,11 +482,11 @@ def print_report(
     print("-" * 76)
     blended = (1 - cash_frac) * m["cagr"] + cash_frac * spy_m["cagr"]
     blended_tot = (1 + blended) ** 7 - 1
-    print(f"  Average portfolio allocation:")
+    print("  Average portfolio allocation:")
     print(f"    In signals:          {invest_frac:.0%}")
     print(f"    In cash (0% return): {cash_frac:.0%}")
     print()
-    print(f"  If uninvested cash had been in SPY instead:")
+    print("  If uninvested cash had been in SPY instead:")
     print(f"    Estimated blended CAGR: {blended:+.1%}")
     print(f"    Estimated blended total return (7y): {blended_tot:+.1%}")
     print()
@@ -506,13 +506,13 @@ def print_report(
                        if m["annual_rets"].get(y, 0) > spy_m["annual_rets"].get(y, 0))
     pct_beat     = years_beat / 7
 
-    print(f"  1. Did Portfolio B beat SPY in total return?")
+    print("  1. Did Portfolio B beat SPY in total return?")
     print(f"     {'YES' if beats_total else 'NO'}  (Port B {m['total_ret']:+.1%} vs SPY {spy_m['total_ret']:+.1%})")
     print()
-    print(f"  2. Did Portfolio B beat SPY in risk-adjusted return (Sharpe)?")
+    print("  2. Did Portfolio B beat SPY in risk-adjusted return (Sharpe)?")
     print(f"     {'YES' if beats_sharpe else 'NO'}  (Port B Sharpe {m['sharpe']:.2f} vs SPY {spy_m['sharpe']:.2f})")
     print()
-    print(f"  3. What % of years did Portfolio B beat SPY?")
+    print("  3. What % of years did Portfolio B beat SPY?")
     print(f"     {years_beat}/7 years = {pct_beat:.0%}")
     years_won = [y for y in range(2018, 2025) if m["annual_rets"].get(y, 0) > spy_m["annual_rets"].get(y, 0)]
     years_lost = [y for y in range(2018, 2025) if m["annual_rets"].get(y, 0) <= spy_m["annual_rets"].get(y, 0)]
@@ -521,17 +521,17 @@ def print_report(
     print()
     print(f"  4. Worst drawdown: Port B {m['max_dd']:.1%}  vs  SPY {spy_m['max_dd']:.1%}")
     print()
-    print(f"  5. Main driver of performance gap:")
+    print("  5. Main driver of performance gap:")
     if m["total_ret"] > spy_m["total_ret"]:
-        print(f"     OUTPERFORMANCE. Signal fires during market dislocations (Mar 2020, 2022 bear)")
-        print(f"     and captures large recoveries. Cash drag reduced returns but signals' magnitude")
+        print("     OUTPERFORMANCE. Signal fires during market dislocations (Mar 2020, 2022 bear)")
+        print("     and captures large recoveries. Cash drag reduced returns but signals' magnitude")
         print(f"     edge ({invest_frac:.0%} invested, avg trade return {avg_ret:+.1%}) overcame the penalty.")
     else:
         print(f"     UNDERPERFORMANCE. Cash drag ({cash_frac:.0%} in cash at 0%) is the primary cost.")
-        print(f"     Signals capture magnitude edge but concentration + cash drag net negative vs SPY.")
+        print("     Signals capture magnitude edge but concentration + cash drag net negative vs SPY.")
     print()
     blended_beats = blended_tot > spy_m["total_ret"]
-    print(f"  6. If uninvested cash had been in SPY:")
+    print("  6. If uninvested cash had been in SPY:")
     print(f"     Blended total return: {blended_tot:+.1%}  vs  SPY {spy_m['total_ret']:+.1%}")
     print(f"     Result: {'BEATS SPY' if blended_beats else 'STILL BELOW SPY'}")
     print()

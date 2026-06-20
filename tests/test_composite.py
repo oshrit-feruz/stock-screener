@@ -1,11 +1,9 @@
 from datetime import date
 
 import pandas as pd
-import pytest
 
-from validation.composite import WEIGHTS, build_composite_df, score_snapshot
+from validation.composite import score_snapshot
 from validation.factor_tests import CompositeResult, evaluate_composite
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

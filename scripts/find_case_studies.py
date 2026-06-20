@@ -113,7 +113,7 @@ def main():
             seen[t] = c
             deduped.append(c)
 
-    print(f"\nBEST CANDIDATE PER TICKER (composite>=0.60, dip=1.0, gate=True, fwd63d>0)")
+    print("\nBEST CANDIDATE PER TICKER (composite>=0.60, dip=1.0, gate=True, fwd63d>0)")
     print(f"{'Ticker':<7} {'Date':<12} {'DD%':>6}  {'Comp':>5}  {'Fwd63d':>7}  {'NearMin':>8}")
     print("-" * 55)
     for c in sorted(deduped, key=lambda x: -x["fwd63d"])[:20]:
@@ -121,7 +121,7 @@ def main():
         print(f"{c['ticker']:<7} {str(c['date']):<12} {c['dd_pct']:>6.1%}  {c['comp']:>5.2f}  {c['fwd63d']:>7.1%}  {nm:>8}")
 
     # All candidates for top tickers (show year/event clusters)
-    print(f"\nALL CANDIDATES BY TICKER (top 30 by fwd63d):")
+    print("\nALL CANDIDATES BY TICKER (top 30 by fwd63d):")
     print(f"{'Ticker':<7} {'Date':<12} {'DD%':>6}  {'Comp':>5}  {'Fwd63d':>7}  {'NearMin':>8}")
     print("-" * 55)
     for c in candidates[:30]:
