@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.tickers import SNAPSHOT_DATES, VALIDATION_UNIVERSE
-from validation.factor_tests import FACTORS, evaluate_factors
+from validation.factor_tests import evaluate_factors
 from validation.walk_forward import WalkForwardEngine
 
 _RESULTS_DIR = Path(__file__).parent.parent / "results"

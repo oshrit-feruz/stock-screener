@@ -83,7 +83,9 @@ def _best_entry(entries: list[dict], cutoff: date) -> dict | None:
     return None
 
 
-def _first_concept(facts: dict, concepts: list[str], cutoff: date) -> tuple[str, dict] | tuple[None, None]:
+def _first_concept(
+    facts: dict, concepts: list[str], cutoff: date
+) -> tuple[str, dict] | tuple[None, None]:
     """Return (concept, entry) for the most recent eligible entry across all concepts.
 
     Companies change XBRL tags over time (e.g. AAPL switched from Revenues to
@@ -225,8 +227,16 @@ class EdgarFundamentals:
                 statement_date     = date.fromisoformat(rev_entry["end"]),
                 revenue_growth_yoy = revenue_growth,
                 debt_to_equity     = de_ratio,
-                roe                = (net_income / equity) if (equity and equity > 0 and net_income is not None) else None,
-                net_margin         = (net_income / revenue) if (revenue and net_income is not None) else None,
+                roe=(
+                    (net_income / equity)
+                    if (equity and equity > 0 and net_income is not None)
+                    else None
+                ),
+                net_margin=(
+                    (net_income / revenue)
+                    if (revenue and net_income is not None)
+                    else None
+                ),
                 filed_date         = date.fromisoformat(rev_entry["filed"]),
             )
         except Exception:

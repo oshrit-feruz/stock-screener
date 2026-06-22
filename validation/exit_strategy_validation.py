@@ -488,8 +488,8 @@ def write_decision_doc(winner: dict, bh: dict, safest: dict, all_results: list[d
     if w:
         doc.write(f"**{w['name']}** (Family {w['family']})\n\n")
         doc.write(_decode_variant(w) + "\n\n")
-        doc.write(f"| Metric | Winner | Buy&Hold 252d |\n")
-        doc.write(f"|--------|--------|---------------|\n")
+        doc.write("| Metric | Winner | Buy&Hold 252d |\n")
+        doc.write("|--------|--------|---------------|\n")
         metrics_compare = [
             ("Mean 252d return",    pct(w["mean"]),      pct(b["mean"] if b else None)),
             ("Spread vs RANDOM",    pct(w["spread"]),    pct(b["spread"] if b else None)),
@@ -567,7 +567,7 @@ def _decode_variant(m: dict) -> str:
     if fam == "F2":
         stop = int(100 - round(1 + m["spread"]))  # rough parse — just say what it is
         pct_s = int(round((1 - m["n"] / m["n"]) * 100)) if False else ""
-        return f"Hold to 252d with a hard stop at the level in the variant name. Exit at stop or 252d."
+        return "Hold to 252d with a hard stop at the level in the variant name. Exit at stop or 252d."
     if fam == "F3":
         import re
         arm_m  = re.search(r"Arm\+(\d+)%",  name)

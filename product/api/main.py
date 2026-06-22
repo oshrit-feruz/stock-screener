@@ -15,24 +15,24 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import List, Optional
 
-from dotenv import load_dotenv
-load_dotenv()
-
 import numpy as np
 import requests
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+load_dotenv()
+
 _ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_ROOT))
 
-from product.screener.daily_screener import run_screener, ScreenerRow
-from product.exit.exit_tracker import ExitTracker
-from product.alerts.alert_templates import _pct_rank, _interp_expected_return
-from product.backtest.engine import run_backtest
 from core.data.prices import PriceData
+from product.alerts.alert_templates import _interp_expected_return, _pct_rank
+from product.backtest.engine import run_backtest
+from product.exit.exit_tracker import ExitTracker
+from product.screener.daily_screener import ScreenerRow, run_screener
 
 
 def _warm_screener_cache() -> None:

@@ -1,17 +1,14 @@
 """Unit tests for core/signals/recovery_score.py — synthetic data only, no network."""
 from datetime import date
 
-import numpy as np
 import pandas as pd
 import pytest
 
 from core.data.fundamentals import FundamentalSnapshot
 from core.signals.recovery_score import (
-    BUY_THRESHOLD,
     compute_recovery_signals,
     passes_quality_gate,
 )
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

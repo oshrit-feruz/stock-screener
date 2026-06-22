@@ -1,7 +1,6 @@
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pandas as pd
 import pytest
 
 from core.data.fundamentals import FundamentalSnapshot

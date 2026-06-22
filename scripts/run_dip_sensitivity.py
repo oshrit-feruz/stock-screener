@@ -272,9 +272,9 @@ def format_findings(results: dict[str, dict]) -> str:
             buf.write(f"  Margin of best over current: {_pct(margin)}\n")
             if materially_better:
                 buf.write(f"  -> Best range {best_label} outperforms by {_pct(margin)} (> 2pp) with n={best_m['n']} (>500).\n")
-                buf.write(f"  -> REVISION CANDIDATE.\n")
+                buf.write("  -> REVISION CANDIDATE.\n")
             else:
-                buf.write(f"  -> 30-50% is within 2pp of the best range. Empirically supported.\n")
+                buf.write("  -> 30-50% is within 2pp of the best range. Empirically supported.\n")
     else:
         buf.write("  No eligible ranges (n >= 500).\n")
 
@@ -297,7 +297,7 @@ def format_findings(results: dict[str, dict]) -> str:
             if meaningful and safest_label != "30-50%":
                 buf.write(f"  -> {safest_label} is meaningfully safer ({pain_reduction:.1%}pp less pain) while staying eligible.\n")
             else:
-                buf.write(f"  -> No range is meaningfully safer (>3pp) while preserving spread >= +8pp.\n")
+                buf.write("  -> No range is meaningfully safer (>3pp) while preserving spread >= +8pp.\n")
     else:
         buf.write("  No ranges meet spread >= +8pp floor.\n")
 
@@ -309,12 +309,12 @@ def format_findings(results: dict[str, dict]) -> str:
         buf.write(f"  Best bull regime range: {bull_best}  bull mean={_pct(eligible[bull_best].get('bull'))}\n")
         buf.write(f"  Best bear regime range: {bear_best}  bear mean={_pct(eligible[bear_best].get('bear'))}\n")
         if bull_best == bear_best:
-            buf.write(f"  -> Same range optimal in both regimes. No regime-specific adjustment needed.\n")
+            buf.write("  -> Same range optimal in both regimes. No regime-specific adjustment needed.\n")
         else:
             bull_m = eligible[bull_best]
             bear_m = eligible[bear_best]
             buf.write(f"  -> Optimal range differs by regime ({bull_best} bull, {bear_best} bear).\n")
-            buf.write(f"     Note for future personalization — not needed for MVP.\n")
+            buf.write("     Note for future personalization — not needed for MVP.\n")
     else:
         buf.write("  Insufficient data for regime comparison.\n")
 
@@ -328,7 +328,7 @@ def format_findings(results: dict[str, dict]) -> str:
     buf.write(f"  Of those, spread >= 0pp (positive):  {above_0pp}\n")
     if above_8pp >= 4:
         buf.write(f"  -> ROBUST: {above_8pp}/{total_elig} tested ranges pass the +8pp floor.\n")
-        buf.write(f"     Signal works across a wide drawdown band.\n")
+        buf.write("     Signal works across a wide drawdown band.\n")
     elif above_8pp >= 2:
         buf.write(f"  -> MODERATELY ROBUST: {above_8pp}/{total_elig} ranges pass the +8pp floor.\n")
     else:
@@ -352,7 +352,7 @@ def format_findings(results: dict[str, dict]) -> str:
             buf.write("  CONFIRMED: 30-50% is empirically supported. No change needed.\n")
         else:
             buf.write(f"  REVISION NEEDED: {best_label} outperforms by {_pct(margin)}.\n")
-            buf.write(f"  Re-run Stage 5b final validation with new range before Stage 6.\n")
+            buf.write("  Re-run Stage 5b final validation with new range before Stage 6.\n")
 
         # Fragile check
         if above_8pp <= 1:
@@ -377,10 +377,10 @@ def main() -> None:
     buf.write("DIP RANGE SENSITIVITY ANALYSIS (pre-Stage 6)\n")
     buf.write("=" * 80 + "\n")
     buf.write(f"Universe: {len(VALIDATION_UNIVERSE)} tickers  |  2018-2024  |  BUY >= {BUY_THRESHOLD}\n")
-    buf.write(f"dip_score: binary (1.0 in range, 0.0 outside) for each test\n")
+    buf.write("dip_score: binary (1.0 in range, 0.0 outside) for each test\n")
     buf.write(f"Weights frozen: dip={int(WEIGHTS['dip']*100)}%  momentum={int(WEIGHTS['momentum']*100)}%  volume={int(WEIGHTS['volume']*100)}%\n")
     buf.write(f"RANDOM baseline: {_RANDOM_MEAN:.1%}  |  UX normalised to current spread ({_BASELINE_SPREAD:.1%})\n")
-    buf.write(f"Eligibility floor for findings/decision: n >= 500\n\n")
+    buf.write("Eligibility floor for findings/decision: n >= 500\n\n")
     buf.write(format_table(results))
     buf.write("\n\n")
     buf.write(format_findings(results))

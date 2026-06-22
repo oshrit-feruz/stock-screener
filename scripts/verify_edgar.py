@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.data.edgar import EdgarFundamentals
-from core.data.fundamentals import FundamentalSnapshot, PointInTimeFundamentals
+from core.data.fundamentals import PointInTimeFundamentals
 
 _TICKERS   = ["AAPL", "MSFT", "NVDA"]
 _SNAP_DATES = [date(2018, 12, 31), date(2020, 12, 31), date(2022, 12, 31)]
