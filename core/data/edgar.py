@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -15,7 +16,11 @@ _CACHE_TTL_SECONDS = 7 * 86400
 
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _FACTS_URL   = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
-_USER_AGENT  = "StockAdvisor research@stockadvisor.com"
+# SEC requires a real, identifying User-Agent (company/app + contact email);
+# a placeholder risks rate-limiting or blocking. Override via EDGAR_USER_AGENT.
+_USER_AGENT  = os.environ.get(
+    "EDGAR_USER_AGENT", "RecoveryDetector contact@example.com"
+)
 
 _REVENUE_CONCEPTS = [
     "Revenues",
@@ -195,15 +200,19 @@ class EdgarFundamentals:
             # Revenue growth: current FY vs entry whose period-end is ~1 year earlier
             all_rev = _annual_entries(facts, rev_concept, cutoff=cutoff)
             current_end = date.fromisoformat(rev_entry["end"])
+            # Window widened to 280–420 days so it also covers 53-week fiscal
+            # years (~371d) and minor fiscal-period drift, not just clean 52-week years.
             prior_rev_entry = next(
                 (e for e in all_rev
-                 if 300 <= (current_end - date.fromisoformat(e["end"])).days <= 400),
+                 if 280 <= (current_end - date.fromisoformat(e["end"])).days <= 420),
                 None,
             )
             revenue_growth = None
-            if prior_rev_entry is not None and prior_rev_entry["val"] != 0:
+            # Skip the growth calc when prior revenue is ≤ 0: dividing by abs()
+            # would invert the economic meaning of the change.
+            if prior_rev_entry is not None and prior_rev_entry["val"] > 0:
                 revenue_growth = (
-                    (rev_entry["val"] - prior_rev_entry["val"]) / abs(prior_rev_entry["val"])
+                    (rev_entry["val"] - prior_rev_entry["val"]) / prior_rev_entry["val"]
                 )
 
             _, ni_entry  = _first_concept(facts, _NET_INCOME_CONCEPTS, cutoff)

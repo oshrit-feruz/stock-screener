@@ -171,6 +171,12 @@ class EntryBacktester:
 
     @staticmethod
     def _fwd_return(close_arr: np.ndarray, i: int, horizon: int) -> float | None:
+        # Right-truncation: entries within `horizon` trading days of the data
+        # end have no full forward window and return None. _stats_from_records
+        # averages only non-None values, so the 12m mean is over entries with a
+        # full 252-day look-ahead. In a rising tape this biases the 12m mean
+        # slightly upward (entries that would run into an end-of-window drawdown
+        # are excluded). The exclusion is intentional but asymmetric.
         j = i + horizon
         if j >= len(close_arr):
             return None

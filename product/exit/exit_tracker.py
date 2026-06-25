@@ -32,6 +32,10 @@ from product.alerts.alert_templates import (
 _EXIT_HOLD_DAYS  = 252
 _EXIT_GRACE_DAYS = 5
 _REMINDER_DAYS   = 30  # advance-notice window before exit
+# Fire the reminder once on the first run at/after this trading-day count.
+# A range + a persisted "reminder_sent" flag makes it robust to skipped runs
+# (weekends/holidays) instead of an exact == match that can be missed.
+_REMINDER_WINDOW_START = _EXIT_HOLD_DAYS - _REMINDER_DAYS  # 222
 
 _POSITIONS_DIR = Path(__file__).parent.parent.parent / "data" / "positions"
 _OPEN_FILE     = _POSITIONS_DIR / "open_positions.json"
@@ -49,6 +53,7 @@ class Position:
     entry_price: float
     signal_composite: Optional[float] = None
     signal_drawdown:  Optional[float] = None
+    reminder_sent:    bool = False     # True once the 30-day reminder has fired
 
 
 @dataclass
@@ -101,6 +106,7 @@ def _pos_to_dict(p: Position) -> dict:
         "entry_price":      p.entry_price,
         "signal_composite": p.signal_composite,
         "signal_drawdown":  p.signal_drawdown,
+        "reminder_sent":    p.reminder_sent,
     }
 
 
@@ -111,6 +117,7 @@ def _dict_to_pos(d: dict) -> Position:
         entry_price      = float(d["entry_price"]),
         signal_composite = d.get("signal_composite"),
         signal_drawdown  = d.get("signal_drawdown"),
+        reminder_sent    = bool(d.get("reminder_sent", False)),
     )
 
 
@@ -165,8 +172,10 @@ class ExitTracker:
         """Check all open positions for exit eligibility.
 
         A position at >= _EXIT_HOLD_DAYS trading days generates an EXIT alert
-        and is moved to closed_positions.json. A position at exactly
-        (_EXIT_HOLD_DAYS - _REMINDER_DAYS) generates a REMINDER alert.
+        and is moved to closed_positions.json. A position at or past
+        (_EXIT_HOLD_DAYS - _REMINDER_DAYS) trading days generates a one-time
+        REMINDER alert (tracked via the persisted reminder_sent flag so a
+        skipped run does not miss it).
 
         Args:
             today:          Date to evaluate against.
@@ -221,7 +230,8 @@ class ExitTracker:
                 })
             else:
                 still_open.append(pos)
-                if days_held == (_EXIT_HOLD_DAYS - _REMINDER_DAYS):
+                if not pos.reminder_sent and days_held >= _REMINDER_WINDOW_START:
+                    pos.reminder_sent = True   # persisted via still_open below
                     copy = format_position_update(
                         ticker            = pos.ticker,
                         entry_price       = pos.entry_price,
