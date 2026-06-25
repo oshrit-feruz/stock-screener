@@ -1,7 +1,8 @@
 """Backtest engine: simulate the recovery detector signal with custom parameters.
 
 Causal — no look-ahead bias. Price signals computed from rolling history only.
-Quality gate uses annual snapshots keyed to the year of the entry date.
+Quality gate is evaluated point-in-time as of each position's actual entry date
+(fundamentals.get_snapshot applies the publication lag), not the year-end.
 
 Signal parameters (weights, BUY_THRESHOLD) are frozen — only entry/exit
 thresholds and portfolio construction rules are configurable here.
@@ -67,19 +68,10 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
 
     spy_ohlcv = prices.get_prices("SPY", fetch_start, end_date.isoformat())
 
-    quality_cache: dict[tuple, bool | None] = {}
-    for ticker in scored_data:
-        for year in range(quality_start_year, quality_end_year + 1):
-            try:
-                snap = fundamentals.get_snapshot(ticker, date(year, 12, 31))
-                quality_cache[(ticker, year)] = passes_quality_gate(snap)
-            except Exception:
-                quality_cache[(ticker, year)] = None
-
     return {
         "scored_data":   scored_data,
         "spy_ohlcv":     spy_ohlcv,
-        "quality_cache": quality_cache,
+        "fundamentals":  fundamentals,
     }
 
 
@@ -95,7 +87,23 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     """
     scored_data   = preloaded["scored_data"]
     spy_ohlcv     = preloaded["spy_ohlcv"]
-    quality_cache = preloaded["quality_cache"]
+    fundamentals  = preloaded["fundamentals"]
+
+    # Quality gate evaluated point-in-time as of the actual entry date.
+    # get_snapshot applies the publication lag internally, so only fundamentals
+    # already public on `entry_date` are used (no look-ahead). Memoized per
+    # (ticker, date) since each candidate is re-checked only on its entry day.
+    _gate_memo: dict[tuple, bool | None] = {}
+
+    def _gate_at(tkr: str, entry_date: date) -> bool | None:
+        key = (tkr, entry_date)
+        if key not in _gate_memo:
+            try:
+                snap = fundamentals.get_snapshot(tkr, entry_date)
+                _gate_memo[key] = passes_quality_gate(snap)
+            except Exception:
+                _gate_memo[key] = None
+        return _gate_memo[key]
 
     if not scored_data:
         return {"error": "No price data found for this date range. The backtest universe covers large-cap US equities with reliable data from 2010 onwards — try a start date of 2010 or later."}
@@ -279,7 +287,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             comp = _safe_float(row.get("composite_score"))
             if comp is None or comp < entry_threshold:
                 continue
-            gate = quality_cache.get((tkr, today.year))
+            gate = _gate_at(tkr, today)
             if gate is not True:
                 continue
             cp = _safe_float(row["Close"])
