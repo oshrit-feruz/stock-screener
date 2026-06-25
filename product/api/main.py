@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -29,6 +29,7 @@ _ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from core.data.prices import PriceData
+from core.signals.recovery_score import BUY_THRESHOLD
 from product.alerts.alert_templates import _interp_expected_return, _pct_rank
 from product.backtest.engine import run_backtest
 from product.exit.exit_tracker import ExitTracker
@@ -38,19 +39,23 @@ from product.screener.daily_screener import ScreenerRow, run_screener
 def _warm_screener_cache() -> None:
     """Run screener in background at startup; populate memory + disk cache."""
     global _sc_data, _sc_ts, _sc_warming
-    _sc_warming = True
+    with _sc_lock:
+        _sc_warming = True
     try:
         result = run_screener()
-        _sc_data = {
+        data = {
             "as_of":        result.as_of_date.isoformat(),
             "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
             "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
         }
-        _sc_ts = time.time()
+        with _sc_lock:
+            _sc_data = data
+            _sc_ts = time.time()
     except Exception:
         pass
     finally:
-        _sc_warming = False
+        with _sc_lock:
+            _sc_warming = False
 
 
 @asynccontextmanager
@@ -61,9 +66,14 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="Recovery Detector API", version="1.0", lifespan=_lifespan)
 
+# Restrict CORS in production by setting ALLOWED_ORIGINS (comma-separated).
+# Falls back to "*" for local development.
+_allowed_origins = [
+    o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -76,6 +86,7 @@ _PORTFOLIO_FILE = _DATA_DIR / "portfolio" / "portfolio.json"
 _WEB_DIR       = Path(__file__).parent.parent / "web"
 
 # Server-side screener cache (1 hour)
+_sc_lock = threading.Lock()  # guards _sc_data / _sc_ts / _sc_warming
 _sc_data: dict | None = None
 _sc_ts: float = 0.0
 _sc_warming = False          # True while background scan is running
@@ -101,7 +112,9 @@ class PortfolioIn(BaseModel):
     holdings: List[PortfolioHolding]
 
 class BacktestParams(BaseModel):
-    entry_threshold:  float = 0.80
+    # Default matches the production BUY_THRESHOLD so a default backtest
+    # replicates live screener behavior (imported to prevent future drift).
+    entry_threshold:  float = BUY_THRESHOLD
     exit_threshold:   float = 0.40
     exit_mode:        str   = "252d_only"   # "252d_only" | "threshold_or_252d" | "threshold_only"
     take_profit_pct:  float = 0.0           # 0 = disabled; e.g. 30 = exit at +30%
@@ -110,7 +123,8 @@ class BacktestParams(BaseModel):
     position_size_pct: float = 10.0
     max_positions:    int   = 10
     start_date:       str   = "2018-01-01"
-    end_date:         str   = "2026-06-12"
+    # Default to today so the backtest end does not silently freeze in time.
+    end_date:         str   = Field(default_factory=lambda: date.today().isoformat())
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -155,6 +169,18 @@ def _context_msg(ret: float) -> str:
     return "You are ahead of 80% of historical entries at this stage. Average at 12 months is +49.2%. Consider your exit plan as you approach day 252."
 
 
+def _load_open_positions() -> list:
+    """Read open positions, tolerating a missing or corrupt JSON file."""
+    if not _OPEN_FILE.exists():
+        return []
+    try:
+        data = json.loads(_OPEN_FILE.read_text())
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        print(f"[WARN] failed to read {_OPEN_FILE}: {exc}")
+        return []
+
+
 def _load_portfolio() -> list:
     if not _PORTFOLIO_FILE.exists():
         return []
@@ -194,21 +220,24 @@ def _fetch_news(ticker: str, api_key: str) -> Optional[dict]:
 
 def _get_screener_data() -> dict:
     global _sc_data, _sc_ts
-    # Return memory cache if fresh
-    if _sc_data and time.time() - _sc_ts < 3600:
-        return _sc_data
-    # Background warming still running — return immediately, client will retry
-    if _sc_warming:
-        return {"warming": True, "message": "Screener is warming up, please wait…"}
+    with _sc_lock:
+        # Return memory cache if fresh
+        if _sc_data and time.time() - _sc_ts < 3600:
+            return _sc_data
+        # Background warming still running — return immediately, client retries
+        if _sc_warming:
+            return {"warming": True, "message": "Screener is warming up, please wait…"}
     # No cache and not warming — run synchronously (should be fast from disk cache)
     result = run_screener()
-    _sc_data = {
+    data = {
         "as_of":        result.as_of_date.isoformat(),
         "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
         "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
     }
-    _sc_ts = time.time()
-    return _sc_data
+    with _sc_lock:
+        _sc_data = data
+        _sc_ts = time.time()
+    return data
 
 
 # ── API routes ─────────────────────────────────────────────────────────────────
@@ -244,7 +273,7 @@ def get_alerts() -> dict:
 
 @app.get("/api/positions")
 def get_positions() -> dict:
-    open_raw = json.loads(_OPEN_FILE.read_text()) if _OPEN_FILE.exists() else []
+    open_raw = _load_open_positions()
     prices = PriceData()
     today  = date.today()
     result = []
@@ -293,7 +322,7 @@ def open_position(body: OpenPositionIn) -> dict:
 @app.post("/api/positions/close")
 def close_position(body: ClosePositionIn) -> dict:
     ticker   = body.ticker.upper()
-    open_raw = json.loads(_OPEN_FILE.read_text()) if _OPEN_FILE.exists() else []
+    open_raw = _load_open_positions()
     pos      = next((p for p in open_raw if p["ticker"] == ticker), None)
     if not pos:
         raise HTTPException(status_code=404, detail=f"Position {ticker} not found")
