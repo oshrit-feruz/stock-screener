@@ -19,27 +19,46 @@ class PriceData:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _cache_path(self, ticker: str, start: str, end: str) -> Path:
-        return self.cache_dir / f"{_safe_ticker(ticker)}_{start}_{end}.pkl"
+    def _cache_path(self, ticker: str, start: str) -> Path:
+        # Cache key excludes `end`: historical prices for a given start are
+        # identical regardless of the requested end date. Keying by end too
+        # would force a full re-download every day as `end` advances.
+        return self.cache_dir / f"{_safe_ticker(ticker)}_{start}.pkl"
 
     def get_prices(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        path = self._cache_path(ticker, start, end)
+        path   = self._cache_path(ticker, start)
+        end_ts = pd.Timestamp(end)
+
+        cached: pd.DataFrame | None = None
         if path.exists():
             try:
                 with open(path, "rb") as f:
-                    return pickle.load(f)
+                    cached = pickle.load(f)
             except Exception:
-                pass
+                cached = None
+
+        # Reuse the cache when it already extends to (or past) the requested
+        # end. A few days of slack absorbs weekends/holidays so a daily run
+        # does not re-download every time `end` advances. yfinance treats
+        # `end` as exclusive — mirror that by slicing on `< end`.
+        if (cached is not None and not cached.empty
+                and cached.index.max() >= end_ts - pd.Timedelta(days=4)):
+            return cached[cached.index < end_ts]
+
         try:
             df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
             if df is None or df.empty:
+                # Fall back to stale cache rather than losing data on a failed fetch.
+                if cached is not None and not cached.empty:
+                    return cached[cached.index < end_ts]
                 return pd.DataFrame()
             # Flatten MultiIndex columns (newer yfinance versions may add a ticker level)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
+            # Cache the full downloaded range; callers get the end-exclusive slice.
             with open(path, "wb") as f:
                 pickle.dump(df, f)
-            return df
+            return df[df.index < end_ts]
         except Exception:
             return pd.DataFrame()
 
