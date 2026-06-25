@@ -125,6 +125,7 @@ def simulate(
                 "comp":       pos["comp"],
                 "category":   pos["category"],
                 "size_pct":   pos["size_pct"],
+                "actual_pct": pos["cost"] / pos["port_val_at_entry"],
                 "status":     "CLOSED",
             })
 
@@ -145,6 +146,18 @@ def simulate(
             if mode == "flat":
                 size_pct = 0.10
                 alloc    = min(port_val * size_pct, cash)
+            elif mode == "score_plus":
+                # Default 10%; comp>=0.70 gets 12%. Extra comes from idle cash,
+                # never from shrinking another position. If cash can't fund the
+                # full intended size, open with whatever's left as long as at
+                # least 5% of the portfolio is free.
+                size_pct = 0.12 if comp >= 0.70 else 0.10
+                desired  = port_val * size_pct
+                if cash < port_val * 0.05:
+                    skipped.append({"date": day.date(), "ticker": ticker,
+                                    "comp": comp, "reason": "below_5pct_free"})
+                    continue
+                alloc = min(desired, cash)
             else:  # score
                 size_pct = tier_pct
                 desired  = port_val * size_pct
@@ -178,6 +191,7 @@ def simulate(
                 "comp":       comp,
                 "category":   category,
                 "size_pct":   size_pct,
+                "port_val_at_entry": port_val,
             }
             last_entry_cal_idx[ticker] = day_idx
             cash -= alloc
@@ -205,6 +219,7 @@ def simulate(
             "comp":       pos["comp"],
             "category":   pos["category"],
             "size_pct":   pos["size_pct"],
+            "actual_pct": pos["cost"] / pos["port_val_at_entry"],
             "status":     "OPEN (MTM 2024-12-30)",
         })
 
