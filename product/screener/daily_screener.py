@@ -24,11 +24,11 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.tickers import VALIDATION_UNIVERSE
-from core.data.edgar import EdgarFundamentals
-from core.data.fundamentals import PointInTimeFundamentals
-from core.data.prices import PriceData
-from core.signals.recovery_score import (
+from config.tickers import VALIDATION_UNIVERSE  # noqa: E402
+from core.data.edgar import EdgarFundamentals  # noqa: E402
+from core.data.fundamentals import PointInTimeFundamentals  # noqa: E402
+from core.data.prices import PriceData  # noqa: E402
+from core.signals.recovery_score import (  # noqa: E402
     BUY_THRESHOLD,
     compute_recovery_signals,
     passes_quality_gate,

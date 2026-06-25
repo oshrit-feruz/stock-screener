@@ -28,12 +28,15 @@ load_dotenv()
 _ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_ROOT))
 
-from core.data.prices import PriceData
-from core.signals.recovery_score import BUY_THRESHOLD
-from product.alerts.alert_templates import _interp_expected_return, _pct_rank
-from product.backtest.engine import run_backtest
-from product.exit.exit_tracker import ExitTracker
-from product.screener.daily_screener import ScreenerRow, run_screener
+from core.data.prices import PriceData  # noqa: E402
+from core.signals.recovery_score import BUY_THRESHOLD  # noqa: E402
+from product.alerts.alert_templates import (  # noqa: E402
+    _interp_expected_return,
+    _pct_rank,
+)
+from product.backtest.engine import run_backtest  # noqa: E402
+from product.exit.exit_tracker import ExitTracker  # noqa: E402
+from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
 
 
 def _warm_screener_cache() -> None:
@@ -163,20 +166,40 @@ def _context_msg(ret: float) -> str:
             "Re-check the thesis: is the company still fundamentally sound?"
         )
     if ret < 0.0:
-        return "You are in the normal drawdown zone. Median entry experiences -15% before recovery. Hold."
+        return (
+            "You are in the normal drawdown zone. "
+            "Median entry experiences -15% before recovery. Hold."
+        )
     if ret < 0.20:
-        return "You are tracking well. Average at 12 months: +49.2%. Early gains do not guarantee final returns — stay the course."
-    return "You are ahead of 80% of historical entries at this stage. Average at 12 months is +49.2%. Consider your exit plan as you approach day 252."
+        return (
+            "You are tracking well. Average at 12 months: +49.2%. "
+            "Early gains do not guarantee final returns — stay the course."
+        )
+    return (
+        "You are ahead of 80% of historical entries at this stage. "
+        "Average at 12 months is +49.2%. "
+        "Consider your exit plan as you approach day 252."
+    )
 
 
-def _load_open_positions() -> list:
-    """Read open positions, tolerating a missing or corrupt JSON file."""
+def _load_open_positions(raise_on_corrupt: bool = False) -> list:
+    """Read open positions, tolerating a missing file.
+
+    If raise_on_corrupt=True, raises an exception for unreadable/corrupt files
+    instead of returning an empty list (useful for close_position).
+    """
     if not _OPEN_FILE.exists():
         return []
     try:
         data = json.loads(_OPEN_FILE.read_text())
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            if raise_on_corrupt:
+                raise ValueError("Storage file is not a valid list")
+            return []
+        return data
     except Exception as exc:
+        if raise_on_corrupt:
+            raise
         print(f"[WARN] failed to read {_OPEN_FILE}: {exc}")
         return []
 
@@ -219,7 +242,7 @@ def _fetch_news(ticker: str, api_key: str) -> Optional[dict]:
 # ── Screener cache helper ──────────────────────────────────────────────────────
 
 def _get_screener_data() -> dict:
-    global _sc_data, _sc_ts
+    global _sc_data, _sc_ts, _sc_warming
     with _sc_lock:
         # Return memory cache if fresh
         if _sc_data and time.time() - _sc_ts < 3600:
@@ -227,17 +250,25 @@ def _get_screener_data() -> dict:
         # Background warming still running — return immediately, client retries
         if _sc_warming:
             return {"warming": True, "message": "Screener is warming up, please wait…"}
+        # Mark refresh as in-flight before releasing lock
+        _sc_warming = True
     # No cache and not warming — run synchronously (should be fast from disk cache)
-    result = run_screener()
-    data = {
-        "as_of":        result.as_of_date.isoformat(),
-        "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
-        "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
-    }
-    with _sc_lock:
-        _sc_data = data
-        _sc_ts = time.time()
-    return data
+    try:
+        result = run_screener()
+        data = {
+            "as_of":        result.as_of_date.isoformat(),
+            "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
+            "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
+        }
+        with _sc_lock:
+            _sc_data = data
+            _sc_ts = time.time()
+            _sc_warming = False
+        return data
+    except Exception:
+        with _sc_lock:
+            _sc_warming = False
+        raise
 
 
 # ── API routes ─────────────────────────────────────────────────────────────────
@@ -322,7 +353,10 @@ def open_position(body: OpenPositionIn) -> dict:
 @app.post("/api/positions/close")
 def close_position(body: ClosePositionIn) -> dict:
     ticker   = body.ticker.upper()
-    open_raw = _load_open_positions()
+    try:
+        open_raw = _load_open_positions(raise_on_corrupt=True)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Storage error: {exc}")
     pos      = next((p for p in open_raw if p["ticker"] == ticker), None)
     if not pos:
         raise HTTPException(status_code=404, detail=f"Position {ticker} not found")

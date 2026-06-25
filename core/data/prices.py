@@ -23,7 +23,8 @@ class PriceData:
         # Cache key excludes `end`: historical prices for a given start are
         # identical regardless of the requested end date. Keying by end too
         # would force a full re-download every day as `end` advances.
-        return self.cache_dir / f"{_safe_ticker(ticker)}_{start}.pkl"
+        safe_start = start.replace("/", "-").replace("\\", "-")
+        return self.cache_dir / f"{_safe_ticker(ticker)}_{safe_start}.pkl"
 
     def get_prices(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         path   = self._cache_path(ticker, start)
@@ -42,7 +43,7 @@ class PriceData:
         # does not re-download every time `end` advances. yfinance treats
         # `end` as exclusive — mirror that by slicing on `< end`.
         if (cached is not None and not cached.empty
-                and cached.index.max() >= end_ts - pd.Timedelta(days=4)):
+                and cached.index.max() >= end_ts - pd.Timedelta(days=1)):
             return cached[cached.index < end_ts]
 
         try:
@@ -60,6 +61,9 @@ class PriceData:
                 pickle.dump(df, f)
             return df[df.index < end_ts]
         except Exception:
+            # Fall back to stale cache rather than losing data on a failed fetch.
+            if cached is not None and not cached.empty:
+                return cached[cached.index < end_ts]
             return pd.DataFrame()
 
     def get_return(self, ticker: str, start: str, end: str) -> float | None:

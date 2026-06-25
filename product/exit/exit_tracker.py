@@ -22,7 +22,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from product.alerts.alert_templates import (
+from product.alerts.alert_templates import (  # noqa: E402
     _interp_expected_return,
     _pct_rank,
     format_exit_alert,

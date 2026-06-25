@@ -200,7 +200,7 @@ class EdgarFundamentals:
             # Revenue growth: current FY vs entry whose period-end is ~1 year earlier
             all_rev = _annual_entries(facts, rev_concept, cutoff=cutoff)
             current_end = date.fromisoformat(rev_entry["end"])
-            # Window widened to 280–420 days so it also covers 53-week fiscal
+            # Window widened to 280-420 days so it also covers 53-week fiscal
             # years (~371d) and minor fiscal-period drift, not just clean 52-week years.
             prior_rev_entry = next(
                 (e for e in all_rev
