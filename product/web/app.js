@@ -1000,6 +1000,8 @@ function renderSimResults(data, scenario) {
     detailRow('Win rate',         fmt(s.pct_positive, 0) + '%'),
     detailRow('Avg return/trade', (s.mean_return_pct >= 0 ? '+' : '') + fmt(s.mean_return_pct, 1) + '%'),
     detailRow('Time in market',   fmt(s.pct_time_invested, 0) + '%'),
+    detailRow('Avg capital util', fmt(s.avg_capital_utilization, 0) + '%'),
+    (s.n_missed_capital > 0 ? detailRow('Missed (no capital)', s.n_missed_capital + ' signal' + (s.n_missed_capital === 1 ? '' : 's')) : ''),
     (s.pct_stop_loss     > 0 ? detailRow('Stopped out (SL)',       fmt(s.pct_stop_loss, 0)     + '%') : ''),
     (s.pct_trailing_stop > 0 ? detailRow('Trailing stop hit',      fmt(s.pct_trailing_stop, 0) + '%') : ''),
     (s.pct_take_profit > 0 ? detailRow('Exited via TP',    fmt(s.pct_take_profit, 0) + '%') : ''),
@@ -1030,6 +1032,32 @@ function renderSimResults(data, scenario) {
     '</div>',
 
     taxHtml,
+
+    (function() {
+      var missed = data.missed_capital || [];
+      if (!missed.length) return '';
+      var rows = missed.map(function(m) {
+        return [
+          '<div class="trade-row">',
+          '  <div class="tr-main">',
+          '    <span class="tr-ticker">' + escHtml(m.ticker) + '</span>',
+          '    <span style="font-size:11px;color:var(--amber);">no capital</span>',
+          '  </div>',
+          '  <div class="tr-sub">',
+          '    <span class="tr-dates">' + escHtml(m.date) + ' &middot; score ' + fmt(m.composite, 2) +
+               ' &middot; needed $' + fmtK(m.needed) + ', had $' + fmtK(m.cash_avail) + '</span>',
+          '  </div>',
+          '</div>',
+        ].join('\n');
+      }).join('\n');
+      return [
+        '<div class="section-title">Missed Signals — No Capital (' + missed.length + ')</div>',
+        '<div class="card">',
+        rows,
+        '<div class="disclaimer" style="margin-top:8px;">Signal fired but portfolio was fully allocated. Position not opened.</div>',
+        '</div>',
+      ].join('\n');
+    })(),
 
     '<div class="sim-disclaimer" style="margin-top:12px;">',
     '  &#9888;&#65039; Historical simulation on the same data used to build the signal. ',

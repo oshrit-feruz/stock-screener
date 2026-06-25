@@ -157,10 +157,12 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     cash      = _INITIAL_CAPITAL
     positions: dict[str, dict] = {}
     trades:    list[dict]       = []
+    missed_capital: list[dict]  = []
     n_signals       = 0
     n_days_invested = 0
     portfolio_daily: dict[date, float] = {}
     daily_pv: list[float] = []
+    daily_util: list[float] = []   # fraction of portfolio invested each day
     prev_buy_set: set[str] = set()
 
     def _cur_price(tkr: str, ts: pd.Timestamp) -> Optional[float]:
@@ -186,6 +188,7 @@ def _simulate(preloaded: dict, params: dict) -> dict:
         pv = cash + pos_value
         portfolio_daily[today] = pv
         daily_pv.append(pv)
+        daily_util.append(pos_value / pv if pv > 0 else 0.0)
         if positions:
             n_days_invested += 1
 
@@ -298,17 +301,24 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             for tkr, comp, cp in today_candidates[:capacity]:
                 if len(positions) >= max_positions:
                     break
-                alloc = min(pv * pos_size_pct, cash)
-                if alloc < 1.0:
+                desired_alloc = pv * pos_size_pct
+                if cash < desired_alloc:
+                    missed_capital.append({
+                        "ticker":     tkr,
+                        "date":       today.isoformat(),
+                        "composite":  round(comp, 3),
+                        "cash_avail": round(cash, 2),
+                        "needed":     round(desired_alloc, 2),
+                    })
                     continue
-                shares = alloc / cp
-                cash  -= alloc
+                shares = desired_alloc / cp
+                cash  -= desired_alloc
                 positions[tkr] = {
                     "entry_date":     today,
                     "entry_price":    cp,
                     "peak_price":     cp,
                     "shares":         shares,
-                    "position_value": alloc,
+                    "position_value": desired_alloc,
                 }
 
     # ── Realized-only value: open positions returned at cost (no unrealized P&L) ─
@@ -365,7 +375,9 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                                / max(1, n_trades) * 100)
     pct_take_profit    = float(sum(1 for t in trades if t["exit_reason"] == "take_profit")
                                / max(1, n_trades) * 100)
-    pct_time_inv = n_days_invested / max(1, len(trading_dates)) * 100
+    pct_time_inv     = n_days_invested / max(1, len(trading_dates)) * 100
+    avg_capital_util = float(np.mean(daily_util) * 100) if daily_util else 0.0
+    n_missed_capital = len(missed_capital)
 
     # SPY metrics
     spy_ret = spy_cagr_val = spy_final = None
@@ -451,9 +463,12 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "best_year":              best_year,
             "worst_year":             worst_year,
             "pct_time_invested":      round(pct_time_inv, 1),
+            "avg_capital_utilization": round(avg_capital_util, 1),
+            "n_missed_capital":       n_missed_capital,
         },
-        "trades":   sorted(trades, key=lambda t: t["entry_date"]),
-        "yearly":   yearly,
+        "trades":          sorted(trades, key=lambda t: t["entry_date"]),
+        "missed_capital":  sorted(missed_capital, key=lambda m: m["date"]),
+        "yearly":          yearly,
         "spy_comparison": {
             "final_spy":                  int(round(spy_final))                          if spy_final is not None else None,
             "final_portfolio":            int(round(final_value)),
