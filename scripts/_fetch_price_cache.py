@@ -29,6 +29,11 @@ _START = "2016-01-01"
 _END = "2024-12-31"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (research price fetch)"}
 
+# Override the default [start, end] range from the command line:
+#   python scripts/_fetch_price_cache.py 2008-01-01 2024-12-31
+if len(sys.argv) >= 3:
+    _START, _END = sys.argv[1], sys.argv[2]
+
 
 def _unix(d: str) -> int:
     return int(datetime.fromisoformat(d).replace(tzinfo=timezone.utc).timestamp())
