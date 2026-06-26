@@ -127,13 +127,20 @@ def main() -> None:
     engine        = AlertEngine()
     engine_result = engine.run_daily_alert_check(as_of_date=today)
 
-    # Step 2: Exit tracker
+    # Step 2: Exit tracker — reuse the screener result from the alert engine
+    # instead of re-running the screener (it already ran inside step 1).
     print("Running exit tracker...")
     tracker = ExitTracker()
-    from product.screener.daily_screener import run_screener
-    screener_result = run_screener(as_of_date=today)
-    current_prices  = {r.ticker: r.current_price for r in screener_result.full_ranking}
-    exit_alerts     = tracker.check_exits(today, current_prices=current_prices)
+    screener_result = engine_result.screener_result
+    if screener_result is not None:
+        current_prices = {r.ticker: r.current_price for r in screener_result.full_ranking}
+    else:
+        from product.screener.daily_screener import run_screener
+        current_prices = {
+            r.ticker: r.current_price
+            for r in run_screener(as_of_date=today).full_ranking
+        }
+    exit_alerts = tracker.check_exits(today, current_prices=current_prices)
 
     # Step 3: Portfolio alerts
     portfolio_alerts: list[PortfolioAlert] = []

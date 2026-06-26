@@ -23,7 +23,7 @@ from product.alerts.alert_templates import (
     format_price_alert,
     format_signal_on_held_ticker,
 )
-from product.screener.daily_screener import ScreenerRow, run_screener
+from product.screener.daily_screener import ScreenerResult, ScreenerRow, run_screener
 
 _STATE_DIR = Path(__file__).parent.parent.parent / "data" / "screener_state"
 
@@ -66,6 +66,9 @@ class AlertEngineResult:
     new_alerts: List[Alert] = field(default_factory=list)
     continuing_signals: List[str] = field(default_factory=list)
     dropped_signals: List[str] = field(default_factory=list)
+    # The underlying screener result, exposed so callers (e.g. run_daily) can
+    # reuse it for exit tracking instead of re-running the screener.
+    screener_result: Optional["ScreenerResult"] = None
 
 
 def _state_path(for_date: date) -> Path:
@@ -179,6 +182,7 @@ class AlertEngine:
             new_alerts       = new_alerts,
             continuing_signals = sorted(continuing_signals),
             dropped_signals  = sorted(dropped_signals),
+            screener_result  = result,
         )
 
     def portfolio_alert_check(

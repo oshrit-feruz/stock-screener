@@ -183,9 +183,11 @@ def get_recovery_signal(
 
     if comp is None:
         signal = "INSUFFICIENT_DATA"
-    elif gate is False:
+    elif gate is not True:
+        # Fail-closed: gate False (failed) OR None (no fundamental data) → SKIP.
+        # Never recommend a buy without confirmed fundamentals.
         signal = "SKIP"
-    elif comp >= BUY_THRESHOLD and gate is True:
+    elif comp >= BUY_THRESHOLD:
         signal = "BUY"
     else:
         signal = "WAIT"

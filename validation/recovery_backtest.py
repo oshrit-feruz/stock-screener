@@ -62,6 +62,13 @@ def _stats_from_records(label: str, records: list[dict]) -> RecoveryBacktestStat
 
 
 def _fwd_return(close_arr: np.ndarray, i: int, horizon: int) -> float | None:
+    # Right-truncation: entries within `horizon` trading days of the data end
+    # have no full forward window and return None. _stats_from_records averages
+    # only non-None values, so the 12m mean is computed over entries that had a
+    # full 252-day look-ahead. This biases the 12m mean slightly upward in a
+    # rising tape (entries that would have run into an end-of-window drawdown are
+    # excluded). The exclusion is intentional but asymmetric — interpret the
+    # final ~12 months of the window with that caveat.
     j = i + horizon
     if j >= len(close_arr):
         return None
@@ -201,7 +208,9 @@ class RecoveryBacktester:
         result: dict[int, bool | None] = {}
         if self.fundamentals is None:
             return result
-        for year in range(2017, 2026):
+        # Derive the year range from the backtest window (one prior year for
+        # entries early in the start year) instead of a hardcoded 2017–2025.
+        for year in range(self.start_date.year - 1, self.end_date.year + 1):
             snap = self.fundamentals.get_snapshot(ticker, date(year, 12, 31))
             result[year] = passes_quality_gate(snap)
         return result

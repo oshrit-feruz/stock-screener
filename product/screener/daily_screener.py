@@ -24,17 +24,19 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.tickers import VALIDATION_UNIVERSE
-from core.data.edgar import EdgarFundamentals
-from core.data.fundamentals import PointInTimeFundamentals
-from core.data.prices import PriceData
-from core.signals.recovery_score import (
+from config.tickers import VALIDATION_UNIVERSE  # noqa: E402
+from core.data.edgar import EdgarFundamentals  # noqa: E402
+from core.data.fundamentals import PointInTimeFundamentals  # noqa: E402
+from core.data.prices import PriceData  # noqa: E402
+from core.signals.recovery_score import (  # noqa: E402
     BUY_THRESHOLD,
     compute_recovery_signals,
     passes_quality_gate,
 )
 
-_MIN_HISTORY = 200
+# 252 trading days are required because dip_score uses close.rolling(252).max();
+# with fewer rows high_52w is NaN → composite NaN → always INSUFFICIENT_DATA.
+_MIN_HISTORY = 252
 _WARMUP_START = "2016-01-01"
 _CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "screener_cache"
 
@@ -146,7 +148,7 @@ def run_screener(
         ScreenerResult with buy_signals and full_ranking.
 
     Error handling:
-        - Ticker with < 200 rows of price history → skipped, warning logged.
+        - Ticker with < 252 rows of price history → skipped, warning logged.
         - Ticker with no EDGAR / fundamentals data → gate = False (fail-closed).
         - Any unexpected exception per ticker → skipped, warning logged.
     """
