@@ -29,6 +29,21 @@ from core.signals.recovery_score import (
     compute_recovery_signals,
     passes_quality_gate,
 )
+from data.sp500_universe import get_universe
+
+
+def build_monthly_universe(cal: pd.DatetimeIndex) -> dict[tuple[int, int], set[str]]:
+    """Map each (year, month) in `cal` to the point-in-time S&P 500 membership,
+    evaluated once on the first trading day of that month (not recalculated
+    daily). Used both to restrict signal candidates and to derive the set of
+    tickers whose data must be loaded.
+    """
+    members: dict[tuple[int, int], set[str]] = {}
+    for ts in cal:
+        key = (ts.year, ts.month)
+        if key not in members:  # first trading day of this month
+            members[key] = set(get_universe(ts.date().isoformat()))
+    return members
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 _WARMUP_START = "2016-01-01"
@@ -50,18 +65,29 @@ VARIANTS = [
 def load_all_data(
     prices_obj: PriceData,
     fund: EdgarFundamentals,
+    tickers: list[str] | None = None,
 ) -> tuple[dict, pd.DataFrame, pd.Series]:
-    """Load signals and prices for all tickers.
+    """Load signals and prices for `tickers` (defaults to the legacy 50-ticker
+    VALIDATION_UNIVERSE for backward compatibility).
+
+    For the point-in-time S&P 500 backtest this is called with the union of all
+    monthly memberships. Tickers without usable price history are skipped
+    silently; the EDGAR quality gate is only fetched for tickers that actually
+    produce a raw price BUY (most names never dip-signal in a given window, so
+    this avoids hundreds of needless companyfacts downloads).
 
     Returns:
         crossings_by_ticker  — {ticker: [(ts, comp, close, dd), ...]}
         prices_wide          — DataFrame[date × ticker] of adjusted closes
         spy_close            — Series of SPY adjusted closes
     """
+    if tickers is None:
+        tickers = list(VALIDATION_UNIVERSE)
+
     crossings_by_ticker: dict[str, list] = {}
     price_series: dict[str, pd.Series]  = {}
 
-    for ticker in VALIDATION_UNIVERSE:
+    for ticker in tickers:
         ohlcv = prices_obj.get_prices(ticker, _WARMUP_START, "2024-12-31")
         if ohlcv is None or ohlcv.empty or len(ohlcv) < 252:
             continue
@@ -69,6 +95,15 @@ def load_all_data(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             scored = compute_recovery_signals(ohlcv)
+
+        comp_series = scored["composite_score"]
+        price_series[ticker] = scored["Close"]
+
+        # Skip the EDGAR round-trip entirely when the price signal never even
+        # crosses the BUY threshold for this ticker (no possible entry).
+        if not bool((comp_series >= BUY_THRESHOLD).any()):
+            crossings_by_ticker[ticker] = []
+            continue
 
         # Quality gate by year (same pre-fetch approach as backtest)
         quality: dict[int, bool] = {}
@@ -82,7 +117,7 @@ def load_all_data(
         prev_in_buy = False
         for i in range(len(scored)):
             ts   = scored.index[i]
-            comp = scored["composite_score"].iloc[i]
+            comp = comp_series.iloc[i]
             if pd.isna(comp):
                 prev_in_buy = False
                 continue
@@ -98,7 +133,6 @@ def load_all_data(
             prev_in_buy = in_buy
 
         crossings_by_ticker[ticker] = crossings
-        price_series[ticker]        = scored["Close"]
 
     prices_wide = pd.DataFrame(price_series).ffill().bfill()
 
@@ -116,8 +150,14 @@ def simulate(
     master_cal: pd.DatetimeIndex,
     pct: float,
     max_pos: int,
+    month_members: dict[tuple[int, int], set[str]] | None = None,
 ) -> dict:
-    """Run one portfolio variant over master_cal."""
+    """Run one portfolio variant over master_cal.
+
+    When `month_members` is supplied, a signal can only open a position if its
+    ticker was an S&P 500 member in the month of the signal day (point-in-time
+    universe). When None, every signal is eligible (legacy behaviour).
+    """
 
     # Event index: date → [(ticker, comp, price, dd), ...]
     events_by_date: dict = defaultdict(list)
@@ -185,6 +225,12 @@ def simulate(
 
         # 2. Process new signals (highest composite first)
         for ticker, comp, crossing_price, dd in sorted(events_by_date.get(day, []), key=lambda x: -x[1]):
+            # Point-in-time S&P 500 membership gate (evaluated per month)
+            if month_members is not None and \
+               ticker not in month_members.get((day.year, day.month), ()):
+                skipped.append({"date": day.date(), "ticker": ticker, "comp": comp, "reason": "not_in_universe"})
+                continue
+
             # 252d suppression: based on actual entries only
             if ticker in last_entry_cal_idx:
                 if (day_idx - last_entry_cal_idx[ticker]) < _HOLD_DAYS:
@@ -596,20 +642,34 @@ def print_report(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    print("Loading price data and computing signals (cached — fast)...")
+    print("Loading price data and computing signals (point-in-time S&P 500 universe)...")
     prices_obj = PriceData()
     fund       = EdgarFundamentals(fallback=PointInTimeFundamentals())
 
-    crossings_by_ticker, prices_wide, spy_close = load_all_data(prices_obj, fund)
-
-    # Master trading calendar: SPY trading days in 2018-2024
+    # Master trading calendar comes from SPY; load it first so we can resolve the
+    # point-in-time universe per month before loading the (large) ticker set.
+    spy_raw   = prices_obj.get_prices("SPY", _WARMUP_START, "2024-12-31")
+    spy_close = spy_raw["Close"] if spy_raw is not None and not spy_raw.empty else pd.Series(dtype=float)
     spy_sim   = spy_close[(spy_close.index >= _SIM_START) & (spy_close.index <= _SIM_END)]
     master_cal = spy_sim.index
 
+    # Point-in-time S&P 500 membership, evaluated on the first trading day of each
+    # month and reused all month. Union over the window is the load set.
+    month_members = build_monthly_universe(master_cal)
+    universe_union = sorted(set().union(*month_members.values()))
     print(f"  Master calendar: {master_cal[0].date()} – {master_cal[-1].date()}  ({len(master_cal)} trading days)")
-    print(f"  Tickers with signals: {len(crossings_by_ticker)}")
+    print(f"  Point-in-time universe: {len(month_members)} months, "
+          f"{len(universe_union)} distinct tickers over the window")
+
+    crossings_by_ticker, prices_wide, spy_close = load_all_data(prices_obj, fund, universe_union)
+
+    n_with_data = len(crossings_by_ticker)
+    n_with_signals = sum(1 for v in crossings_by_ticker.values() if v)
     total_crossings = sum(len(v) for v in crossings_by_ticker.values())
-    print(f"  Total BUY crossings (pre-suppression): {total_crossings}")
+    print(f"  Tickers with price data: {n_with_data} / {len(universe_union)} "
+          f"(missing data → delisted/renamed names with no usable history)")
+    print(f"  Tickers with ≥1 BUY crossing: {n_with_signals}  "
+          f"(total crossings pre-suppression: {total_crossings})")
     print()
 
     # SPY benchmark
@@ -621,7 +681,8 @@ def main() -> None:
 
     for vspec in VARIANTS:
         print(f"Running {vspec['name']}...")
-        res = simulate(crossings_by_ticker, prices_wide, master_cal, vspec["pct"], vspec["max_pos"])
+        res = simulate(crossings_by_ticker, prices_wide, master_cal, vspec["pct"], vspec["max_pos"],
+                       month_members=month_members)
         met = compute_metrics(res["daily_values"], _INITIAL_CAP)
         all_results.append(res)
         all_metrics.append(met)

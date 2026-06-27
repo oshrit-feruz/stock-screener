@@ -79,12 +79,29 @@ def fetch_chart(ticker: str, start: str, end: str) -> pd.DataFrame:
     return df
 
 
+def _load_ticker_list() -> list[str]:
+    """Default universe + SPY, or a custom list via `--tickers <file>`.
+
+    The file is one ticker per line (blank lines ignored). SPY is always
+    appended so the trading calendar / benchmark is available.
+    """
+    if "--tickers" in sys.argv:
+        path = Path(sys.argv[sys.argv.index("--tickers") + 1])
+        names = [ln.strip() for ln in path.read_text().splitlines() if ln.strip()]
+        if "SPY" not in names:
+            names.append("SPY")
+        return names
+    return list(VALIDATION_UNIVERSE) + ["SPY"]
+
+
 def main() -> None:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    tickers = list(VALIDATION_UNIVERSE) + ["SPY"]
+    tickers = _load_ticker_list()
     ok, fail = 0, 0
     for t in tickers:
-        path = _CACHE_DIR / f"{t}_{_START}_{_END}.pkl"
+        # Cache filename must match PriceData._cache_path: keyed by ticker+start
+        # only (end is excluded; the reader slices to the requested end).
+        path = _CACHE_DIR / f"{t}_{_START}.pkl"
         if path.exists():
             ok += 1
             continue
