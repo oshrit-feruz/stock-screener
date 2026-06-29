@@ -172,25 +172,54 @@ def main():
             ep = px_arr[idx, ci]; xp = px_arr[min(idx + 252, cal_n - 1), ci]
             if np.isfinite(ep) and ep > 0 and np.isfinite(xp):
                 pool.append((comp, xp / ep - 1.0))
+    bucket_avg = {}
     for label, lo, hi in [("0.60–0.64", 0.60, 0.65), ("0.65+", 0.65, 1.01)]:
         rets = [r for c, r in pool if lo <= c < hi]
         avg = (np.mean(rets) * 100) if rets else 0.0
         win = (np.mean([1 if r > 0 else 0 for r in rets]) * 100) if rets else 0.0
+        bucket_avg[label] = avg
         print(f"    {label:<10}  {len(rets):>3} signals ({len(rets)/len(_YEARS):>4.1f}/yr)   "
               f"avg 252d ret {avg:>+6.1f}%   win {win:>3.0f}%")
     print()
 
-    # ── Key question ───────────────────────────────────────────────────────────
+    # ── Key question (honest, not just sign of the difference) ─────────────────
     A, B = metrics[0.60], metrics[0.65]
-    better = B["cagr"] > A["cagr"] and B["sharpe"] > A["sharpe"]
+    cand_sy = tstats[0.65][2]
+    d_cagr = B["cagr"] - A["cagr"]
+    d_sharpe = B["sharpe"] - A["sharpe"]
+    both_better = d_cagr > 0 and d_sharpe > 0
+    freq_ok = cand_sy >= 3.0
+    score_monotonic = bucket_avg.get("0.65+", 0) >= bucket_avg.get("0.60–0.64", 0)
+    tiny = abs(d_cagr) < 0.01 and abs(d_sharpe) < 0.10
+    robust = both_better and freq_ok and score_monotonic and not tiny
+
     print(div)
     print("KEY QUESTION — does thr 0.65 also beat 0.60 out-of-sample (2010-2017)?")
     print(div)
-    print(f"  CAGR:   0.60 {A['cagr']:+.1%}  vs  0.65 {B['cagr']:+.1%}   ({B['cagr']-A['cagr']:+.1%})")
-    print(f"  Sharpe: 0.60 {A['sharpe']:.2f}  vs  0.65 {B['sharpe']:.2f}   ({B['sharpe']-A['sharpe']:+.2f})")
+    print(f"  CAGR:   0.60 {A['cagr']:+.1%}  vs  0.65 {B['cagr']:+.1%}   ({d_cagr:+.1%})")
+    print(f"  Sharpe: 0.60 {A['sharpe']:.2f}  vs  0.65 {B['sharpe']:.2f}   ({d_sharpe:+.2f})")
     print(f"  Max DD: 0.60 {A['max_dd']:+.1%}  vs  0.65 {B['max_dd']:+.1%}")
-    print(f"  >>> {'ROBUST' if better else 'NOT CONFIRMED'} — 0.65 "
-          f"{'beats' if better else 'does NOT beat'} 0.60 on both CAGR and Sharpe out-of-sample.")
+    print(f"  Candidate frequency: {cand_sy:.1f} signals/yr "
+          f"({'OK' if freq_ok else 'BELOW the 3/yr reliability floor'})")
+    print(f"  Score→return: 0.65+ avg {bucket_avg.get('0.65+',0):+.1f}% vs "
+          f"0.60–0.64 {bucket_avg.get('0.60–0.64',0):+.1f}% "
+          f"({'monotonic' if score_monotonic else 'INVERTED — higher score did WORSE here'})")
+    print()
+    if robust:
+        print("  >>> ROBUST — 0.65 beats 0.60 on both metrics with a reliable signal count.")
+    else:
+        reasons = []
+        if tiny:
+            reasons.append("the gap is within noise")
+        if not freq_ok:
+            reasons.append(f"0.65 fires only {cand_sy:.1f}/yr (< 3)")
+        if not score_monotonic:
+            reasons.append("higher scores UNDER-performed here (the premise inverts)")
+        if not both_better:
+            reasons.append("0.65 does not win on both metrics")
+        print("  >>> NOT CONFIRMED — " + "; ".join(reasons) + ".")
+        print("      The 2018-2024 advantage of 0.65 does not replicate out-of-sample;")
+        print("      treat it as overfitting and keep the threshold at 0.60.")
     print()
 
     # ── Chart ──────────────────────────────────────────────────────────────────
