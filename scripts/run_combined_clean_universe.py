@@ -47,7 +47,8 @@ _TOP_N = 100
 
 
 def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mode,
-             rate_on_cal, month_members, max_pos=10, regime_ok=None, blocked_log=None):
+             rate_on_cal, month_members, max_pos=10, regime_ok=None, blocked_log=None,
+             entry_threshold=0.0):
     """One run: membership gate × sizing (flat|score_plus) × cash (zero|fed_funds).
 
     regime_ok: optional bool array aligned to master_cal. When supplied, no NEW
@@ -102,11 +103,13 @@ def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mod
                 ep = p["entry_price"]
             cash += p["shares"] * ep
             trades.append({"ticker": p["ticker"], "entry_date": p["entry_date"].date(),
-                           "ret": ep / p["entry_price"] - 1})
+                           "ret": ep / p["entry_price"] - 1, "comp": p["comp"]})
 
         regime_blocked = regime_ok is not None and not bool(regime_ok[di])
         for ticker, comp, crossing_price, dd in sorted(events_by_date.get(day, []),
                                                        key=lambda x: -x[1]):
+            if comp < entry_threshold:
+                continue
             if ticker not in month_members.get((day.year, day.month), ()):
                 continue
             fresh = not (ticker in last_entry and (di - last_entry[ticker]) < _HOLD_DAYS)
@@ -136,7 +139,7 @@ def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mod
             if ep <= 0:
                 continue
             pid += 1
-            open_pos[pid] = {"ticker": ticker, "entry_date": day, "entry_price": ep,
+            open_pos[pid] = {"ticker": ticker, "entry_date": day, "entry_price": ep, "comp": comp,
                              "shares": alloc / ep, "exit_idx": min(di + _HOLD_DAYS, len(master_cal) - 1)}
             last_entry[ticker] = di
             cash -= alloc
