@@ -39,8 +39,16 @@ def _unix(d: str) -> int:
     return int(datetime.fromisoformat(d).replace(tzinfo=timezone.utc).timestamp())
 
 
-def fetch_chart(ticker: str, start: str, end: str) -> pd.DataFrame:
-    """Fetch daily OHLCV from Yahoo, auto-adjusted to match yfinance."""
+def fetch_chart(ticker: str, start: str, end: str, adjust: bool = True) -> pd.DataFrame:
+    """Fetch daily OHLCV from Yahoo.
+
+    adjust=True  → split+dividend adjusted (matches yfinance auto_adjust); this is
+                   what the backtest uses.
+    adjust=False → RAW (unadjusted) OHLC. Required for point-in-time market cap:
+                   raw price × raw EDGAR shares. Adjusted prices would deflate any
+                   future-splitter (e.g. NVDA 40:1, AMZN 20:1) and corrupt the
+                   cross-sectional size ranking.
+    """
     # end is exclusive in yfinance download; pad +2 days to be safe, we trim later.
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -67,11 +75,27 @@ def fetch_chart(ticker: str, start: str, end: str) -> pd.DataFrame:
         index=idx,
     )
     df = df.dropna(subset=["Close", "AdjClose"])
-    # Apply auto_adjust: scale OHLC by adjclose/close, then Close := adjclose.
-    factor = df["AdjClose"] / df["Close"]
-    for col in ("Open", "High", "Low"):
-        df[col] = df[col] * factor
-    df["Close"] = df["AdjClose"]
+    if adjust:
+        # Apply auto_adjust: scale OHLC by adjclose/close, then Close := adjclose.
+        factor = df["AdjClose"] / df["Close"]
+        for col in ("Open", "High", "Low"):
+            df[col] = df[col] * factor
+        df["Close"] = df["AdjClose"]
+    else:
+        # Yahoo's quote.close is already split-adjusted (not dividend-adjusted).
+        # Undo the split adjustment to recover the TRUE unadjusted price: each row
+        # is multiplied by the product of split ratios that occurred AFTER it.
+        splits = (res.get("events", {}) or {}).get("splits", {}) or {}
+        split_factor = pd.Series(1.0, index=df.index)
+        for ev in splits.values():
+            num, den = ev.get("numerator"), ev.get("denominator")
+            ev_ts = ev.get("date")
+            if not (num and den and ev_ts):
+                continue
+            split_day = pd.Timestamp(int(ev_ts), unit="s").normalize()
+            split_factor[df.index < split_day] *= float(num) / float(den)
+        for col in ("Open", "High", "Low", "Close"):
+            df[col] = df[col] * split_factor
     df = df.drop(columns=["AdjClose"])
     df.index.name = "Date"
     # Trim to [start, end) to mirror yfinance's end-exclusive behaviour.
@@ -95,18 +119,22 @@ def _load_ticker_list() -> list[str]:
 
 
 def main() -> None:
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # --raw: store UNADJUSTED prices under data/cache/prices_raw (for point-in-time
+    # market cap). Default: split/div-adjusted prices for the backtest.
+    raw = "--raw" in sys.argv
+    cache_dir = (_CACHE_DIR.parent / "prices_raw") if raw else _CACHE_DIR
+    cache_dir.mkdir(parents=True, exist_ok=True)
     tickers = _load_ticker_list()
     ok, fail = 0, 0
     for t in tickers:
         # Cache filename must match PriceData._cache_path: keyed by ticker+start
         # only (end is excluded; the reader slices to the requested end).
-        path = _CACHE_DIR / f"{t}_{_START}.pkl"
+        path = cache_dir / f"{t}_{_START}.pkl"
         if path.exists():
             ok += 1
             continue
         try:
-            df = fetch_chart(t, _START, _END)
+            df = fetch_chart(t, _START, _END, adjust=not raw)
             if df.empty or len(df) < 252:
                 print(f"  SKIP {t}: only {len(df)} rows")
                 fail += 1
@@ -119,7 +147,7 @@ def main() -> None:
             fail += 1
             print(f"  FAIL {t}: {repr(e)[:120]}")
         time.sleep(0.3)
-    print(f"\nDone. cached={ok} failed={fail} -> {_CACHE_DIR}")
+    print(f"\nDone. cached={ok} failed={fail} -> {cache_dir}")
 
 
 if __name__ == "__main__":

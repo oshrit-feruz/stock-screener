@@ -17,7 +17,6 @@ import bisect
 import csv
 import io
 import json
-import os
 import time
 from datetime import date as _date
 from pathlib import Path
@@ -130,175 +129,161 @@ def get_universe(date: str) -> list[str]:
     return list(_snapshots[idx][1])
 
 
-# ── Market-cap size filter ────────────────────────────────────────────────────
+# ── Point-in-time market-cap size filter ─────────────────────────────────
 #
-# CAVEAT: this uses *current* market cap as a static proxy and applies it to all
-# historical dates (cached 30 days). That is what the spec asks for, but two
-# biases follow and must be read alongside any top-N result:
-#   1. Ranking by today's size favours the names that *grew* — a form of
-#      look-ahead/survivorship bias.
-#   2. Delisted/renamed names usually have no current cap, so they are silently
-#      excluded — exactly the failures the point-in-time universe was meant to
-#      include. An unbiased version would use price × historical shares
-#      outstanding (e.g. from EDGAR) per date.
+# Market cap is computed point-in-time, NOT from a current snapshot:
+#     pit_market_cap = raw_close_on_date × shares_outstanding_from_EDGAR
 #
-# Transport note: yfinance's `info` (curl_cffi backend) cannot complete a TLS
-# handshake through the agent proxy. yfinance reads marketCap from Yahoo's
-# `v7/finance/quote` endpoint, so we read that same endpoint directly with plain
-# `requests` (it needs a crumb + cookie). FMP's `quote` endpoint is a last
-# resort. All three yield the same `marketCap` field.
+# - raw_close: UNADJUSTED close from data/cache/prices_raw (split-adjusted prices
+#   would deflate any future-splitter — NVDA 40:1, AMZN/GOOGL 20:1, AAPL 4:1 —
+#   and corrupt the cross-sectional ranking).
+# - shares: EdgarFundamentals.get_shares_outstanding with the same 90-day
+#   publication lag as the quality gate (most recent 10-K/10-Q filed on or before
+#   date − 90d).
+# If either is missing the ticker is excluded — there is NO fallback to current
+# market cap. Results cached under data/cache/pit_market_cap/ (30-day TTL), keyed
+# by ticker+date (monthly granularity).
 
-_MCAP_DIR = Path(__file__).parent / "cache" / "market_cap"
-_MCAP_FILE = _MCAP_DIR / "market_caps.json"
-_MCAP_TTL_SECONDS = 30 * 86400
-_mcap_cache: dict[str, dict] | None = None  # ticker -> {"marketCap": float|None, "ts": epoch}
-_yahoo_session = None
-_yahoo_crumb: str | None = None
+_RAW_PRICE_DIR = Path(__file__).parent / "cache" / "prices_raw"
+_RAW_PRICE_START = "2016-01-01"
+_PIT_MCAP_DIR = Path(__file__).parent / "cache" / "pit_market_cap"
+_PIT_MCAP_FILE = _PIT_MCAP_DIR / "pit_market_caps.json"
+_PIT_MCAP_TTL_SECONDS = 30 * 86400
 
-
-def _yahoo_quote(symbols: list[str]) -> dict[str, float | None]:
-    """Batch marketCap from Yahoo's quote endpoint (the source yfinance uses).
-
-    Establishes a cookie + crumb once and reuses it; refreshes on a 401.
-    Returns {symbol: marketCap|None}; symbols absent from the response map to None.
-    """
-    global _yahoo_session, _yahoo_crumb
-    out: dict[str, float | None] = {s: None for s in symbols}
-    try:
-        if _yahoo_session is None:
-            _yahoo_session = requests.Session()
-            _yahoo_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-            _yahoo_session.get("https://fc.yahoo.com", timeout=15)
-            _yahoo_crumb = _yahoo_session.get(
-                "https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15
-            ).text.strip()
-
-        for i in range(0, len(symbols), 50):
-            batch = symbols[i:i + 50]
-            r = _yahoo_session.get(
-                "https://query1.finance.yahoo.com/v7/finance/quote",
-                params={"symbols": ",".join(batch), "crumb": _yahoo_crumb},
-                timeout=20,
-            )
-            if r.status_code == 401:  # crumb expired — refresh once and retry
-                _yahoo_crumb = _yahoo_session.get(
-                    "https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15
-                ).text.strip()
-                r = _yahoo_session.get(
-                    "https://query1.finance.yahoo.com/v7/finance/quote",
-                    params={"symbols": ",".join(batch), "crumb": _yahoo_crumb},
-                    timeout=20,
-                )
-            if r.status_code != 200:
-                continue
-            for q in r.json().get("quoteResponse", {}).get("result", []):
-                mc = q.get("marketCap")
-                if mc:
-                    out[q.get("symbol")] = float(mc)
-    except Exception:
-        pass
-    return out
+_pit_cache: dict[str, dict] | None = None
+_raw_frames: dict[str, object] = {}      # ticker -> DataFrame | None (memoised)
+_edgar = None                            # lazy EdgarFundamentals
+_shares_memo: dict[tuple[str, str], float | None] = {}
 
 
-def _load_mcap_cache() -> dict[str, dict]:
-    global _mcap_cache
-    if _mcap_cache is None:
-        _MCAP_DIR.mkdir(parents=True, exist_ok=True)
-        if _MCAP_FILE.exists():
+def _get_edgar():
+    global _edgar
+    if _edgar is None:
+        from core.data.edgar import EdgarFundamentals
+        from core.data.fundamentals import PointInTimeFundamentals
+        _edgar = EdgarFundamentals(fallback=PointInTimeFundamentals())
+    return _edgar
+
+
+def _raw_close(ticker: str, date: str) -> float | None:
+    """Unadjusted closing price on or before `date` from the raw price cache."""
+    import pickle
+
+    if ticker not in _raw_frames:
+        path = _RAW_PRICE_DIR / f"{ticker}_{_RAW_PRICE_START}.pkl"
+        if not path.exists():
+            matches = sorted(_RAW_PRICE_DIR.glob(f"{ticker}_*.pkl"))
+            path = matches[0] if matches else None
+        frame = None
+        if path is not None and path.exists():
             try:
-                _mcap_cache = json.loads(_MCAP_FILE.read_text())
+                with open(path, "rb") as f:
+                    frame = pickle.load(f)
             except Exception:
-                _mcap_cache = {}
-        else:
-            _mcap_cache = {}
-    return _mcap_cache
+                frame = None
+        _raw_frames[ticker] = frame
 
+    frame = _raw_frames[ticker]
+    if frame is None or getattr(frame, "empty", True):
+        return None
+    import pandas as pd
 
-def _save_mcap_cache() -> None:
-    if _mcap_cache is not None:
-        _MCAP_DIR.mkdir(parents=True, exist_ok=True)
-        _MCAP_FILE.write_text(json.dumps(_mcap_cache))
-
-
-def _fetch_market_cap(ticker: str) -> float | None:
-    """Current market cap for `ticker`, or None if unavailable.
-
-    Tries yfinance first (the spec's source); falls back to FMP's `quote`
-    endpoint via `requests` because the vendored yfinance/curl_cffi cannot reach
-    Yahoo through the agent proxy.
-    """
+    sub = frame[frame.index <= pd.Timestamp(date)]
+    if sub.empty:
+        return None
     try:
-        import yfinance as yf
-
-        mc = yf.Ticker(ticker).info.get("marketCap")
-        if mc:
-            return float(mc)
+        return float(sub["Close"].iloc[-1])
     except Exception:
-        pass
+        return None
 
-    mc = _yahoo_quote([ticker]).get(ticker)
-    if mc:
-        return mc
 
-    key = os.environ.get("FMP_API_KEY")
-    if key:
+def _shares(ticker: str, date: str) -> float | None:
+    key = (ticker, date)
+    if key not in _shares_memo:
         try:
-            r = requests.get(
-                "https://financialmodelingprep.com/stable/quote",
-                params={"symbol": ticker, "apikey": key},
-                timeout=20,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, list) and data:
-                    mc = data[0].get("marketCap")
-                    if mc:
-                        return float(mc)
+            _shares_memo[key] = _get_edgar().get_shares_outstanding(ticker, date)
         except Exception:
-            pass
-    return None
+            _shares_memo[key] = None
+    return _shares_memo[key]
 
 
-def _market_cap(ticker: str) -> float | None:
-    cache = _load_mcap_cache()
-    entry = cache.get(ticker)
-    if entry is not None and (time.time() - entry.get("ts", 0)) < _MCAP_TTL_SECONDS:
-        mc = entry.get("marketCap")
+def _load_pit_cache() -> dict[str, dict]:
+    global _pit_cache
+    if _pit_cache is None:
+        _PIT_MCAP_DIR.mkdir(parents=True, exist_ok=True)
+        if _PIT_MCAP_FILE.exists():
+            try:
+                _pit_cache = json.loads(_PIT_MCAP_FILE.read_text())
+            except Exception:
+                _pit_cache = {}
+        else:
+            _pit_cache = {}
+    return _pit_cache
+
+
+def _save_pit_cache() -> None:
+    if _pit_cache is not None:
+        _PIT_MCAP_DIR.mkdir(parents=True, exist_ok=True)
+        _PIT_MCAP_FILE.write_text(json.dumps(_pit_cache))
+
+
+def pit_market_cap(ticker: str, date: str) -> float | None:
+    """Point-in-time market cap = raw close × EDGAR shares outstanding.
+
+    Returns None (and caches None) if either input is missing. Cached 30 days.
+    """
+    cache = _load_pit_cache()
+    ck = f"{ticker}|{date}"
+    entry = cache.get(ck)
+    if entry is not None and (time.time() - entry.get("ts", 0)) < _PIT_MCAP_TTL_SECONDS:
+        mc = entry.get("mcap")
         return float(mc) if mc is not None else None
-    mc = _fetch_market_cap(ticker)
-    cache[ticker] = {"marketCap": mc, "ts": time.time()}
-    _save_mcap_cache()
+
+    mc = _compute_pit_mcap(ticker, date)
+    cache[ck] = {"mcap": mc, "ts": time.time()}
+    _save_pit_cache()
     return mc
 
 
-def prefetch_market_caps(tickers: list[str]) -> None:
-    """Warm the market-cap cache for many tickers up front via Yahoo's batched
-    quote endpoint (one save at the end). Only fetches tickers whose cached value
-    is missing or older than the TTL."""
-    cache = _load_mcap_cache()
-    stale = [t for t in tickers
-             if cache.get(t) is None
-             or (time.time() - cache[t].get("ts", 0)) >= _MCAP_TTL_SECONDS]
-    if not stale:
-        return
-    caps = _yahoo_quote(stale)
+def _compute_pit_mcap(ticker: str, date: str) -> float | None:
+    px = _raw_close(ticker, date)
+    if not px or px <= 0:          # no price → skip the EDGAR lookup entirely
+        return None
+    sh = _shares(ticker, date)
+    return float(px * sh) if (sh and sh > 0) else None
+
+
+def prefetch_pit_market_caps(tickers: list[str], dates: list[str]) -> None:
+    """Warm the point-in-time market-cap cache for the (ticker, date) grid, with a
+    single save at the end."""
+    cache = _load_pit_cache()
     now = time.time()
-    for t in stale:
-        cache[t] = {"marketCap": caps.get(t), "ts": now}
-    _save_mcap_cache()
+    changed = False
+    for date in dates:
+        for t in tickers:
+            ck = f"{t}|{date}"
+            entry = cache.get(ck)
+            if entry is not None and (now - entry.get("ts", 0)) < _PIT_MCAP_TTL_SECONDS:
+                continue
+            cache[ck] = {"mcap": _compute_pit_mcap(t, date), "ts": now}
+            changed = True
+    if changed:
+        _save_pit_cache()
 
 
 def get_universe_top_n(date: str, n: int) -> list[str]:
-    """The `n` largest S&P 500 members on `date` by (current) market cap.
+    """The `n` largest S&P 500 members on `date` by POINT-IN-TIME market cap
+    (raw close × EDGAR shares outstanding, 90-day filing lag).
 
-    Members with no available market cap are excluded silently. Returns fewer
-    than `n` tickers only if too few members have a usable cap.
+    Members whose point-in-time market cap cannot be computed (no price or no
+    EDGAR filing in range) are excluded silently. No current-market-cap fallback.
     """
     members = get_universe(date)
-    capped = [(t, _market_cap(t)) for t in members]
+    capped = [(t, pit_market_cap(t, date)) for t in members]
     capped = [(t, mc) for t, mc in capped if mc is not None and mc > 0]
     capped.sort(key=lambda x: -x[1])
     return [t for t, _ in capped[:n]]
+
 
 
 def validate_universe(date: str) -> None:

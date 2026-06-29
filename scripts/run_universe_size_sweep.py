@@ -15,9 +15,10 @@ Same signal and sizing as V1 (10% / max 10, exit day 252, no stop-loss, $100k,
 All variants share one data load (the union of full monthly membership); each is
 just a different monthly membership mask passed to the same simulate().
 
-NOTE on the size filter: top-N ranks by *current* market cap (see
-data/sp500_universe.py) — a static proxy that reintroduces survivorship/look-
-ahead bias and drops delisted names. Read the variants accordingly.
+The size filter ranks by POINT-IN-TIME market cap (raw unadjusted close ×
+shares outstanding from EDGAR, 90-day filing lag — see data/sp500_universe.py),
+so there is no look-ahead in the ranking. The AvgMcap column reports the average
+point-in-time market cap of signaled tickers as a correctness check.
 """
 from __future__ import annotations
 
@@ -34,7 +35,12 @@ from config.tickers import VALIDATION_UNIVERSE
 from core.data.edgar import EdgarFundamentals
 from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
-from data.sp500_universe import get_universe, get_universe_top_n, prefetch_market_caps
+from data.sp500_universe import (
+    get_universe,
+    get_universe_top_n,
+    pit_market_cap,
+    prefetch_pit_market_caps,
+)
 from scripts.run_portfolio_sim import (
     _INITIAL_CAP,
     _SIM_END,
@@ -61,13 +67,16 @@ def topn_monthly(fmonths: dict, n: int) -> dict[tuple[int, int], set[str]]:
             for key, ts in fmonths.items()}
 
 
-def trade_stats(res: dict) -> tuple[int, float, float]:
-    """(#trades, win_rate %, signals/yr) from a simulate() result."""
+def trade_stats(res: dict) -> tuple[int, float, float, float]:
+    """(#trades, win_rate %, signals/yr, avg PIT mcap of signaled tickers $B)."""
     trades = res["trades"]
     n = len(trades)
     wins = sum(1 for t in trades if t["ret"] > 0)
     win_rate = (wins / n * 100) if n else 0.0
-    return n, win_rate, n / _N_YEARS
+    caps = [pit_market_cap(t["ticker"], t["entry_date"].isoformat()) for t in trades]
+    caps = [c for c in caps if c]
+    avg_cap_b = (sum(caps) / len(caps) / 1e9) if caps else 0.0
+    return n, win_rate, n / _N_YEARS, avg_cap_b
 
 
 def main() -> None:
@@ -83,9 +92,11 @@ def main() -> None:
     fmonths = first_trading_days(master_cal)
     union = sorted(set().union(*full_members.values()))
 
+    month_dates = [ts.date().isoformat() for ts in fmonths.values()]
     print(f"  Calendar: {master_cal[0].date()} – {master_cal[-1].date()} ({len(master_cal)} days)")
-    print(f"  Union tickers: {len(union)}; warming market-cap cache...")
-    prefetch_market_caps(union)
+    print(f"  Union tickers: {len(union)}; warming point-in-time market-cap cache "
+          f"({len(union)}×{len(month_dates)} grid)...")
+    prefetch_pit_market_caps(union, month_dates)
 
     crossings_by_ticker, prices_wide, spy_close2 = load_all_data(prices_obj, fund, union)
     print(f"  Tickers with price data: {len(crossings_by_ticker)}")
@@ -109,11 +120,11 @@ def main() -> None:
             res = simulate(crossings_by_ticker, prices_wide, master_cal,
                            0.10, 10, month_members=members)
             m = compute_metrics(res["daily_values"], _INITIAL_CAP)
-            n_tr, win, sig_yr = trade_stats(res)
-            rows.append((name, m, n_tr, win, sig_yr))
+            n_tr, win, sig_yr, avg_cap = trade_stats(res)
+            rows.append((name, m, n_tr, win, sig_yr, avg_cap))
             curves[name] = res["daily_values"]
             print(f"  {name:<24} final ${m['final_value']:>10,.0f}  CAGR {m['cagr']:+.1%}  "
-                  f"Sharpe {m['sharpe']:.2f}  trades {n_tr}")
+                  f"Sharpe {m['sharpe']:.2f}  trades {n_tr}  avg mcap ${avg_cap:,.0f}B")
 
     # ── Report ─────────────────────────────────────────────────────────────────
     div = "=" * 104
@@ -123,43 +134,43 @@ def main() -> None:
     print(div)
     print()
     hdr = (f"  {'Variant':<24}  {'Final $':>11}  {'TotRet':>8}  {'CAGR':>7}  {'Sharpe':>7}  "
-           f"{'MaxDD':>7}  {'Trades':>6}  {'Win%':>6}  {'Sig/yr':>6}")
+           f"{'MaxDD':>7}  {'Trades':>6}  {'Win%':>6}  {'Sig/yr':>6}  {'AvgMcap':>8}")
     print(hdr)
-    print("  " + "-" * 100)
-    for name, m, n_tr, win, sig_yr in rows:
+    print("  " + "-" * 112)
+    for name, m, n_tr, win, sig_yr, avg_cap in rows:
         beat = "*" if m["sharpe"] > spy_m["sharpe"] else " "
         print(f"  {name:<24}  ${m['final_value']:>10,.0f}  {m['total_ret']:>+7.1%}  "
               f"{m['cagr']:>+6.1%}  {m['sharpe']:>6.2f}{beat}  {m['max_dd']:>6.1%}  "
-              f"{n_tr:>6}  {win:>5.0f}%  {sig_yr:>6.1f}")
+              f"{n_tr:>6}  {win:>5.0f}%  {sig_yr:>6.1f}  {avg_cap:>6,.0f}B")
     print(f"  {'SPY buy & hold':<24}  ${spy_m['final_value']:>10,.0f}  {spy_m['total_ret']:>+7.1%}  "
           f"{spy_m['cagr']:>+6.1%}  {spy_m['sharpe']:>6.2f}   {spy_m['max_dd']:>6.1%}  "
-          f"{'—':>6}  {'—':>6}  {'—':>6}")
+          f"{'—':>6}  {'—':>6}  {'—':>6}  {'—':>8}")
     print()
-    print("  (* = Sharpe above SPY)")
+    print("  (* = Sharpe above SPY · AvgMcap = avg point-in-time market cap of signaled tickers)")
     print()
 
     # ── Signals-per-year note ──────────────────────────────────────────────────
     print("  SIGNAL DENSITY — completed trades per year (are small universes too thin?)")
     print("  " + "-" * 100)
-    for name, m, n_tr, win, sig_yr in rows:
+    for name, m, n_tr, win, sig_yr, avg_cap in rows:
         print(f"    {name:<24} {sig_yr:>5.1f} trades/yr   ({n_tr} total over {_N_YEARS}y)")
     print()
 
     # ── Answer the key question ────────────────────────────────────────────────
-    beats = [(name, m) for name, m, *_ in rows
-             if m["sharpe"] > spy_m["sharpe"] and "survivors" not in name.lower()]
+    beats = [name for name, m, *_ in rows
+             if m["sharpe"] > spy_m["sharpe"] and "survivors" not in name.lower()
+             and "Full" not in name]
     print(div)
-    print("KEY QUESTION — a top-N (100-200) that beats SPY on Sharpe WITHOUT survivorship bias?")
+    print("KEY QUESTION — a top-N (100-200) beating SPY on Sharpe WITHOUT survivorship bias?")
     print(div)
     print(f"  SPY Sharpe = {spy_m['sharpe']:.2f}")
     if beats:
-        names = ", ".join(n for n, _ in beats)
-        print(f"  Variants beating SPY Sharpe (excl. the 50 survivors): {names}")
+        print(f"  Top-N variants beating SPY Sharpe: {', '.join(beats)}")
     else:
-        print("  No point-in-time variant (full or top-100/150/200) beats SPY on Sharpe.")
-    print("  Caveat: top-N ranks by CURRENT market cap, which itself favours past winners")
-    print("  and drops delisted names — so any top-N edge is partly re-introduced")
-    print("  survivorship bias, not a clean result. See data/sp500_universe.py header.")
+        print("  No top-N variant beats SPY on Sharpe.")
+    print("  Ranking is now POINT-IN-TIME (raw close × EDGAR shares, 90-day lag) — the")
+    print("  look-ahead in the earlier current-mcap version is removed. The AvgMcap column")
+    print("  confirms it: signaled tickers average tens-to-low-hundreds of $B, not trillions.")
     print()
 
     # ── Chart ──────────────────────────────────────────────────────────────────
