@@ -59,7 +59,7 @@ def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mod
     events_by_date = defaultdict(list)
     for ticker, crossings in crossings_by_ticker.items():
         for ts, comp, price, dd in crossings:
-            if _SIM_START <= ts <= master_cal[-1]:
+            if master_cal[0] <= ts <= master_cal[-1]:  # bound to this sim window
                 events_by_date[ts].append((ticker, comp, price, dd))
 
     sim_prices = prices_wide.reindex(master_cal, method="ffill")

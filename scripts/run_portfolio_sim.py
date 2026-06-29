@@ -66,9 +66,15 @@ def load_all_data(
     prices_obj: PriceData,
     fund: EdgarFundamentals,
     tickers: list[str] | None = None,
+    warmup_start: str = _WARMUP_START,
+    quality_years: range | None = None,
 ) -> tuple[dict, pd.DataFrame, pd.Series]:
     """Load signals and prices for `tickers` (defaults to the legacy 50-ticker
     VALIDATION_UNIVERSE for backward compatibility).
+
+    warmup_start / quality_years let an out-of-sample window pull earlier price
+    history (e.g. 2008 warmup for a 2010 start) and the matching quality-gate
+    years (defaults to 2016 warmup and 2017-2025 quality years).
 
     For the point-in-time S&P 500 backtest this is called with the union of all
     monthly memberships. Tickers without usable price history are skipped
@@ -83,12 +89,14 @@ def load_all_data(
     """
     if tickers is None:
         tickers = list(VALIDATION_UNIVERSE)
+    if quality_years is None:
+        quality_years = range(2017, 2026)
 
     crossings_by_ticker: dict[str, list] = {}
     price_series: dict[str, pd.Series]  = {}
 
     for ticker in tickers:
-        ohlcv = prices_obj.get_prices(ticker, _WARMUP_START, "2024-12-31")
+        ohlcv = prices_obj.get_prices(ticker, warmup_start, "2024-12-31")
         if ohlcv is None or ohlcv.empty or len(ohlcv) < 252:
             continue
 
@@ -107,7 +115,7 @@ def load_all_data(
 
         # Quality gate by year (same pre-fetch approach as backtest)
         quality: dict[int, bool] = {}
-        for year in range(2017, 2026):
+        for year in quality_years:
             snap = fund.get_snapshot(ticker, date_type(year, 12, 31))
             g = passes_quality_gate(snap)
             quality[year] = False if g is None else g

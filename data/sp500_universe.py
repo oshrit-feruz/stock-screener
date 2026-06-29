@@ -170,10 +170,10 @@ def _raw_close(ticker: str, date: str) -> float | None:
     import pickle
 
     if ticker not in _raw_frames:
-        path = _RAW_PRICE_DIR / f"{ticker}_{_RAW_PRICE_START}.pkl"
-        if not path.exists():
-            matches = sorted(_RAW_PRICE_DIR.glob(f"{ticker}_*.pkl"))
-            path = matches[0] if matches else None
+        # Prefer the EARLIEST-start raw file so it covers the most history (e.g. a
+        # 2008-start file is needed for 2010-2017 dates; a 2016-start one is not).
+        matches = sorted(_RAW_PRICE_DIR.glob(f"{ticker}_*.pkl"))
+        path = matches[0] if matches else None
         frame = None
         if path is not None and path.exists():
             try:
