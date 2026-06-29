@@ -47,8 +47,14 @@ _TOP_N = 100
 
 
 def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mode,
-             rate_on_cal, month_members, max_pos=10):
-    """One run: membership gate × sizing (flat|score_plus) × cash (zero|fed_funds)."""
+             rate_on_cal, month_members, max_pos=10, regime_ok=None, blocked_log=None):
+    """One run: membership gate × sizing (flat|score_plus) × cash (zero|fed_funds).
+
+    regime_ok: optional bool array aligned to master_cal. When supplied, no NEW
+    positions open on days where regime_ok[day]==False (existing positions are
+    untouched; cash still accrues). Genuine new signals blocked this way are
+    appended to blocked_log as (date, ticker) when blocked_log is not None.
+    """
     events_by_date = defaultdict(list)
     for ticker, crossings in crossings_by_ticker.items():
         for ts, comp, price, dd in crossings:
@@ -98,11 +104,18 @@ def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mod
             trades.append({"ticker": p["ticker"], "entry_date": p["entry_date"].date(),
                            "ret": ep / p["entry_price"] - 1})
 
+        regime_blocked = regime_ok is not None and not bool(regime_ok[di])
         for ticker, comp, crossing_price, dd in sorted(events_by_date.get(day, []),
                                                        key=lambda x: -x[1]):
             if ticker not in month_members.get((day.year, day.month), ()):
                 continue
-            if ticker in last_entry and (di - last_entry[ticker]) < _HOLD_DAYS:
+            fresh = not (ticker in last_entry and (di - last_entry[ticker]) < _HOLD_DAYS)
+            if regime_blocked:
+                # Block new entries during a bear regime; log genuine new signals.
+                if fresh and blocked_log is not None:
+                    blocked_log.append((day, ticker))
+                continue
+            if not fresh:
                 continue
             if len(open_pos) >= max_pos:
                 continue
