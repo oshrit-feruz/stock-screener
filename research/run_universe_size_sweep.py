@@ -203,7 +203,7 @@ def main() -> None:
         ax.grid(True, alpha=0.3)
         ax.legend(loc="upper left", fontsize=9)
         fig.tight_layout()
-        out = Path(__file__).parent.parent / "results" / "universe_size_sweep.png"
+        out = Path(__file__).parent.parent / "results" / "research" / "universe_size_sweep.png"
         out.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out, dpi=130)
         plt.close(fig)

@@ -29,7 +29,7 @@ from core.data.edgar import EdgarFundamentals
 from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
 from data.sp500_universe import get_universe, get_universe_top_n, prefetch_pit_market_caps
-from scripts.run_combined_clean_universe import _TOP_N, simulate
+from research.run_combined_clean_universe import _TOP_N, simulate
 from scripts.run_combined_validation import load_fedfunds
 from scripts.run_portfolio_sim import load_all_data
 
@@ -241,7 +241,7 @@ def main():
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v/1000:,.0f}k"))
     ax.grid(True, alpha=0.3); ax.legend(loc="upper left", fontsize=9)
     fig.tight_layout()
-    out = Path(__file__).parent.parent / "results" / "oos_2010_2017_threshold.png"
+    out = Path(__file__).parent.parent / "results" / "research" / "oos_2010_2017_threshold.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=130); plt.close(fig)
     print(f"Chart written: {out}")

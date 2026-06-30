@@ -265,7 +265,7 @@ def main():
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v/1000:,.0f}k"))
     ax.grid(True, alpha=0.3); ax.legend(loc="upper left", fontsize=9)
     fig.tight_layout()
-    out = Path(__file__).parent.parent / "results" / "combined_clean_universe.png"
+    out = Path(__file__).parent.parent / "results" / "research" / "combined_clean_universe.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=130); plt.close(fig)
     print(f"Chart written: {out}")
