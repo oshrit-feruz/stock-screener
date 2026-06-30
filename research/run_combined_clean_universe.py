@@ -48,7 +48,7 @@ _TOP_N = 100
 
 def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mode,
              rate_on_cal, month_members, max_pos=10, regime_ok=None, blocked_log=None,
-             entry_threshold=0.0):
+             entry_threshold=0.0, opens_wide=None):
     """One run: membership gate × sizing (flat|score_plus) × cash (zero|fed_funds).
 
     regime_ok: optional bool array aligned to master_cal. When supplied, no NEW
@@ -68,9 +68,20 @@ def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mod
     day_gap = master_cal.to_series().diff().dt.total_seconds().values / 86400.0
     day_gap[0] = 0.0
 
+    # Parallel OPEN array for T+1-open fills (opt-in; None → legacy close fills).
+    opens_arr = None
+    if opens_wide is not None:
+        opens_arr = (opens_wide.reindex(master_cal, method="ffill")
+                               .reindex(columns=sim_prices.columns)
+                               .values.astype(float))
+
     def _price(di, t):
         ci = col_map.get(t)
         return float(prices_arr[di, ci]) if ci is not None else float("nan")
+
+    def _open(di, t):
+        ci = col_map.get(t)
+        return float(opens_arr[di, ci]) if (ci is not None and opens_arr is not None) else float("nan")
 
     def _port_val(di, cash, pos):
         v = cash
@@ -133,15 +144,26 @@ def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mod
             if alloc < _MIN_POSITION:
                 continue
 
-            ep = _price(di, ticker)
-            if np.isnan(ep) or ep <= 0:
-                ep = crossing_price
+            # Fill bar: same-day close (legacy) or next day's open (T+1, executable).
+            if opens_arr is not None:
+                fill_di = di + 1
+                if fill_di > len(master_cal) - 1:   # signal on last bar → no fill
+                    continue
+                ep = _open(fill_di, ticker)
+                if np.isnan(ep) or ep <= 0:
+                    ep = crossing_price
+            else:
+                fill_di = di
+                ep = _price(di, ticker)
+                if np.isnan(ep) or ep <= 0:
+                    ep = crossing_price
             if ep <= 0:
                 continue
             pid += 1
-            open_pos[pid] = {"ticker": ticker, "entry_date": day, "entry_price": ep, "comp": comp,
-                             "shares": alloc / ep, "exit_idx": min(di + _HOLD_DAYS, len(master_cal) - 1)}
-            last_entry[ticker] = di
+            open_pos[pid] = {"ticker": ticker, "entry_date": master_cal[fill_di], "entry_price": ep,
+                             "comp": comp, "shares": alloc / ep,
+                             "exit_idx": min(fill_di + _HOLD_DAYS, len(master_cal) - 1)}
+            last_entry[ticker] = fill_di
             cash -= alloc
 
         daily_values[di] = _port_val(di, cash, open_pos)
