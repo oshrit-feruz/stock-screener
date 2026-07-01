@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration
+# Docs: https://docs.coderabbit.ai/reference/configuration
+
+language: en-US
+tone_instructions: ""
+early_access: false
+
+reviews:
+  # Keep automatic reviews always on for every pull request.
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    # Always review PRs automatically when they are opened or updated.
+    enabled: true
+    # Also review draft pull requests so nothing is skipped.
+    drafts: true
+    # Re-review automatically on each new push/commit.
+    auto_incremental_review: true
+    # No branch restrictions: review PRs targeting any base branch.
+    base_branches:
+      - ".*"
+
+chat:
+  auto_reply: true
