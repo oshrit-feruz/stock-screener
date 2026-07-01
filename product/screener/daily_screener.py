@@ -1,6 +1,9 @@
-"""Daily screener: scan VALIDATION_UNIVERSE as of today and return BUY signals.
+"""Daily screener: scan the point-in-time Top-100 universe as of today and
+return BUY signals.
 
-Reuses existing signal logic from core.signals.recovery_score and
+The universe is the 100 largest S&P 500 members by point-in-time market cap
+as of the run date (data.sp500_universe.get_universe_top_n), evaluated once
+per run. Reuses existing signal logic from core.signals.recovery_score and
 core.data.edgar — no signal logic is reimplemented here.
 
 Signal parameters (FROZEN — do not modify):
@@ -24,7 +27,6 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.tickers import VALIDATION_UNIVERSE  # noqa: E402
 from core.data.edgar import EdgarFundamentals  # noqa: E402
 from core.data.fundamentals import PointInTimeFundamentals  # noqa: E402
 from core.data.prices import PriceData  # noqa: E402
@@ -33,6 +35,11 @@ from core.signals.recovery_score import (  # noqa: E402
     compute_recovery_signals,
     passes_quality_gate,
 )
+from data.sp500_universe import get_universe_top_n  # noqa: E402
+
+# Point-in-time universe size: the 100 largest S&P 500 members by market cap as
+# of each run date (matches the research harness). Rebuilt once per run.
+_UNIVERSE_N = 100
 
 # 252 trading days are required because dip_score uses close.rolling(252).max();
 # with fewer rows high_52w is NaN → composite NaN → always INSUFFICIENT_DATA.
@@ -137,7 +144,8 @@ def run_screener(
     prices: Optional[PriceData] = None,
     fundamentals: Optional[EdgarFundamentals] = None,
 ) -> ScreenerResult:
-    """Scan all 50 tickers and return BUY signals plus full ranked table.
+    """Scan the point-in-time Top-100 universe and return BUY signals plus the
+    full ranked table.
 
     Args:
         as_of_date:    Date to evaluate signals for. Defaults to today.
@@ -148,6 +156,7 @@ def run_screener(
         ScreenerResult with buy_signals and full_ranking.
 
     Error handling:
+        - Universe lookup failure → warning logged, empty result returned.
         - Ticker with < 252 rows of price history → skipped, warning logged.
         - Ticker with no EDGAR / fundamentals data → gate = False (fail-closed).
         - Any unexpected exception per ticker → skipped, warning logged.
@@ -166,9 +175,18 @@ def run_screener(
     if fundamentals is None:
         fundamentals = EdgarFundamentals(fallback=PointInTimeFundamentals())
 
+    # Build the point-in-time Top-100 universe once for this run.
+    try:
+        universe = get_universe_top_n(as_of_date.isoformat(), _UNIVERSE_N)
+    except Exception as exc:
+        logger.warning("screener: universe lookup failed for %s — %s", as_of_date, exc)
+        universe = []
+    logger.info("screener: Top-%d PIT universe for %s → %d tickers",
+                _UNIVERSE_N, as_of_date, len(universe))
+
     rows: List[ScreenerRow] = []
 
-    for ticker in VALIDATION_UNIVERSE:
+    for ticker in universe:
         try:
             ohlcv = prices.get_prices(ticker, _WARMUP_START, as_of_date.isoformat())
             if ohlcv is None or ohlcv.empty:
