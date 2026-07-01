@@ -48,13 +48,19 @@ _TOP_N = 100
 
 def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mode,
              rate_on_cal, month_members, max_pos=10, regime_ok=None, blocked_log=None,
-             entry_threshold=0.0, opens_wide=None):
+             entry_threshold=0.0, opens_wide=None, veto_fn=None, veto_log=None):
     """One run: membership gate × sizing (flat|score_plus) × cash (zero|fed_funds).
 
     regime_ok: optional bool array aligned to master_cal. When supplied, no NEW
     positions open on days where regime_ok[day]==False (existing positions are
     untouched; cash still accrues). Genuine new signals blocked this way are
     appended to blocked_log as (date, ticker) when blocked_log is not None.
+
+    veto_fn: optional fail-closed 8-K veto callable (ticker, iso_date) ->
+    (blocked, reason). Applied at the entry-commit point (an otherwise
+    executable would-be trade); a True result skips the entry and, when
+    veto_log is not None, appends (signal_date, ticker, comp, reason). Default
+    None → no veto (prior studies reproduce exactly).
     """
     events_by_date = defaultdict(list)
     for ticker, crossings in crossings_by_ticker.items():
@@ -165,6 +171,14 @@ def simulate(crossings_by_ticker, prices_wide, master_cal, sizing_mode, cash_mod
                     ep = crossing_price
             if ep <= 0:
                 continue
+            # Fail-closed 8-K veto: block this otherwise-executable entry if the
+            # ticker carries a recent distress filing as of the signal day.
+            if veto_fn is not None:
+                blocked, reason = veto_fn(ticker, day.date().isoformat())
+                if blocked:
+                    if veto_log is not None:
+                        veto_log.append((day.date(), ticker, comp, reason))
+                    continue
             pid += 1
             open_pos[pid] = {"ticker": ticker, "entry_date": master_cal[fill_di], "entry_price": ep,
                              "comp": comp, "shares": alloc / ep,

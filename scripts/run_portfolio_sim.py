@@ -173,6 +173,8 @@ def simulate(
     max_pos: int,
     month_members: dict[tuple[int, int], set[str]] | None = None,
     opens_wide: pd.DataFrame | None = None,
+    veto_fn=None,
+    veto_log: list | None = None,
 ) -> dict:
     """Run one portfolio variant over master_cal.
 
@@ -188,6 +190,12 @@ def simulate(
                             executable price after the signal is known). The
                             252-day hold is measured from the fill bar. A signal
                             on the last bar (no T+1) is skipped.
+
+    veto_fn: optional fail-closed 8-K veto callable (ticker, iso_date) ->
+    (blocked, reason). Applied at the entry-commit point; a True result skips
+    the entry (reason recorded in `skipped`) and, when veto_log is not None,
+    appends (signal_date, ticker, comp, reason). Default None → no veto (prior
+    studies reproduce exactly).
     """
 
     # Event index: date → [(ticker, comp, price, dd), ...]
@@ -306,6 +314,17 @@ def simulate(
                     ep = crossing_price
             if ep <= 0:
                 continue
+
+            # Fail-closed 8-K veto: block this otherwise-executable entry if the
+            # ticker carries a recent distress filing as of the signal day.
+            if veto_fn is not None:
+                blocked, reason = veto_fn(ticker, day.date().isoformat())
+                if blocked:
+                    skipped.append({"date": day.date(), "ticker": ticker,
+                                    "comp": comp, "reason": "veto"})
+                    if veto_log is not None:
+                        veto_log.append((day.date(), ticker, comp, reason))
+                    continue
 
             shares     = alloc / ep
             exit_idx   = min(fill_idx + _HOLD_DAYS, len(master_cal) - 1)
