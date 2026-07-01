@@ -68,7 +68,8 @@ def load_all_data(
     tickers: list[str] | None = None,
     warmup_start: str = _WARMUP_START,
     quality_years: range | None = None,
-) -> tuple[dict, pd.DataFrame, pd.Series]:
+    with_opens: bool = False,
+):
     """Load signals and prices for `tickers` (defaults to the legacy 50-ticker
     VALIDATION_UNIVERSE for backward compatibility).
 
@@ -82,9 +83,11 @@ def load_all_data(
     produce a raw price BUY (most names never dip-signal in a given window, so
     this avoids hundreds of needless companyfacts downloads).
 
-    Returns:
+    Returns (3-tuple by default; 4-tuple when with_opens=True):
         crossings_by_ticker  — {ticker: [(ts, comp, close, dd), ...]}
-        prices_wide          — DataFrame[date × ticker] of adjusted closes
+        prices_wide          — DataFrame[date x ticker] of adjusted closes
+        [opens_wide]         — DataFrame[date x ticker] of adjusted OPENS, only
+                               when with_opens=True (for T+1-open entry fills)
         spy_close            — Series of SPY adjusted closes
     """
     if tickers is None:
@@ -94,6 +97,7 @@ def load_all_data(
 
     crossings_by_ticker: dict[str, list] = {}
     price_series: dict[str, pd.Series]  = {}
+    open_series:  dict[str, pd.Series]  = {}
 
     for ticker in tickers:
         ohlcv = prices_obj.get_prices(ticker, warmup_start, "2024-12-31")
@@ -106,6 +110,8 @@ def load_all_data(
 
         comp_series = scored["composite_score"]
         price_series[ticker] = scored["Close"]
+        if with_opens:
+            open_series[ticker] = scored["Open"]
 
         # Skip the EDGAR round-trip entirely when the price signal never even
         # crosses the BUY threshold for this ticker (no possible entry).
@@ -147,6 +153,13 @@ def load_all_data(
     spy_raw   = prices_obj.get_prices("SPY", _WARMUP_START, "2024-12-31")
     spy_close = spy_raw["Close"] if spy_raw is not None and not spy_raw.empty else pd.Series(dtype=float)
 
+    if with_opens:
+        # Align opens to the same columns as prices_wide (the simulate col_map).
+        # Do NOT ffill/bfill opens — missing opens must remain missing.
+        opens_wide = (pd.DataFrame(open_series)
+                        .reindex(columns=prices_wide.columns))
+        return crossings_by_ticker, prices_wide, opens_wide, spy_close
+
     return crossings_by_ticker, prices_wide, spy_close
 
 
@@ -159,12 +172,22 @@ def simulate(
     pct: float,
     max_pos: int,
     month_members: dict[tuple[int, int], set[str]] | None = None,
+    opens_wide: pd.DataFrame | None = None,
 ) -> dict:
     """Run one portfolio variant over master_cal.
 
     When `month_members` is supplied, a signal can only open a position if its
     ticker was an S&P 500 member in the month of the signal day (point-in-time
     universe). When None, every signal is eligible (legacy behaviour).
+
+    Entry execution timing:
+      opens_wide is None  → legacy: fill at the signal day's (T) close. This is
+                            same-bar look-ahead but is kept as the default so all
+                            prior studies reproduce.
+      opens_wide given    → fill at day T+1's OPEN (the first realistically
+                            executable price after the signal is known). The
+                            252-day hold is measured from the fill bar. A signal
+                            on the last bar (no T+1) is skipped.
     """
 
     # Event index: date → [(ticker, comp, price, dd), ...]
@@ -179,12 +202,25 @@ def simulate(
     prices_arr = sim_prices.values.astype(float)  # (n_days, n_tickers)
     col_map    = {c: i for i, c in enumerate(sim_prices.columns)}
 
+    # Parallel OPEN array (for T+1-open fills), aligned to the same col_map.
+    opens_arr = None
+    if opens_wide is not None:
+        opens_arr = (opens_wide.reindex(master_cal)
+                               .reindex(columns=sim_prices.columns)
+                               .values.astype(float))
+
     def _price(day_idx: int, ticker: str) -> float:
         ci = col_map.get(ticker)
         if ci is None:
             return float("nan")
         v = prices_arr[day_idx, ci]
         return float(v)
+
+    def _open(day_idx: int, ticker: str) -> float:
+        ci = col_map.get(ticker)
+        if ci is None or opens_arr is None:
+            return float("nan")
+        return float(opens_arr[day_idx, ci])
 
     def _port_val_at(day_idx: int, cash: float, positions: dict) -> float:
         v = cash
@@ -253,22 +289,34 @@ def simulate(
                 skipped.append({"date": day.date(), "ticker": ticker, "comp": comp, "reason": "min_pos"})
                 continue
 
-            ep = _price(day_idx, ticker)
-            if np.isnan(ep) or ep <= 0:
-                ep = crossing_price
+            # Fill bar: same day (legacy close) or next day's open (T+1, executable).
+            if opens_arr is not None:
+                fill_idx = day_idx + 1
+                if fill_idx > len(master_cal) - 1:   # signal on last bar → no executable fill
+                    skipped.append({"date": day.date(), "ticker": ticker, "comp": comp, "reason": "no_next_bar"})
+                    continue
+                ep = _open(fill_idx, ticker)
+                if np.isnan(ep) or ep <= 0:
+                    skipped.append({"date": day.date(), "ticker": ticker, "comp": comp, "reason": "no_next_open"})
+                    continue
+            else:
+                fill_idx = day_idx
+                ep = _price(day_idx, ticker)
+                if np.isnan(ep) or ep <= 0:
+                    ep = crossing_price
             if ep <= 0:
                 continue
 
             shares     = alloc / ep
-            exit_idx   = min(day_idx + _HOLD_DAYS, len(master_cal) - 1)
+            exit_idx   = min(fill_idx + _HOLD_DAYS, len(master_cal) - 1)
             exit_ts    = master_cal[exit_idx]
 
             pid_ctr += 1
             open_pos[pid_ctr] = {
                 "ticker":            ticker,
-                "entry_date":        day,
+                "entry_date":        master_cal[fill_idx],
                 "exit_date":         exit_ts,
-                "entry_idx":         day_idx,
+                "entry_idx":         fill_idx,
                 "exit_idx":          exit_idx,
                 "entry_price":       ep,
                 "shares":            shares,
@@ -277,7 +325,7 @@ def simulate(
                 "comp":              comp,
                 "port_val_at_entry": port_val,
             }
-            last_entry_cal_idx[ticker] = day_idx
+            last_entry_cal_idx[ticker] = fill_idx
             cash -= alloc
 
         daily_values[day_idx]   = _port_val_at(day_idx, cash, open_pos)
