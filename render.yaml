@@ -7,3 +7,18 @@ services:
     envVars:
       - key: NEWS_API_KEY
         sync: false
+
+  # Automated daily screener run.
+  # schedule is UTC: 30 11 * * 1-5  →  11:30 UTC (6:30 AM ET), Mon-Fri only.
+  # The weekday restriction is handled here; US market holidays are skipped
+  # in-code (product/run_daily.py:is_trading_day, NYSE calendar). run_daily.py
+  # exits non-zero on failure so Render marks the run as failed.
+  - type: cron
+    name: recovery-detector-daily
+    runtime: python
+    schedule: "30 11 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python product/run_daily.py
+    envVars:
+      - key: NEWS_API_KEY
+        sync: false

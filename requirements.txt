@@ -5,6 +5,7 @@ pandas
 numpy
 yfinance
 requests
+pandas_market_calendars
 python-dotenv
 pytest>=7.4.0
 ruff>=0.1.0
