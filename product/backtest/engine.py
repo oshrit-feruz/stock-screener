@@ -21,10 +21,13 @@ from core.data.edgar import EdgarFundamentals
 from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import compute_recovery_signals, passes_quality_gate
+from data.sp500_universe import get_universe, get_universe_top_n, prefetch_pit_market_caps
+from scripts.run_combined_validation import load_fedfunds
 
 _WARMUP_START    = "2016-01-01"
 _INITIAL_CAPITAL = 100_000.0
 _MIN_SIGNALS     = 5          # below this, results are not meaningful
+_UNIVERSE_N      = 100        # point-in-time Top-N by market cap, rebuilt monthly
 
 
 def _safe_float(v) -> Optional[float]:
@@ -53,8 +56,43 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
         warmup_start = date.fromisoformat(_WARMUP_START)
     fetch_start = warmup_start.isoformat()
 
+    # SPY first — its trading calendar defines the first-of-month rebuild dates.
+    spy_ohlcv = prices.get_prices("SPY", fetch_start, end_date.isoformat())
+
+    # ── Point-in-time Top-100 universe, rebuilt on the first trading day of each
+    #    month and reused all month — consistent with the research harness
+    #    (research/run_combined_clean_universe.py). Tickers to preload = the union
+    #    of every month's membership over the backtest window. ──────────────────
+    sim_start = start_date if start_date is not None else warmup_start
+    if spy_ohlcv is not None and not spy_ohlcv.empty:
+        cal = [d for d in spy_ohlcv.index if sim_start <= d.date() <= end_date]
+    else:
+        cal = []
+
+    fmonths: dict[tuple, pd.Timestamp] = {}
+    for ts in cal:
+        fmonths.setdefault((ts.year, ts.month), ts)
+
+    month_members: dict[tuple, set] = {}
+    if fmonths:
+        fdates = [ts.date().isoformat() for ts in fmonths.values()]
+        # Prefetch point-in-time market caps for the full membership pool once,
+        # so the per-month Top-N ranking is cheap (reuses sp500_universe helpers).
+        try:
+            union_full = sorted({t for d in fdates for t in get_universe(d)})
+            prefetch_pit_market_caps(union_full, fdates)
+        except Exception:
+            pass
+        for key, ts in fmonths.items():
+            try:
+                month_members[key] = set(get_universe_top_n(ts.date().isoformat(), _UNIVERSE_N))
+            except Exception:
+                month_members[key] = set()
+
+    universe = sorted(set().union(*month_members.values())) if month_members else list(VALIDATION_UNIVERSE)
+
     scored_data: dict[str, pd.DataFrame] = {}
-    for ticker in VALIDATION_UNIVERSE:
+    for ticker in universe:
         try:
             ohlcv = prices.get_prices(ticker, fetch_start, end_date.isoformat())
             if ohlcv is None or ohlcv.empty or len(ohlcv) < 252:
@@ -66,12 +104,19 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
         except Exception:
             continue
 
-    spy_ohlcv = prices.get_prices("SPY", fetch_start, end_date.isoformat())
+    # ── Idle-cash yield: real historical Fed Funds Rate (FRED FEDFUNDS). Reuses
+    #    load_fedfunds from the research money-market study — not reimplemented. ─
+    try:
+        fedfunds = load_fedfunds()
+    except Exception:
+        fedfunds = None
 
     return {
         "scored_data":   scored_data,
         "spy_ohlcv":     spy_ohlcv,
         "fundamentals":  fundamentals,
+        "month_members": month_members,
+        "fedfunds":      fedfunds,
     }
 
 
@@ -88,6 +133,8 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     scored_data   = preloaded["scored_data"]
     spy_ohlcv     = preloaded["spy_ohlcv"]
     fundamentals  = preloaded["fundamentals"]
+    month_members = preloaded.get("month_members") or {}
+    fedfunds      = preloaded.get("fedfunds")
 
     # Quality gate evaluated point-in-time as of the actual entry date.
     # get_snapshot applies the publication lag internally, so only fundamentals
@@ -168,6 +215,19 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     start_year = start_date.year
     end_year   = end_date.year
 
+    # ── Idle-cash yield schedule ────────────────────────────────────────────────
+    # Cash not deployed in an open position earns the annualized Fed Funds Rate,
+    # accrued pro-rata by calendar days between trading bars — the same
+    # (1 + r) ** (days / 365) accrual the research money-market study uses.
+    cal_index = pd.DatetimeIndex([pd.Timestamp(d) for d in trading_dates])
+    if fedfunds is not None and len(fedfunds) > 0:
+        rate_on_cal = fedfunds.reindex(cal_index, method="ffill").values.astype(float)
+    else:
+        rate_on_cal = np.zeros(len(cal_index))
+    day_gap = cal_index.to_series().diff().dt.total_seconds().values / 86400.0
+    if len(day_gap) > 0:
+        day_gap[0] = 0.0
+
     # ── Portfolio state ────────────────────────────────────────────────────────
     cash      = _INITIAL_CAPITAL
     positions: dict[str, dict] = {}
@@ -192,8 +252,15 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             return None
         return _safe_float(row["Close"])
 
-    for today in trading_dates:
+    for di, today in enumerate(trading_dates):
         today_ts = pd.Timestamp(today)
+
+        # ── Accrue idle-cash yield since the previous bar ──────────────────
+        if di > 0:
+            r = rate_on_cal[di]
+            if not np.isfinite(r):
+                r = 0.0
+            cash *= (1.0 + r) ** (day_gap[di] / 365.0)
 
         # ── Portfolio value at today's close ───────────────────────────────
         pos_value = 0.0
@@ -285,8 +352,13 @@ def _simulate(preloaded: dict, params: dict) -> dict:
         today_buy_set:    set[str]   = set()
         today_candidates: list[tuple] = []
 
+        members_today = month_members.get((today.year, today.month)) if month_members else None
         for tkr, sc in scored_data.items():
             if tkr in positions:
+                continue
+            # Only consider this month's point-in-time Top-100 members (when a
+            # membership map is present; empty map → legacy full-universe scan).
+            if members_today is not None and tkr not in members_today:
                 continue
             mask = sc.index <= today_ts
             if not mask.any():
