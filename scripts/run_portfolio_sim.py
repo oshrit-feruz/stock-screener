@@ -85,8 +85,8 @@ def load_all_data(
 
     Returns (3-tuple by default; 4-tuple when with_opens=True):
         crossings_by_ticker  — {ticker: [(ts, comp, close, dd), ...]}
-        prices_wide          — DataFrame[date × ticker] of adjusted closes
-        [opens_wide]         — DataFrame[date × ticker] of adjusted OPENS, only
+        prices_wide          — DataFrame[date x ticker] of adjusted closes
+        [opens_wide]         — DataFrame[date x ticker] of adjusted OPENS, only
                                when with_opens=True (for T+1-open entry fills)
         spy_close            — Series of SPY adjusted closes
     """
@@ -155,7 +155,8 @@ def load_all_data(
 
     if with_opens:
         # Align opens to the same columns as prices_wide (the simulate col_map).
-        opens_wide = (pd.DataFrame(open_series).ffill().bfill()
+        # Do NOT ffill/bfill opens — missing opens must remain missing.
+        opens_wide = (pd.DataFrame(open_series)
                         .reindex(columns=prices_wide.columns))
         return crossings_by_ticker, prices_wide, opens_wide, spy_close
 
@@ -204,7 +205,7 @@ def simulate(
     # Parallel OPEN array (for T+1-open fills), aligned to the same col_map.
     opens_arr = None
     if opens_wide is not None:
-        opens_arr = (opens_wide.reindex(master_cal, method="ffill")
+        opens_arr = (opens_wide.reindex(master_cal)
                                .reindex(columns=sim_prices.columns)
                                .values.astype(float))
 
@@ -296,7 +297,8 @@ def simulate(
                     continue
                 ep = _open(fill_idx, ticker)
                 if np.isnan(ep) or ep <= 0:
-                    ep = crossing_price
+                    skipped.append({"date": day.date(), "ticker": ticker, "comp": comp, "reason": "no_next_open"})
+                    continue
             else:
                 fill_idx = day_idx
                 ep = _price(day_idx, ticker)

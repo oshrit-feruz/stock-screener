@@ -116,6 +116,8 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     # day T) is known at T's close. "close" reproduces the legacy same-bar fill
     # (look-ahead) for comparison. The 252-day exit is time-based and unchanged.
     entry_fill      = str(params.get("entry_fill", "next_open"))
+    if entry_fill not in ("next_open", "close"):
+        return {"error": f"Invalid entry_fill mode '{entry_fill}'. Must be 'next_open' or 'close'."}
     start_date = (
         date.fromisoformat(params["start_date"])
         if isinstance(params.get("start_date"), str)
