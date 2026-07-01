@@ -29,6 +29,12 @@ _REVENUE_CONCEPTS = [
     "SalesRevenueGoodsNet",
 ]
 _NET_INCOME_CONCEPTS = ["NetIncomeLoss"]
+# Shares outstanding for point-in-time market cap: cover-page count first, then
+# the balance-sheet count. Both are reported in "shares" units.
+_SHARES_OUTSTANDING_CONCEPTS = [
+    ("dei", "EntityCommonStockSharesOutstanding"),
+    ("us-gaap", "CommonStockSharesOutstanding"),
+]
 _EQUITY_CONCEPTS = [
     "StockholdersEquity",
     "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
@@ -121,6 +127,7 @@ class EdgarFundamentals:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._fallback = fallback
+        self._facts_mem: dict[str, dict | None] = {}  # in-memory parsed companyfacts
 
     # ── CIK lookup ────────────────────────────────────────────────────────
 
@@ -157,20 +164,29 @@ class EdgarFundamentals:
         return self.cache_dir / f"{_safe_ticker(ticker)}.json"
 
     def _get_facts(self, ticker: str) -> dict | None:
+        # In-memory memo: companyfacts JSON can be several MB; repeated point-in-
+        # time lookups across many dates would otherwise re-parse it every call.
+        if ticker in self._facts_mem:
+            return self._facts_mem[ticker]
+
         path = self._facts_cache_path(ticker)
         if _cache_fresh(path):
             try:
                 with open(path) as f:
-                    return json.load(f)
+                    data = json.load(f)
+                self._facts_mem[ticker] = data
+                return data
             except Exception:
                 pass
 
         cik = self._get_cik(ticker)
         if cik is None:
+            self._facts_mem[ticker] = None
             return None
 
         data = _fetch_json(_FACTS_URL.format(cik=int(cik)))
         if data is None:
+            self._facts_mem[ticker] = None
             return None
 
         try:
@@ -178,6 +194,7 @@ class EdgarFundamentals:
                 json.dump(data, f)
         except Exception:
             pass
+        self._facts_mem[ticker] = data
         return data
 
     # ── public interface ──────────────────────────────────────────────────
@@ -261,3 +278,43 @@ class EdgarFundamentals:
             s for year in years
             if (s := self.get_snapshot(ticker, date(year, 12, 31))) is not None
         ]
+
+    def get_shares_outstanding(self, ticker: str, as_of_date: date | str) -> float | None:
+        """Common shares outstanding known as of `as_of_date`, point-in-time.
+
+        Applies the same 90-day publication lag as the quality gate: only filings
+        whose `filed` date is on or before (as_of_date − 90 days) are eligible, so
+        a 2018-01-15 query uses the most recent 10-K/10-Q filed by 2017-10-15.
+        Uses the cover-page count (dei:EntityCommonStockSharesOutstanding), falling
+        back to us-gaap:CommonStockSharesOutstanding. Returns None if unavailable.
+        """
+        if isinstance(as_of_date, str):
+            as_of_date = date.fromisoformat(as_of_date)
+        cutoff = as_of_date - timedelta(days=_PUBLICATION_LAG_DAYS)
+
+        try:
+            facts = self._get_facts(ticker)
+            if not facts:
+                return None
+            for tax, concept in _SHARES_OUTSTANDING_CONCEPTS:
+                try:
+                    raw = facts["facts"][tax][concept]["units"]["shares"]
+                except (KeyError, TypeError):
+                    continue
+                eligible = [
+                    e for e in raw
+                    if e.get("form") in ("10-K", "10-Q")
+                    and e.get("filed")
+                    and e.get("val")
+                    and date.fromisoformat(e["filed"]) <= cutoff
+                ]
+                if not eligible:
+                    continue
+                # Most recently filed before the cutoff (tie-break on period end).
+                best = max(eligible, key=lambda e: (e["filed"], e.get("end", "")))
+                val = float(best["val"])
+                if val > 0:
+                    return val
+            return None
+        except Exception:
+            return None

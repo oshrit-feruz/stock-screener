@@ -111,6 +111,13 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     entry_threshold = float(params.get("entry_threshold", 0.60))
     pos_size_pct    = float(params.get("position_size_pct", 10.0)) / 100.0
     max_positions   = int(params.get("max_positions", 10))
+    # Entry execution timing. "next_open" (default) fills at day T+1's open — the
+    # first realistically executable price after the signal (composite score on
+    # day T) is known at T's close. "close" reproduces the legacy same-bar fill
+    # (look-ahead) for comparison. The 252-day exit is time-based and unchanged.
+    entry_fill      = str(params.get("entry_fill", "next_open"))
+    if entry_fill not in ("next_open", "close"):
+        return {"error": f"Invalid entry_fill mode '{entry_fill}'. Must be 'next_open' or 'close'."}
     start_date = (
         date.fromisoformat(params["start_date"])
         if isinstance(params.get("start_date"), str)
@@ -309,6 +316,22 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             for tkr, comp, cp in today_candidates[:capacity]:
                 if len(positions) >= max_positions:
                     break
+
+                # Fill price/date: next bar's open (T+1, executable) or today's
+                # close (legacy same-bar). cp is today's close from the candidate.
+                if entry_fill == "next_open":
+                    sc = scored_data.get(tkr)
+                    future = sc.index[sc.index > today_ts] if sc is not None else []
+                    if len(future) == 0:
+                        continue  # no next bar → not executable without look-ahead
+                    fill_ts    = future[0]
+                    fill_price = _safe_float(sc.loc[fill_ts, "Open"])
+                    if fill_price is None or fill_price <= 0:
+                        continue
+                    fill_date = fill_ts.date()
+                else:
+                    fill_price, fill_date = cp, today
+
                 desired_alloc = pv * pos_size_pct
                 if cash < desired_alloc:
                     missed_capital.append({
@@ -319,12 +342,12 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                         "needed":     round(desired_alloc, 2),
                     })
                     continue
-                shares = desired_alloc / cp
+                shares = desired_alloc / fill_price
                 cash  -= desired_alloc
                 positions[tkr] = {
-                    "entry_date":     today,
-                    "entry_price":    cp,
-                    "peak_price":     cp,
+                    "entry_date":     fill_date,
+                    "entry_price":    fill_price,
+                    "peak_price":     fill_price,
                     "shares":         shares,
                     "position_value": desired_alloc,
                 }
