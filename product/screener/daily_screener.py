@@ -18,7 +18,7 @@ import json
 import logging
 import sys
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import List, Optional
@@ -35,6 +35,7 @@ from core.signals.recovery_score import (  # noqa: E402
     compute_recovery_signals,
     passes_quality_gate,
 )
+from data.sec_8k_veto import is_vetoed  # noqa: E402
 from data.sp500_universe import get_universe_top_n  # noqa: E402
 
 # Point-in-time universe size: the 100 largest S&P 500 members by market cap as
@@ -63,10 +64,12 @@ def _load_disk_cache(as_of: date) -> "ScreenerResult | None":
             data = json.load(f)
         def _row(d: dict) -> ScreenerRow:
             return ScreenerRow(**d)
+        full_ranking = [_row(r) for r in data["full_ranking"]]
         return ScreenerResult(
             as_of_date   = date.fromisoformat(data["as_of_date"]),
             buy_signals  = [_row(r) for r in data["buy_signals"]],
-            full_ranking = [_row(r) for r in data["full_ranking"]],
+            full_ranking = full_ranking,
+            vetoed       = [r for r in full_ranking if r.signal == "VETO"],
         )
     except Exception as exc:
         logger.warning("screener disk cache load failed: %s", exc)
@@ -100,7 +103,8 @@ class ScreenerRow:
     volume_score: Optional[float]
     composite_score: Optional[float]
     gate: Optional[bool]       # True=pass, False=fail, None=unknown→treated as False
-    signal: str                # "BUY" | "WATCH" | "SKIP" | "INSUFFICIENT_DATA"
+    signal: str                # "BUY" | "WATCH" | "SKIP" | "INSUFFICIENT_DATA" | "VETO"
+    veto_reason: Optional[str] = None  # set when signal == "VETO" (8-K veto)
 
 
 @dataclass
@@ -110,6 +114,7 @@ class ScreenerResult:
     as_of_date: date
     buy_signals: List[ScreenerRow]    # signal == "BUY", sorted by composite desc
     full_ranking: List[ScreenerRow]   # all tickers, sorted by composite desc
+    vetoed: List[ScreenerRow] = field(default_factory=list)  # signal == "VETO"
 
 
 def _classify(composite: Optional[float], gate: Optional[bool]) -> str:
@@ -143,6 +148,7 @@ def run_screener(
     as_of_date: Optional[date] = None,
     prices: Optional[PriceData] = None,
     fundamentals: Optional[EdgarFundamentals] = None,
+    apply_8k_veto: bool = True,
 ) -> ScreenerResult:
     """Scan the point-in-time Top-100 universe and return BUY signals plus the
     full ranked table.
@@ -151,9 +157,13 @@ def run_screener(
         as_of_date:    Date to evaluate signals for. Defaults to today.
         prices:        PriceData instance (created with default cache if None).
         fundamentals:  EdgarFundamentals instance (created if None).
+        apply_8k_veto: When True (default), a would-be BUY is blocked (signal →
+                       "VETO") if data.sec_8k_veto.is_vetoed flags a recent
+                       distress 8-K / going-concern filing as of the run date.
+                       Fact-only and fail-safe: a lookup error never blocks.
 
     Returns:
-        ScreenerResult with buy_signals and full_ranking.
+        ScreenerResult with buy_signals, full_ranking, and vetoed.
 
     Error handling:
         - Universe lookup failure → warning logged, empty result returned.
@@ -212,6 +222,20 @@ def run_screener(
             comp = _safe_float(last.get("composite_score"))
             signal = _classify(comp, gate)
 
+            # 8-K veto: block an otherwise-actionable BUY when the ticker carries
+            # a recent distress filing as of the run date. Fact-only and
+            # fail-safe — a lookup error never blocks (returns not-vetoed).
+            veto_reason: Optional[str] = None
+            if signal == "BUY" and apply_8k_veto:
+                try:
+                    blocked, reason = is_vetoed(ticker, as_of_date.isoformat())
+                except Exception as exc:
+                    blocked, reason = False, f"unverifiable: error {exc}"
+                if blocked:
+                    signal = "VETO"
+                    veto_reason = reason
+                    logger.info("8-K veto: %s — %s", ticker, reason)
+
             if signal == "BUY":
                 dd = _safe_float(last.get("drawdown_52w")) or 0.0
                 logger.info(f"Signal: {ticker} score={(comp or 0.0):.2f} dip={dd:.1%}")
@@ -227,6 +251,7 @@ def run_screener(
                 composite_score = comp,
                 gate           = gate,
                 signal         = signal,
+                veto_reason    = veto_reason,
             ))
 
         except Exception as exc:
@@ -236,17 +261,19 @@ def run_screener(
     rows.sort(key=lambda r: (r.composite_score is None, -(r.composite_score or 0)))
 
     buy_signals = [r for r in rows if r.signal == "BUY"]
+    vetoed      = [r for r in rows if r.signal == "VETO"]
 
-    # The screener identifies signals only; it does not open positions and does
-    # not run the 8-K veto (that layer is research-only, PR #17), so those counts
-    # are 0 here. The daily run (product/run_daily.py) owns the run-level summary.
+    # The screener identifies (and vetoes) signals; it does not open positions,
+    # so positions-opened is 0 here. The daily run (product/run_daily.py) owns
+    # the run-level summary.
     logger.info("Daily screener complete — %d signals, %d positions opened, %d vetoed",
-                len(buy_signals), 0, 0)
+                len(buy_signals), 0, len(vetoed))
 
     result = ScreenerResult(
         as_of_date   = as_of_date,
         buy_signals  = buy_signals,
         full_ranking = rows,
+        vetoed       = vetoed,
     )
     _save_disk_cache(result)
     return result
