@@ -166,12 +166,12 @@ def run(today: date) -> int:
         portfolio_alerts = engine.portfolio_alert_check(portfolio, as_of_date=today)
 
     # Step 4: Per-signal disposition ----------------------------------------
-    # The scheduled run SURFACES new BUY signals; it does not itself open
-    # positions (opening is a human-in-the-loop action via the /positions API,
-    # which logs "Position opened: ...") and does not run the 8-K veto (that
-    # layer is research-only, PR #17). The `opened`/`vetoed` lists below are the
-    # ready hooks for those flows; in the scheduled run they stay empty, so
-    # n_opened / n_vetoed are 0. Wiring either in is a deliberate future change.
+    # The scheduled run SURFACES new BUY signals (it does not itself open
+    # positions — that is a human-in-the-loop action via the /positions API,
+    # which logs "Position opened: ...", so n_opened stays 0 here). The 8-K veto
+    # runs inside the screener: a would-be BUY that carries a recent distress
+    # filing is downgraded to "VETO" and logged there ("8-K veto: ..."); those
+    # tickers never reach new_alerts. We surface the count in the summary.
     n_signals = len(engine_result.new_alerts)
     for a in engine_result.new_alerts:
         logger.info(f"Signal: {a.ticker} score={a.composite_score:.2f} dip={a.drawdown_pct:.1%}")
@@ -184,10 +184,7 @@ def run(today: date) -> int:
         logger.info("Position opened: %s entry=%.2f alloc=%.0f", tkr, entry_price, alloc)
     n_opened = len(opened)
 
-    vetoed: list[tuple[str, str]] = []            # (ticker, reason) — 8-K veto (research-only)
-    for tkr, reason in vetoed:
-        logger.info("8-K veto: %s — %s", tkr, reason)
-    n_vetoed = len(vetoed)
+    n_vetoed = len(screener_result.vetoed) if screener_result is not None else 0
 
     # Step 5: Exit + portfolio alerts
     for ea in exit_alerts:
@@ -209,16 +206,16 @@ def run(today: date) -> int:
         open_count = 0
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    # The canonical "Daily screener complete — N signals, ... vetoed" line is
+    # emitted inside the screener itself; here we log the richer run-level summary.
     logger.info(
         "Daily run complete — %s | tickers scanned=%d | new signals=%d | "
-        "continuing=%d | dropped=%d | exit alerts=%d | portfolio alerts=%d | "
-        "positions tracked=%d | %.1fs",
-        today, engine_result.tickers_scanned, n_signals,
+        "positions opened=%d | vetoed=%d | continuing=%d | dropped=%d | "
+        "exit alerts=%d | portfolio alerts=%d | positions tracked=%d | %.1fs",
+        today, engine_result.tickers_scanned, n_signals, n_opened, n_vetoed,
         len(engine_result.continuing_signals), len(engine_result.dropped_signals),
         len(exit_alerts), len(portfolio_alerts), open_count, elapsed,
     )
-    logger.info("Daily screener complete — %d signals, %d positions opened, %d vetoed",
-                n_signals, n_opened, n_vetoed)
     return 0
 
 

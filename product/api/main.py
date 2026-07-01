@@ -144,6 +144,7 @@ def _row_to_dict(r: ScreenerRow) -> dict:
         "volume_score":    round(r.volume_score, 4)     if r.volume_score    is not None else None,
         "gate":            r.gate,
         "signal":          r.signal,
+        "veto_reason":     r.veto_reason,
     }
 
 
