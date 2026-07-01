@@ -181,8 +181,7 @@ def run_screener(
     except Exception as exc:
         logger.warning("screener: universe lookup failed for %s — %s", as_of_date, exc)
         universe = []
-    logger.info("screener: Top-%d PIT universe for %s → %d tickers",
-                _UNIVERSE_N, as_of_date, len(universe))
+    logger.info("Daily screener starting — %s, scanning %d tickers", as_of_date, len(universe))
 
     rows: List[ScreenerRow] = []
 
@@ -213,6 +212,10 @@ def run_screener(
             comp = _safe_float(last.get("composite_score"))
             signal = _classify(comp, gate)
 
+            if signal == "BUY":
+                dd = _safe_float(last.get("drawdown_52w")) or 0.0
+                logger.info(f"Signal: {ticker} score={(comp or 0.0):.2f} dip={dd:.1%}")
+
             rows.append(ScreenerRow(
                 ticker         = ticker,
                 current_price  = float(last["Close"]),
@@ -234,6 +237,12 @@ def run_screener(
 
     buy_signals = [r for r in rows if r.signal == "BUY"]
 
+    # The screener identifies signals only; it does not open positions and does
+    # not run the 8-K veto (that layer is research-only, PR #17), so those counts
+    # are 0 here. The daily run (product/run_daily.py) owns the run-level summary.
+    logger.info("Daily screener complete — %d signals, %d positions opened, %d vetoed",
+                len(buy_signals), 0, 0)
+
     result = ScreenerResult(
         as_of_date   = as_of_date,
         buy_signals  = buy_signals,
@@ -243,14 +252,15 @@ def run_screener(
     return result
 
 
-def _print_table(result: ScreenerResult) -> None:
-    """Print screener results to stdout."""
-    print(f"\nDAILY SCREENER  as_of={result.as_of_date}  universe={len(result.full_ranking)} tickers")
-    print(f"BUY signals: {len(result.buy_signals)}\n")
+def _log_table(result: ScreenerResult) -> None:
+    """Log the full screener ranking table (one row per ticker)."""
+    logger.info("DAILY SCREENER  as_of=%s  universe=%d tickers",
+                result.as_of_date, len(result.full_ranking))
+    logger.info("BUY signals: %d", len(result.buy_signals))
 
     hdr = f"{'Ticker':<6}  {'Price':>8}  {'52wH':>8}  {'DD%':>6}  {'Dip':>5}  {'Mom':>5}  {'Vol':>5}  {'Comp':>5}  {'Gate':<5}  Signal"
-    print(hdr)
-    print("-" * len(hdr))
+    logger.info(hdr)
+    logger.info("-" * len(hdr))
 
     for r in result.full_ranking:
         dip  = f"{r.dip_score:.2f}"  if r.dip_score  is not None else "  N/A"
@@ -258,7 +268,7 @@ def _print_table(result: ScreenerResult) -> None:
         vol  = f"{r.volume_score:.2f}"   if r.volume_score   is not None else "  N/A"
         comp = f"{r.composite_score:.2f}" if r.composite_score is not None else "  N/A"
         gate_str = "yes" if r.gate is True else ("no" if r.gate is False else "N/A")
-        print(
+        logger.info(
             f"{r.ticker:<6}  {r.current_price:>8.2f}  {r.high_52w:>8.2f}  "
             f"{r.drawdown_pct:>5.1%}  {dip:>5}  {mom:>5}  {vol:>5}  {comp:>5}  "
             f"{gate_str:<5}  {r.signal}"
@@ -266,6 +276,6 @@ def _print_table(result: ScreenerResult) -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     result = run_screener()
-    _print_table(result)
+    _log_table(result)
