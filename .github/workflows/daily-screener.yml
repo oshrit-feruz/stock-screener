@@ -2,24 +2,36 @@ name: Daily screener
 
 # Runs the daily screener on a schedule (replacing the former Render cron job).
 # The web service stays on Render; only the scheduled run moves here.
+#
+# State persistence: GitHub Actions runners are ephemeral, so the small JSON
+# state (positions, screener state, daily alerts) is restored from — and pushed
+# back to — a dedicated `automation/daily-state` branch each run. The larger
+# regenerable API caches use actions/cache instead of git. `main` is never
+# touched by this workflow (avoids Render redeploys / branch protection).
 on:
   schedule:
     # 11:30 UTC = 6:30 AM ET, Monday–Friday. Same schedule as the old Render cron.
-    # (GitHub cron is always UTC. Note: scheduled runs fire only on the default
-    #  branch and can be delayed under load; a weekday holiday still triggers the
-    #  job — product/run_daily.py skips it in-code via the NYSE calendar.)
+    # (GitHub cron is always UTC. Scheduled runs fire only on the default branch
+    #  and can be delayed under load; a weekday holiday still triggers the job —
+    #  product/run_daily.py skips it in-code via the NYSE calendar.)
     - cron: "30 11 * * 1-5"
   # Manual trigger so the workflow can be tested on demand from the Actions tab.
   workflow_dispatch: {}
 
-# Read-only checkout; the job neither pushes nor comments.
+# Write access is needed so the persist step can push state to automation/daily-state.
 permissions:
-  contents: read
+  contents: write
 
-# Never overlap two daily runs.
+# Never overlap two daily runs — the second queues until the first has pushed its
+# state, so runs are serialized and can't race on the state branch.
 concurrency:
   group: daily-screener
   cancel-in-progress: false
+
+env:
+  STATE_BRANCH: automation/daily-state
+  # The small JSON state that must persist run-to-run (all git-tracked, not ignored).
+  STATE_PATHS: data/positions data/screener_state data/alerts
 
 jobs:
   run-daily:
@@ -28,6 +40,22 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Compute weekly cache key
+        id: cachekey
+        # ISO year-week (e.g. 2026-27); the API caches refresh once per week.
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore API caches (prices, EDGAR, FRED, universe)
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/cache
+            data/screener_cache
+            data/universe_cache
+          key: api-cache-${{ runner.os }}-${{ steps.cachekey.outputs.week }}
+          restore-keys: |
+            api-cache-${{ runner.os }}-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -38,6 +66,21 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Restore persisted state (positions, screener state, alerts)
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "$STATE_BRANCH"
+            # Overlay ONLY the state paths from the state branch onto the working tree,
+            # so run_daily.py starts from yesterday's positions/state.
+            for p in $STATE_PATHS; do
+              git checkout FETCH_HEAD -- "$p" 2>/dev/null || true
+            done
+            echo "Restored state from $STATE_BRANCH."
+          else
+            echo "No $STATE_BRANCH branch yet — first run; starting from the repo's committed state."
+          fi
 
       - name: Run daily screener
         env:
@@ -50,3 +93,60 @@ jobs:
         # main() returns 1 and logs a full traceback), so a failed run fails the
         # step — and therefore the workflow — visibly. No extra handling needed.
         run: python product/run_daily.py
+
+      - name: Persist state to automation/daily-state
+        # Runs only if the screener step succeeded (default), so half-updated state
+        # from a failed run is never pushed; the run still goes red on failure.
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          WT="${RUNNER_TEMP}/daily-state-wt"
+          rm -rf "$WT"
+
+          # Check out the state branch in an isolated worktree (seed it from the
+          # current commit on the very first run). main is never modified.
+          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "$STATE_BRANCH"
+            git worktree add --force -B "$STATE_BRANCH" "$WT" FETCH_HEAD
+          else
+            git worktree add --force -B "$STATE_BRANCH" "$WT" HEAD
+          fi
+
+          # Overlay this run's state into the worktree (only the small JSON paths).
+          for p in $STATE_PATHS; do
+            if [ -e "$p" ]; then
+              mkdir -p "$WT/$(dirname "$p")"
+              rm -rf "${WT:?}/$p"
+              cp -r "$p" "$WT/$p"
+            fi
+          done
+
+          cd "$WT"
+          for p in $STATE_PATHS; do
+            git add -A "$p" 2>/dev/null || true
+          done
+
+          # Guard against empty commits: nothing changed → nothing to push.
+          if git diff --cached --quiet; then
+            echo "No state changes to persist."
+            exit 0
+          fi
+
+          git commit -m "chore: persist daily state ($(date -u +%Y-%m-%d)) [skip ci]"
+
+          # Push with rebase+retry. Runs are already serialized by the concurrency
+          # group; this tolerates the rare case where the branch tip moved anyway.
+          for attempt in 1 2 3; do
+            if git push origin "$STATE_BRANCH"; then
+              echo "State persisted to $STATE_BRANCH."
+              exit 0
+            fi
+            echo "Push failed (attempt ${attempt}/3); reconciling and retrying..."
+            git pull --rebase --autostash origin "$STATE_BRANCH" || true
+            sleep $((attempt * 5))
+          done
+
+          echo "ERROR: could not push state to $STATE_BRANCH after 3 attempts." >&2
+          exit 1
