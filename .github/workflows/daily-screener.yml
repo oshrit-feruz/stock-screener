@@ -1,0 +1,52 @@
+name: Daily screener
+
+# Runs the daily screener on a schedule (replacing the former Render cron job).
+# The web service stays on Render; only the scheduled run moves here.
+on:
+  schedule:
+    # 11:30 UTC = 6:30 AM ET, Monday–Friday. Same schedule as the old Render cron.
+    # (GitHub cron is always UTC. Note: scheduled runs fire only on the default
+    #  branch and can be delayed under load; a weekday holiday still triggers the
+    #  job — product/run_daily.py skips it in-code via the NYSE calendar.)
+    - cron: "30 11 * * 1-5"
+  # Manual trigger so the workflow can be tested on demand from the Actions tab.
+  workflow_dispatch: {}
+
+# Read-only checkout; the job neither pushes nor comments.
+permissions:
+  contents: read
+
+# Never overlap two daily runs.
+concurrency:
+  group: daily-screener
+  cancel-in-progress: false
+
+jobs:
+  run-daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Match the version Render uses (.python-version → 3.11.0).
+          python-version-file: ".python-version"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily screener
+        env:
+          # Optional but recommended: a real "AppName contact@email" User-Agent so
+          # SEC EDGAR does not rate-limit the run. If the secret is not configured,
+          # the `|| '...'` fallback keeps a valid non-empty UA (an empty string
+          # would otherwise override the in-code default).
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT || 'recovery-detector-daily (github actions; contact via repo owner)' }}
+        # run_daily.py exits non-zero on any unhandled error (sys.exit(main());
+        # main() returns 1 and logs a full traceback), so a failed run fails the
+        # step — and therefore the workflow — visibly. No extra handling needed.
+        run: python product/run_daily.py
