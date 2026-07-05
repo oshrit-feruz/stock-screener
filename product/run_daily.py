@@ -127,6 +127,20 @@ def _log_portfolio_alert(a: PortfolioAlert) -> None:
     logger.info(a.body)
 
 
+def refresh_beta_report(today: date) -> None:
+    """Refresh the observation-only beta report (data/beta_tracking/beta_log.md).
+
+    Runs on EVERY invocation — trading day or not — so the report keeps a running
+    picture of opened positions. It only reads position files + market data and
+    never affects trading logic; any failure is logged and swallowed.
+    """
+    try:
+        from product.beta.beta_tracker import write_report
+        write_report(today)
+    except Exception as exc:
+        logger.warning("Beta report refresh failed (non-fatal): %s", exc)
+
+
 def run(today: date) -> int:
     """Execute one daily run for `today`. Returns a process exit code."""
     started = datetime.now(timezone.utc)
@@ -134,6 +148,8 @@ def run(today: date) -> int:
 
     if not is_trading_day(today):
         logger.info("Market closed on %s (weekend or NYSE holiday) — skipping run.", today)
+        # Beta tracking still refreshes (current prices/returns update daily).
+        refresh_beta_report(today)
         return 0
 
     portfolio = load_portfolio()
@@ -198,6 +214,10 @@ def run(today: date) -> int:
 
     # Step 6: Save to disk
     save_alerts(today, engine_result.new_alerts, exit_alerts)
+
+    # Step 6b: Refresh the observation-only beta report AFTER exit processing,
+    # so any positions closed today are reflected.
+    refresh_beta_report(today)
 
     # Step 7: Structured end summary
     try:

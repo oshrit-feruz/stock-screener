@@ -35,6 +35,7 @@ from product.alerts.alert_templates import (  # noqa: E402
     _pct_rank,
 )
 from product.backtest.engine import run_backtest  # noqa: E402
+from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
 from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
 
@@ -337,6 +338,22 @@ def get_positions() -> dict:
             "context_message":     context,
         })
     return {"positions": result}
+
+
+@app.get("/api/beta/dashboard")
+def beta_dashboard() -> dict:
+    """Read-only beta-tracking dashboard: for every OPENED position (open and
+    closed), the current/realized return plus the SPY and money-market (Fed
+    Funds) comparison over the same period, and a running summary.
+
+    Same data as the accumulating report (data/beta_tracking/beta_log.md).
+    Observation-only — it never touches signal, sizing, or trading logic.
+    Path is under the existing /api/* convention (task suggested /beta/dashboard).
+    """
+    try:
+        return build_beta_data()
+    except Exception as exc:  # never 500 the dashboard on a transient data issue
+        raise HTTPException(status_code=503, detail=f"beta data unavailable: {exc}")
 
 
 @app.post("/api/positions/open")

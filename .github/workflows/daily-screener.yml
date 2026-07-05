@@ -30,8 +30,9 @@ concurrency:
 
 env:
   STATE_BRANCH: automation/daily-state
-  # The small JSON state that must persist run-to-run (all git-tracked, not ignored).
-  STATE_PATHS: data/positions data/screener_state data/alerts
+  # The small state that must persist run-to-run (all git-tracked, not ignored):
+  # positions, screener state, daily alerts, and the beta-tracking report.
+  STATE_PATHS: data/positions data/screener_state data/alerts data/beta_tracking
 
 jobs:
   run-daily:
