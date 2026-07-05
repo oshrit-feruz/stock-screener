@@ -556,7 +556,7 @@
         <h2 class="ob-h2">Recovery Detector</h2>
         <p class="ob-lead">This app does one thing:</p>
         <p class="ob-big">It tells you <em>WHEN</em> to buy<br>a stock &mdash; not which one.</p>
-        <p class="ob-body">We scan 50 large-cap stocks every day and find the ones in a deep dip with early signs of recovery.</p>
+        <p class="ob-body">We scan the 100 largest U.S. stocks every day and find the ones in a deep dip with early signs of recovery.</p>
         <div class="ob-stat-row">
           <div class="ob-stat">
             <div class="ob-stat-val">+49.2%</div>
@@ -682,7 +682,7 @@
     <!-- Tab: Signals -->
     <div id="tab-signals" class="tab-pane">
       <div class="section-title">Today's BUY Signals</div>
-      <div id="signals-container"><div class="loading">Scanning 50 tickers&hellip;</div></div>
+      <div id="signals-container"><div class="loading">Scanning the Top-100 universe&hellip;</div></div>
     </div>
 
     <!-- Tab: Positions -->
@@ -726,6 +726,12 @@
       <div id="alerts-container"><div class="loading">Checking alerts&hellip;</div></div>
     </div>
 
+    <!-- Tab: Beta tracking -->
+    <div id="tab-beta" class="tab-pane">
+      <div class="section-title">Beta Tracking</div>
+      <div id="beta-container"><div class="loading">Loading&hellip;</div></div>
+    </div>
+
     <!-- Tab: Simulator -->
     <div id="tab-simulator" class="tab-pane">
       <div class="section-title">Backtest Simulator</div>
@@ -738,9 +744,9 @@
         used to build and validate the signal. Results reflect in-sample performance
         and are optimistically biased. The 2025&ndash;2026 period is partially
         out-of-sample but has too few closed positions to draw conclusions.
-        The stock universe is a fixed set of 50 large-cap constituents used for
-        simulation performance; historical removals and delistings are not
-        excluded, so some survivorship bias remains.
+        The stock universe is the point-in-time Top-100 &mdash; the 100 largest
+        S&amp;P 500 members by market cap, rebuilt as index membership changes &mdash;
+        which removes most survivorship bias.
         Do not treat results as a forecast. This is not investment advice.
       </div>
 
@@ -959,7 +965,7 @@
           &#9888;&#65039; Known limitations:<br>
           &bull; First visit may take ~30 seconds (server wake-up)<br>
           &bull; Signals update once per day<br>
-          &bull; Data covers 50 large-cap US stocks only<br>
+          &bull; Data covers the ~100 largest US stocks (point-in-time)<br>
           &bull; Validated on 2018&ndash;2024 data<br>
           &bull; Past performance does not guarantee future results
         </div>
@@ -968,7 +974,7 @@
       <div class="section-title">About This Signal</div>
       <div class="card">
         <div class="about-row"><span>Signal validated</span><span class="about-val">2018&ndash;2024</span></div>
-        <div class="about-row"><span>Universe</span><span class="about-val">50 large-cap US stocks</span></div>
+        <div class="about-row"><span>Universe</span><span class="about-val">Top-100 point-in-time S&amp;P 500</span></div>
         <div class="about-row"><span>Avg 12-month return (BUY)</span><span class="about-val">+49.2%</span></div>
         <div class="about-row"><span>Avg 12-month return (random)</span><span class="about-val">+22.3%</span></div>
         <div class="about-row"><span>Edge vs random</span><span class="about-val">+26.9 pp</span></div>
@@ -981,7 +987,7 @@
       <div class="card">
         <div class="disclaimer">
           &#9888;&#65039; Not investment advice. Signal performance is based on historical
-          backtesting (2018&ndash;2024, 50 large-cap US stocks). Backtested returns are
+          backtesting (2018&ndash;2024, Top-100 point-in-time universe). Backtested returns are
           hypothetical and do not account for transaction costs, taxes, or slippage.
           Past performance does not guarantee future results. Individual results will
           vary. Always consult a qualified financial advisor before making investment
@@ -998,6 +1004,7 @@
     <button class="tab-btn" data-tab="portfolio" onclick="switchTab('portfolio')">&#128181; Portfolio</button>
     <button class="tab-btn" data-tab="alerts"    onclick="switchTab('alerts')">&#128276; Alerts</button>
     <button class="tab-btn" data-tab="simulator" onclick="switchTab('simulator')">&#129514; Sim</button>
+    <button class="tab-btn" data-tab="beta"      onclick="switchTab('beta')">&#128200; Beta</button>
     <button class="tab-btn" data-tab="settings"  onclick="switchTab('settings')">&#9881;&#65039; Settings</button>
   </nav>
 
