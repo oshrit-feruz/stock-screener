@@ -26,7 +26,6 @@ import sys
 import warnings
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -36,7 +35,6 @@ from core.data.edgar import EdgarFundamentals
 from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
 from data.sp500_universe import (
-    get_universe,
     get_universe_top_n,
     pit_market_cap,
     prefetch_pit_market_caps,

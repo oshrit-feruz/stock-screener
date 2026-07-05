@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import sys
 import warnings
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import date as date_type
 from pathlib import Path
 
@@ -79,7 +79,7 @@ def main() -> None:
     # ── Warm the 8-K veto cache for the whole universe, and measure coverage ──
     print(f"\nPrefetching 8-K veto cache for {len(union)} tickers...")
     prefetch_veto_cache(union, _TODAY)
-    from data.sec_8k_veto import _get_filings, VETO_8K_ITEMS
+    from data.sec_8k_veto import VETO_8K_ITEMS, _get_filings
     resolved = sum(1 for t in union if _get_filings(t))
     print(f"  EDGAR filing record resolved: {resolved}/{len(union)} "
           f"(unresolved = delisted / ticker-renamed names → unverifiable, not blocked)")

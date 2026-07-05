@@ -358,9 +358,9 @@ def main() -> None:
         print(f"    Median per-event move:                     {t['median_pct_change']:>+7.2%}")
         print(f"    Share of sells followed by a higher SPY:   {t['pct_higher_after']:>7.0%}")
         print()
-        print(f"    Interpretation: a positive average move means the strategy sold SPY *below*")
-        print(f"    where it traded a month later — i.e. it liquidated the SPY sleeve into market")
-        print(f"    weakness (the dislocation that triggered the signal) and missed the bounce.")
+        print("    Interpretation: a positive average move means the strategy sold SPY *below*")
+        print("    where it traded a month later — i.e. it liquidated the SPY sleeve into market")
+        print("    weakness (the dislocation that triggered the signal) and missed the bounce.")
     else:
         print("    No SPY sell events recorded.")
     print()
@@ -395,26 +395,26 @@ def main() -> None:
     if spy_beats_mm:
         print(f"  YES — the SPY variant beats money market by ${gap:,.0f} "
               f"({gap/mm_final:+.1%}).")
-        print(f"  But the source of that edge matters. The SPY sleeve earns equity beta on idle")
-        print(f"  cash, yet the strategy is structurally forced to SELL that beta at signal time —")
-        print(f"  i.e. into the very dislocations (Mar 2020, 2022) that fire the recovery signal.")
+        print("  But the source of that edge matters. The SPY sleeve earns equity beta on idle")
+        print("  cash, yet the strategy is structurally forced to SELL that beta at signal time —")
+        print("  i.e. into the very dislocations (Mar 2020, 2022) that fire the recovery signal.")
         if spy_timing and spy_timing["n"] > 0 and spy_timing["mean_pct_change"] > 0:
             print(f"  On average SPY was {spy_timing['mean_pct_change']:+.1%} higher "
                   f"{_TIMING_WINDOW_DAYS} days after each sell, confirming the sleeve was")
-            print(f"  liquidated near local bottoms. The SPY_NEUTRAL control — same average SPY")
+            print("  liquidated near local bottoms. The SPY_NEUTRAL control — same average SPY")
             print(f"  return without that timing — ends at ${neutral_final:,.0f}, "
                   f"${path_cost:+,.0f} vs realised SPY.")
         verdict = ("The gap over money market is driven by equity risk premium, not skill, and it")
         print(f"  {verdict}")
-        print(f"  is only partially 'justified': you are paid for bearing equity risk, but you")
-        print(f"  systematically realise that risk at the worst moments (selling at the bottom),")
-        print(f"  which is exactly the drawdown a 4.5% money-market sleeve avoids. Compare the")
-        print(f"  max drawdowns above — the SPY sleeve adds equity drawdown to the portfolio that")
-        print(f"  the money-market sleeve does not.")
+        print("  is only partially 'justified': you are paid for bearing equity risk, but you")
+        print("  systematically realise that risk at the worst moments (selling at the bottom),")
+        print("  which is exactly the drawdown a 4.5% money-market sleeve avoids. Compare the")
+        print("  max drawdowns above — the SPY sleeve adds equity drawdown to the portfolio that")
+        print("  the money-market sleeve does not.")
     else:
         print(f"  NO — the SPY variant does NOT beat money market "
               f"(${gap:,.0f}). Forced selling of the SPY sleeve into signal-time")
-        print(f"  dislocations erodes the equity-beta advantage; the steady 4.5% accrual wins.")
+        print("  dislocations erodes the equity-beta advantage; the steady 4.5% accrual wins.")
     print()
     print(div)
 

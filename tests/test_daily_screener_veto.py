@@ -6,7 +6,6 @@ with its reason, and must never reach the alert path. Fully mocked — no networ
 """
 from datetime import date
 
-import numpy as np
 import pandas as pd
 import pytest
 

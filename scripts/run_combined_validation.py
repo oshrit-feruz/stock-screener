@@ -458,7 +458,7 @@ def main() -> None:
           f"({A['total_ret']:+.1%})")
     print(f"    + Score-Plus improvement (B−A):      ${imp_B:>+12,.0f}   ({imp_B_ret:+.1%})")
     print(f"    + Fed-funds improvement (C−A):       ${imp_C:>+12,.0f}   ({imp_C_ret:+.1%})")
-    print(f"    ────────────────────────────────────────────────────────")
+    print("    ────────────────────────────────────────────────────────")
     print(f"    = Expected D (linear sum):           ${expected_D:>12,.0f}   ({expected_D_ret:+.1%})")
     print(f"      Actual D (measured):               ${actual_D:>12,.0f}   ({D['total_ret']:+.1%})")
     print(f"      Interaction (actual − expected):   ${interaction:>+12,.0f}   ({interaction_ret:+.1%})")

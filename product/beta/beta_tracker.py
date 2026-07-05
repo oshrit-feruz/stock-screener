@@ -117,64 +117,74 @@ def _diff(a: Optional[float], b: Optional[float]) -> Optional[float]:
 # ── per-position builders ───────────────────────────────────────────────────
 
 def _build_open(p: dict, as_of: date, prices: PriceData,
-                fedfunds: Optional[pd.Series]) -> dict:
-    ticker      = p["ticker"]
-    entry       = date.fromisoformat(p["entry_date"])
-    entry_price = float(p["entry_price"])
-    cur         = _latest_close(ticker, as_of, prices)
-    ret         = (cur / entry_price - 1.0) if (cur and entry_price) else None
-    days_held   = int(np.busday_count(entry.isoformat(), as_of.isoformat()))
-    spy         = _spy_return(entry, as_of, prices)
-    mm          = _mm_return(entry, as_of, fedfunds)
-    return {
-        "ticker":         ticker,
-        "status":         "open",
-        "entry_date":     entry.isoformat(),
-        "entry_price":    round(entry_price, 2),
-        "allocation":     p.get("allocation"),   # not stored today → usually None
-        "as_of_date":     as_of.isoformat(),
-        "current_price":  round(cur, 2) if cur is not None else None,
-        "return_pct":     _pct(ret),
-        "days_held":      days_held,
-        "hold_target":    _HOLD_TARGET,
-        "days_remaining": max(0, _HOLD_TARGET - days_held),
-        "spy_return_pct": _pct(spy),
-        "mm_return_pct":  _pct(mm),
-        "vs_spy_pct":     _diff(ret, spy),
-        "vs_mm_pct":      _diff(ret, mm),
-    }
+                fedfunds: Optional[pd.Series]) -> Optional[dict]:
+    """Build open position record; returns None if record is malformed."""
+    try:
+        ticker      = p["ticker"]
+        entry       = date.fromisoformat(p["entry_date"])
+        entry_price = float(p["entry_price"])
+        cur         = _latest_close(ticker, as_of, prices)
+        ret         = (cur / entry_price - 1.0) if (cur and entry_price) else None
+        days_held   = int(np.busday_count(entry.isoformat(), as_of.isoformat()))
+        spy         = _spy_return(entry, as_of, prices)
+        mm          = _mm_return(entry, as_of, fedfunds)
+        return {
+            "ticker":         ticker,
+            "status":         "open",
+            "entry_date":     entry.isoformat(),
+            "entry_price":    round(entry_price, 2),
+            "allocation":     p.get("allocation"),   # not stored today → usually None
+            "as_of_date":     as_of.isoformat(),
+            "current_price":  round(cur, 2) if cur is not None else None,
+            "return_pct":     _pct(ret),
+            "days_held":      days_held,
+            "hold_target":    _HOLD_TARGET,
+            "days_remaining": max(0, _HOLD_TARGET - days_held),
+            "spy_return_pct": _pct(spy),
+            "mm_return_pct":  _pct(mm),
+            "vs_spy_pct":     _diff(ret, spy),
+            "vs_mm_pct":      _diff(ret, mm),
+        }
+    except Exception as exc:
+        logger.warning("beta: skipping malformed open position record (%s): %s", exc, p)
+        return None
 
 
 def _build_closed(p: dict, prices: PriceData,
-                  fedfunds: Optional[pd.Series]) -> dict:
-    ticker      = p["ticker"]
-    entry       = date.fromisoformat(p["entry_date"])
-    entry_price = float(p["entry_price"])
-    exit_date   = date.fromisoformat(p["exit_date"])
-    exit_price  = float(p["exit_price"])
-    realized    = p.get("realized_return")
-    if realized is None and entry_price:
-        realized = exit_price / entry_price - 1.0
-    days_held = int(p.get("days_held",
-                          np.busday_count(entry.isoformat(), exit_date.isoformat())))
-    spy = _spy_return(entry, exit_date, prices)
-    mm  = _mm_return(entry, exit_date, fedfunds)
-    return {
-        "ticker":         ticker,
-        "status":         "closed",
-        "entry_date":     entry.isoformat(),
-        "entry_price":    round(entry_price, 2),
-        "allocation":     p.get("allocation"),
-        "exit_date":      exit_date.isoformat(),
-        "exit_price":     round(exit_price, 2),
-        "return_pct":     _pct(realized),
-        "days_held":      days_held,
-        "hold_target":    _HOLD_TARGET,
-        "spy_return_pct": _pct(spy),
-        "mm_return_pct":  _pct(mm),
-        "vs_spy_pct":     _diff(realized, spy),
-        "vs_mm_pct":      _diff(realized, mm),
-    }
+                  fedfunds: Optional[pd.Series]) -> Optional[dict]:
+    """Build closed position record; returns None if record is malformed."""
+    try:
+        ticker      = p["ticker"]
+        entry       = date.fromisoformat(p["entry_date"])
+        entry_price = float(p["entry_price"])
+        exit_date   = date.fromisoformat(p["exit_date"])
+        exit_price  = float(p["exit_price"])
+        realized    = p.get("realized_return")
+        if realized is None and entry_price:
+            realized = exit_price / entry_price - 1.0
+        days_held = int(p.get("days_held",
+                              np.busday_count(entry.isoformat(), exit_date.isoformat())))
+        spy = _spy_return(entry, exit_date, prices)
+        mm  = _mm_return(entry, exit_date, fedfunds)
+        return {
+            "ticker":         ticker,
+            "status":         "closed",
+            "entry_date":     entry.isoformat(),
+            "entry_price":    round(entry_price, 2),
+            "allocation":     p.get("allocation"),
+            "exit_date":      exit_date.isoformat(),
+            "exit_price":     round(exit_price, 2),
+            "return_pct":     _pct(realized),
+            "days_held":      days_held,
+            "hold_target":    _HOLD_TARGET,
+            "spy_return_pct": _pct(spy),
+            "mm_return_pct":  _pct(mm),
+            "vs_spy_pct":     _diff(realized, spy),
+            "vs_mm_pct":      _diff(realized, mm),
+        }
+    except Exception as exc:
+        logger.warning("beta: skipping malformed closed position record (%s): %s", exc, p)
+        return None
 
 
 def _avg(items: list[dict], key: str) -> Optional[float]:
@@ -199,8 +209,8 @@ def build_beta_data(as_of_date: Optional[date] = None,
         logger.warning("beta: Fed Funds Rate unavailable (%s); money-market comparison omitted", exc)
         fedfunds = None
 
-    open_list   = [_build_open(p, as_of, prices, fedfunds) for p in _load(_OPEN_FILE)]
-    closed_list = [_build_closed(p, prices, fedfunds)      for p in _load(_CLOSED_FILE)]
+    open_list   = [r for r in (_build_open(p, as_of, prices, fedfunds) for p in _load(_OPEN_FILE)) if r is not None]
+    closed_list = [r for r in (_build_closed(p, prices, fedfunds) for p in _load(_CLOSED_FILE)) if r is not None]
 
     entries = [i["entry_date"] for i in (open_list + closed_list)]
     beta_start = min(entries) if entries else None
@@ -273,7 +283,7 @@ def render_markdown(data: dict) -> str:
     L.append("")
     L.append(f"- Positions opened since beta start: **{s['total_opened']}**")
     L.append(f"- Currently open: **{s['open']}**")
-    L.append(f"- Closed (completed 252-day hold): **{s['closed']}**")
+    L.append(f"- Closed positions: **{s['closed']}**")
     ca = s["closed_aggregate"]
     if ca:
         L.append(f"- Closed aggregate (avg of {ca['count']}): "

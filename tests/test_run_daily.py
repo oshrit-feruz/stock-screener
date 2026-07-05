@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 
 import product.run_daily as rd
 
-
 # ── NYSE trading-day guard ──────────────────────────────────────────────────
 
 def test_is_trading_day_regular_weekday():
