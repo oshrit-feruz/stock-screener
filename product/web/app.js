@@ -167,6 +167,7 @@ function switchTab(tab) {
   if (tab === 'positions') loadPositions();
   if (tab === 'portfolio') loadPortfolio();
   if (tab === 'alerts')    loadPortfolioAlerts();
+  if (tab === 'beta')      loadBeta();
   if (tab === 'settings')  loadSettings();
   var simBtn = document.getElementById('sim-run-btn');
   if (tab !== 'simulator' && simBtn) simBtn.disabled = false;
@@ -179,7 +180,7 @@ function loadSignals() {
     renderSignals(_sigCache);
     return;
   }
-  ctr.innerHTML = '<div class="loading">Scanning 50 tickers&hellip; (may take up to 60 s on first visit)</div>';
+  ctr.innerHTML = '<div class="loading">Scanning the Top-100 universe&hellip; (may take up to 60 s on first visit)</div>';
   fetch('/api/screener')
     .then(function (r) { return r.json(); })
     .then(function (data) {
@@ -212,7 +213,7 @@ function renderSignals(data) {
       '  It fires when price, momentum,<br>',
       '  volume, and quality all align.<br>',
       '  Typically 2&ndash;5 signals per month<br>',
-      '  across 50 large-cap tickers.</p>',
+      '  across the Top-100 point-in-time universe.</p>',
       '</div>'
     ].join('\n');
     return;
@@ -459,6 +460,135 @@ function closePosition(ticker) {
       }
     })
     .catch(function () { showToast('Failed to close position.'); });
+}
+
+// ── Beta tracking ────────────────────────────────────────────────────────────────
+function loadBeta() {
+  var ctr = document.getElementById('beta-container');
+  ctr.innerHTML = '<div class="loading">Loading beta tracking&hellip;</div>';
+  fetch('/api/beta/dashboard')
+    .then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Failed to load beta tracking'); });
+      return r.json();
+    })
+    .then(function (data) { renderBeta(data); })
+    .catch(function () {
+      ctr.innerHTML = '<div class="err-box">Failed to load beta tracking.</div>';
+    });
+}
+
+function renderBeta(data) {
+  var ctr     = document.getElementById('beta-container');
+  var summary = (data && data.summary) || {};
+  var open    = (data && data.open_positions) || [];
+  var closed  = (data && data.closed_positions) || [];
+
+  if ((summary.total_opened || 0) === 0) {
+    ctr.innerHTML = [
+      '<div class="empty">',
+      '  <div class="em-h">Beta tracking hasn’t started yet.</div>',
+      '  <p>No positions have been opened yet.<br>',
+      '  Once a BUY signal is tracked, it appears here with<br>',
+      '  live return vs SPY and money-market over the same period.</p>',
+      '</div>'
+    ].join('\n');
+    return;
+  }
+
+  var html = [betaSummaryHTML(data, summary, open.length, closed.length)];
+  if (open.length) {
+    html.push('<div class="section-title" style="margin-top:18px;">Open positions</div>');
+    html.push(open.map(betaOpenCardHTML).join(''));
+  }
+  if (closed.length) {
+    html.push('<div class="section-title" style="margin-top:18px;">Closed positions</div>');
+    html.push(closed.map(betaClosedCardHTML).join(''));
+  }
+  ctr.innerHTML = html.join('\n');
+}
+
+function betaSummaryHTML(data, s, nOpen, nClosed) {
+  var since = data.beta_start ? ' &middot; since ' + data.beta_start : '';
+  var rows = [
+    '<div class="card">',
+    '  <div class="pos-header">',
+    '    <div class="pos-ticker">Beta summary</div>',
+    '    <div style="font-size:12px;color:var(--muted);">' + (s.total_opened || 0) + ' opened' + since + '</div>',
+    '  </div>',
+    '  <div class="pos-meta" style="margin-top:8px;"><b>' + nOpen + '</b> open &nbsp;&middot;&nbsp; <b>' + nClosed + '</b> closed</div>'
+  ];
+  var agg = s.closed_aggregate;
+  if (agg) {
+    rows.push('  <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">');
+    rows.push('    <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Closed aggregate over the same periods</div>');
+    rows.push(betaCmpRow('Strategy', fmtRet(agg.strategy_return_pct)));
+    rows.push(betaCmpRow('SPY', fmtRet(agg.spy_return_pct)));
+    rows.push(betaCmpRow('Money-market', fmtRet(agg.mm_return_pct)));
+    rows.push('  </div>');
+  } else {
+    rows.push('  <div style="font-size:12px;color:var(--muted);margin-top:10px;">Aggregate vs SPY / money-market appears once a position closes.</div>');
+  }
+  rows.push('</div>');
+  return rows.join('\n');
+}
+
+function betaCmpRow(label, ret) {
+  return '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;">' +
+         '<span style="font-size:13px;color:var(--muted);">' + label + '</span>' +
+         '<span class="ret-badge ' + ret.cls + '" style="font-size:14px;">' + ret.str + '</span>' +
+         '</div>';
+}
+
+// Side-by-side "vs SPY / vs money-market" block shared by open + closed cards.
+function betaVsBlock(spy, mm, vsSpy, vsMm) {
+  return [
+    '  <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">',
+    '    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">',
+    '      <div><div style="font-size:11px;color:var(--muted);">vs SPY</div>',
+    '        <div class="ret-badge ' + vsSpy.cls + '" style="font-size:14px;">' + vsSpy.str + '</div></div>',
+    '      <div><div style="font-size:11px;color:var(--muted);">vs Money-mkt</div>',
+    '        <div class="ret-badge ' + vsMm.cls + '" style="font-size:14px;">' + vsMm.str + '</div></div>',
+    '    </div>',
+    '    <div style="margin-top:6px;font-size:11px;color:var(--muted);">Same period &mdash; SPY ' +
+         '<span style="color:var(--text);font-family:monospace;">' + spy.str + '</span> &middot; MM ' +
+         '<span style="color:var(--text);font-family:monospace;">' + mm.str + '</span></div>',
+    '  </div>'
+  ].join('\n');
+}
+
+function betaOpenCardHTML(p) {
+  var r    = fmtRet(p.return_pct);
+  var prog = Math.min(100, Math.round(((p.days_held || 0) / 252) * 100));
+  return [
+    '<div class="card">',
+    '  <div class="pos-header">',
+    '    <div class="pos-ticker">' + escHtml(p.ticker) + '</div>',
+    '    <div class="ret-badge ' + r.cls + '">' + r.str + '</div>',
+    '  </div>',
+    '  <div class="pos-meta">Entry <b>$' + fmt(p.entry_price, 2) + '</b> on <b>' + p.entry_date + '</b></div>',
+    '  <div style="margin-top:10px;" class="bar-row">',
+    '    <div class="bar-track" style="height:6px;"><div class="bar-fill bar-fill-blue" style="width:' + prog + '%;height:6px;"></div></div>',
+    '  </div>',
+    '  <div class="prog-label">Day ' + (p.days_held || 0) + ' of 252 &mdash; ' + (p.days_remaining || 0) + ' days remaining</div>',
+    betaVsBlock(fmtRet(p.spy_return_pct), fmtRet(p.mm_return_pct), fmtRet(p.vs_spy_pct), fmtRet(p.vs_mm_pct)),
+    '</div>'
+  ].join('\n');
+}
+
+function betaClosedCardHTML(p) {
+  var r = fmtRet(p.return_pct);
+  return [
+    '<div class="card">',
+    '  <div class="pos-header">',
+    '    <div class="pos-ticker">' + escHtml(p.ticker) +
+       ' <span style="font-size:11px;color:var(--muted);font-weight:400;">closed</span></div>',
+    '    <div class="ret-badge ' + r.cls + '">' + r.str + '</div>',
+    '  </div>',
+    '  <div class="pos-meta"><b>' + p.entry_date + '</b> &rarr; <b>' + p.exit_date + '</b>' +
+       ' &nbsp;&middot;&nbsp; ' + (p.days_held || 0) + ' days held</div>',
+    betaVsBlock(fmtRet(p.spy_return_pct), fmtRet(p.mm_return_pct), fmtRet(p.vs_spy_pct), fmtRet(p.vs_mm_pct)),
+    '</div>'
+  ].join('\n');
 }
 
 // ── Portfolio ──────────────────────────────────────────────────────────────────
@@ -768,7 +898,7 @@ function runSimulation(scenario) {
     '<div class="card" style="text-align:center;padding:28px 20px;">',
     '  <div style="font-size:28px;margin-bottom:10px;">&#8987;</div>',
     '  <div style="font-size:15px;font-weight:600;margin-bottom:6px;">Running simulation&hellip;</div>',
-    '  <div style="font-size:13px;color:var(--muted);">Scanning 50 tickers across ' +
+    '  <div style="font-size:13px;color:var(--muted);">Scanning the Top-100 universe across ' +
          Math.round((new Date(params.end_date) - new Date(params.start_date)) / (365.25 * 86400000)) +
          ' years of data.</div>',
     '  <div style="font-size:12px;color:var(--muted);margin-top:6px;">This takes 10&ndash;30 seconds on first run.</div>',
