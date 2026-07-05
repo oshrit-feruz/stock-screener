@@ -39,7 +39,8 @@ from core.data.edgar import EdgarFundamentals
 from core.data.fundamentals import PointInTimeFundamentals
 from core.data.prices import PriceData
 from data.sp500_universe import get_universe, get_universe_top_n, prefetch_pit_market_caps
-from research.run_combined_clean_universe import _TOP_N, simulate as sim_cash
+from research.run_combined_clean_universe import _TOP_N
+from research.run_combined_clean_universe import simulate as sim_cash
 from scripts.run_combined_validation import load_fedfunds
 from scripts.run_portfolio_sim import compute_metrics, load_all_data
 from scripts.run_portfolio_sim import simulate as sim_plain

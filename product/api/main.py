@@ -6,6 +6,7 @@ All signal parameters remain frozen; this is a thin HTTP adapter layer.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -25,6 +26,8 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 _ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_ROOT))
 
@@ -35,6 +38,7 @@ from product.alerts.alert_templates import (  # noqa: E402
     _pct_rank,
 )
 from product.backtest.engine import run_backtest  # noqa: E402
+from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
 from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
 
@@ -339,6 +343,26 @@ def get_positions() -> dict:
     return {"positions": result}
 
 
+@app.get("/api/beta/dashboard")
+def beta_dashboard() -> dict:
+    """Read-only beta-tracking dashboard: for every OPENED position (open and
+    closed), the current/realized return plus the SPY and money-market (Fed
+    Funds) comparison over the same period, and a running summary.
+
+    Same data as the accumulating report (data/beta_tracking/beta_log.md).
+    Observation-only — it never touches signal, sizing, or trading logic.
+    Path is under the existing /api/* convention (task suggested /beta/dashboard).
+    """
+    try:
+        return build_beta_data()
+    except Exception as exc:  # never 500 the dashboard on a transient data issue
+        logger.error("Beta dashboard failed to build data: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="Beta data temporarily unavailable. Please try again later."
+        ) from exc
+
+
 @app.post("/api/positions/open")
 def open_position(body: OpenPositionIn) -> dict:
     tracker    = ExitTracker()
@@ -390,7 +414,6 @@ def close_position(body: ClosePositionIn) -> dict:
 def get_portfolio() -> dict:
     holdings = _load_portfolio()
     prices   = PriceData()
-    today    = date.today()
     result   = []
     for h in holdings:
         ticker      = h["ticker"]
@@ -439,7 +462,6 @@ def portfolio_alerts() -> dict:
         return {"alerts": []}
 
     prices    = PriceData()
-    today     = date.today()
     news_key  = os.environ.get("NEWS_API_KEY", "")
     sc        = _get_screener_data()
     buy_set   = {s["ticker"] for s in sc.get("buy_signals", [])}

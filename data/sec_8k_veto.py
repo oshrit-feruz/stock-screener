@@ -39,7 +39,7 @@ import requests
 
 # Reuse the existing EDGAR pipeline (CIK lookup, User-Agent, cache-freshness
 # and the courtesy-rate-limited JSON fetch) — do not duplicate it.
-from core.data.edgar import EdgarFundamentals, _USER_AGENT, _cache_fresh, _fetch_json
+from core.data.edgar import _USER_AGENT, EdgarFundamentals, _cache_fresh, _fetch_json
 from core.data.fundamentals import _safe_ticker
 
 _CACHE_DIR = Path(__file__).parent / "cache" / "sec_8k"
