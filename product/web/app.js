@@ -467,7 +467,10 @@ function loadBeta() {
   var ctr = document.getElementById('beta-container');
   ctr.innerHTML = '<div class="loading">Loading beta tracking&hellip;</div>';
   fetch('/api/beta/dashboard')
-    .then(function (r) { return r.json(); })
+    .then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Failed to load beta tracking'); });
+      return r.json();
+    })
     .then(function (data) { renderBeta(data); })
     .catch(function () {
       ctr.innerHTML = '<div class="err-box">Failed to load beta tracking.</div>';
