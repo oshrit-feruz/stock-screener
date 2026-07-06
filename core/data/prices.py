@@ -4,7 +4,8 @@ import pickle
 from pathlib import Path
 
 import pandas as pd
-import yfinance as yf
+
+from core.data.eodhd import fetch_eod
 
 _DEFAULT_CACHE = Path(__file__).parent.parent.parent / "data" / "cache" / "prices"
 
@@ -47,15 +48,15 @@ class PriceData:
             return cached[cached.index < end_ts]
 
         try:
-            df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
+            # EODHD (split+dividend adjusted, Close == adjusted_close) replaces
+            # yfinance: it works through the proxy and serves delisted tickers.
+            # fetch_eod already logs and returns an empty frame on any failure.
+            df = fetch_eod(ticker, start, end, adjust=True)
             if df is None or df.empty:
                 # Fall back to stale cache rather than losing data on a failed fetch.
                 if cached is not None and not cached.empty:
                     return cached[cached.index < end_ts]
                 return pd.DataFrame()
-            # Flatten MultiIndex columns (newer yfinance versions may add a ticker level)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
             # Cache the full downloaded range; callers get the end-exclusive slice.
             with open(path, "wb") as f:
                 pickle.dump(df, f)

@@ -32,10 +32,10 @@ def _mock_balance():
 
 
 def test_price_second_call_uses_cache(tmp_path):
-    """yfinance.download must be called exactly once; second call reads from cache."""
+    """The EODHD fetch must be called exactly once; second call reads from cache."""
     prices = PriceData(cache_dir=tmp_path)
 
-    with patch("yfinance.download", return_value=_mock_price_df()) as mock_dl:
+    with patch("core.data.prices.fetch_eod", return_value=_mock_price_df()) as mock_dl:
         first = prices.get_prices("AAPL", "2022-01-03", "2022-01-07")
         assert mock_dl.call_count == 1
 
@@ -68,7 +68,7 @@ def test_cache_file_is_created(tmp_path):
     """Verify that cache files are written to disk after the first fetch."""
     prices = PriceData(cache_dir=tmp_path)
 
-    with patch("yfinance.download", return_value=_mock_price_df()):
+    with patch("core.data.prices.fetch_eod", return_value=_mock_price_df()):
         prices.get_prices("AAPL", "2022-01-03", "2022-01-07")
 
     cache_files = list(tmp_path.glob("*.pkl"))
