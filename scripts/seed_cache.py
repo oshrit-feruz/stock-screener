@@ -27,7 +27,7 @@ def seed() -> int:
     if not _SEED.is_dir():
         print(f"seed_cache: nothing to seed ({_SEED} not found)")
         return 0
-    copied = skipped = 0
+    copied = skipped = errors = 0
     for src in _SEED.rglob("*"):
         if not src.is_file() or src.name == "manifest.json":
             continue
@@ -36,11 +36,17 @@ def seed() -> int:
         if dst.exists():
             skipped += 1
             continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-        copied += 1
-    print(f"seed_cache: copied {copied} file(s), skipped {skipped} already present "
-          f"-> {_CACHE}")
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            copied += 1
+        except Exception as e:
+            print(f"seed_cache: ERROR copying {rel}: {e}")
+            errors += 1
+    status = f"seed_cache: copied {copied} file(s), skipped {skipped} already present"
+    if errors:
+        status += f", {errors} error(s)"
+    print(f"{status} -> {_CACHE}")
     return copied
 
 

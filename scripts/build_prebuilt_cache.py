@@ -103,6 +103,9 @@ def main() -> None:
         (_SEED / sub).mkdir(parents=True, exist_ok=True)
 
     fdates = _monthly_rebuild_dates()
+    if not fdates:
+        raise SystemExit(f"No trading days found in SPY between {SIM_START} and {SIM_END}; "
+                         "cannot build monthly rebuild calendar.")
     print(f"Rebuild dates: {len(fdates)} months ({fdates[0]} .. {fdates[-1]})")
 
     # 1) Full market-cap grid for the ranking pool, then the Top-100 union.
