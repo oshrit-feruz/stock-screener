@@ -9,6 +9,7 @@ thresholds and portfolio construction rules are configurable here.
 """
 from __future__ import annotations
 
+import logging
 import warnings
 from datetime import date, timedelta
 from typing import Optional
@@ -23,6 +24,8 @@ from core.data.prices import PriceData
 from core.signals.recovery_score import compute_recovery_signals, passes_quality_gate
 from data.sp500_universe import get_universe, get_universe_top_n, prefetch_pit_market_caps
 from scripts.run_combined_validation import load_fedfunds
+
+logger = logging.getLogger(__name__)
 
 _WARMUP_START    = "2016-01-01"
 _INITIAL_CAPITAL = 100_000.0
@@ -90,6 +93,28 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
                 month_members[key] = set()
 
     universe = sorted(set().union(*month_members.values())) if month_members else list(VALIDATION_UNIVERSE)
+
+    # Cold-cache guard: the point-in-time Top-N ranking needs the raw-price cache
+    # (data/cache/prices_raw) to compute market caps. That cache is gitignored, so
+    # a fresh deploy (e.g. Render) has no raw prices → get_universe_top_n returns
+    # [] for every month → month_members is a truthy dict of EMPTY sets → the union
+    # above is empty and the `else VALIDATION_UNIVERSE` branch never fires. Fall
+    # back to the fixed universe and clear month_members so _simulate does an
+    # ungated full-universe scan (an empty set would otherwise gate out everything).
+    n_members = sum(1 for s in month_members.values() if s)
+    if not universe:
+        logger.warning(
+            "Backtest universe empty (PIT Top-%d ranking produced 0 members over "
+            "%d months — cold market-cap cache?); falling back to VALIDATION_UNIVERSE "
+            "(%d tickers), ungated.",
+            _UNIVERSE_N, len(month_members), len(VALIDATION_UNIVERSE),
+        )
+        universe = list(VALIDATION_UNIVERSE)
+        month_members = {}
+    logger.info(
+        "Backtest universe: %d tickers (%d months with non-empty PIT membership).",
+        len(universe), n_members,
+    )
 
     scored_data: dict[str, pd.DataFrame] = {}
     for ticker in universe:
