@@ -52,7 +52,7 @@ python scripts/migrate_positions_to_supabase.py --check   # verify fidelity only
 (**backend only**). See `.env.example` and `product/config.py`. Existing vars
 (`NEWS_API_KEY`, `ALLOWED_ORIGINS`, `PORT`, `EDGAR_USER_AGENT`) are untouched.
 
-## Verifying the official beta survived
+## Verifying the official beta
 
 After `db push`:
 
@@ -60,5 +60,8 @@ After `db push`:
 select ticker, status, entry_date, exit_date, realized_return, days_held
 from public.positions
 where is_official_beta;
--- expect the ORCL closed row (entry 2026-06-12, exit 2026-06-12).
+-- expect 0 rows. The official beta record starts CLEAN — the only prior row
+-- (ORCL, entry==exit 2026-06-12) was confirmed demo data from MVP development
+-- (commit 180254a), not a real trade, and was removed. Real official-beta rows
+-- accrue only when the live automation opens/closes genuine positions.
 ```
