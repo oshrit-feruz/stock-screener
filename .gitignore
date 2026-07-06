@@ -6,6 +6,10 @@ __pycache__/
 .pytest_cache/
 data/cache/
 *.pkl
+# ...but DO ship the prebuilt Simulator seed cache (adjusted-price pkls). These
+# are copied into data/cache/ on a cold deploy by scripts/seed_cache.py.
+!data/seed_cache/prices/
+!data/seed_cache/prices/*.pkl
 results/
 data/universe_cache/*.json
 data/screener_cache/*.json
