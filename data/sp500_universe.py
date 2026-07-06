@@ -227,15 +227,42 @@ def _save_pit_cache() -> None:
         _PIT_MCAP_FILE.write_text(json.dumps(_pit_cache))
 
 
+# A point-in-time market cap for a date more than this many days in the past is
+# immutable: the raw close is history, and the shares-outstanding figure that was
+# public as of that date can no longer change (a later filing does not alter what
+# was known then). Cached entries for such dates never expire — this lets a
+# prebuilt cache ship historical caps that stay valid indefinitely, so a cold
+# deploy never has to recompute them from the raw-price / EDGAR caches.
+_PIT_MCAP_IMMUTABLE_AGE_DAYS = 120
+
+
+def _pit_entry_valid(date: str, entry: dict | None, now: float) -> bool:
+    """True if a cached pit-market-cap entry may be reused as-is.
+
+    Fresh within the TTL, OR the as-of date is old enough that the value is
+    immutable (see _PIT_MCAP_IMMUTABLE_AGE_DAYS) — in which case it never expires.
+    """
+    if entry is None:
+        return False
+    if (now - entry.get("ts", 0)) < _PIT_MCAP_TTL_SECONDS:
+        return True
+    try:
+        age_days = (_date.today() - _date.fromisoformat(date)).days
+    except Exception:
+        return False
+    return age_days > _PIT_MCAP_IMMUTABLE_AGE_DAYS
+
+
 def pit_market_cap(ticker: str, date: str) -> float | None:
     """Point-in-time market cap = raw close × EDGAR shares outstanding.
 
-    Returns None (and caches None) if either input is missing. Cached 30 days.
+    Returns None (and caches None) if either input is missing. Cached 30 days;
+    entries for immutable historical dates never expire (see _pit_entry_valid).
     """
     cache = _load_pit_cache()
     ck = f"{ticker}|{date}"
     entry = cache.get(ck)
-    if entry is not None and (time.time() - entry.get("ts", 0)) < _PIT_MCAP_TTL_SECONDS:
+    if _pit_entry_valid(date, entry, time.time()):
         mc = entry.get("mcap")
         return float(mc) if mc is not None else None
 
@@ -262,8 +289,7 @@ def prefetch_pit_market_caps(tickers: list[str], dates: list[str]) -> None:
     for date in dates:
         for t in tickers:
             ck = f"{t}|{date}"
-            entry = cache.get(ck)
-            if entry is not None and (now - entry.get("ts", 0)) < _PIT_MCAP_TTL_SECONDS:
+            if _pit_entry_valid(date, cache.get(ck), now):
                 continue
             cache[ck] = {"mcap": _compute_pit_mcap(t, date), "ts": now}
             changed = True

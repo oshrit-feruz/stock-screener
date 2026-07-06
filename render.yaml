@@ -2,7 +2,9 @@ services:
   - type: web
     name: recovery-detector
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    # Seed the runtime cache from the committed prebuilt cache so the Simulator's
+    # first request is already warm (true Top-100 universe, no cold-fetch timeout).
+    buildCommand: pip install -r requirements.txt && python scripts/seed_cache.py
     startCommand: uvicorn product.api.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: NEWS_API_KEY

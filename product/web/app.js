@@ -857,7 +857,7 @@ function _getSimParams(suffix) {
   var em        = emEl ? emEl.value : '252d_only';
   var ps        = parseFloat((document.getElementById('pos-size-slider') || {}).value || 10);
   var sd        = (document.getElementById('sim-start-date') || {}).value || '2018-01-01';
-  var ed        = (document.getElementById('sim-end-date')   || {}).value || '2026-06-12';
+  var ed        = (document.getElementById('sim-end-date')   || {}).value || '2024-12-31';
   var exv       = parseFloat((document.getElementById('exit-thresh-val') || {}).value || 0.40);
   return {
     entry_threshold:   et,
