@@ -160,8 +160,8 @@ def _get_edgar():
     global _edgar
     if _edgar is None:
         from core.data.edgar import EdgarFundamentals
-        from core.data.fundamentals import PointInTimeFundamentals
-        _edgar = EdgarFundamentals(fallback=PointInTimeFundamentals())
+        from core.data.eodhd_fundamentals import EODHDFundamentals
+        _edgar = EdgarFundamentals(fallback=EODHDFundamentals())
     return _edgar
 
 

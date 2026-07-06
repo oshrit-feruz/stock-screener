@@ -18,7 +18,7 @@ import pandas as pd
 
 from config.tickers import VALIDATION_UNIVERSE
 from core.data.edgar import EdgarFundamentals
-from core.data.fundamentals import PointInTimeFundamentals
+from core.data.eodhd_fundamentals import EODHDFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import compute_recovery_signals, passes_quality_gate
 from data.sp500_universe import get_universe, get_universe_top_n, prefetch_pit_market_caps
@@ -47,7 +47,9 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     Expensive step done once for batch runs — amortizes across all simulations.
     """
     prices       = PriceData()
-    fundamentals = EdgarFundamentals(fallback=PointInTimeFundamentals())
+    # EDGAR primary; EODHD (requests, not yfinance) as the fallback so the quality
+    # gate never hangs on yfinance's TLS failure on Render. See eodhd_fundamentals.
+    fundamentals = EdgarFundamentals(fallback=EODHDFundamentals())
 
     # Fetch start: at least 365 days before backtest start for warmup, but never after end_date
     if start_date is not None:
