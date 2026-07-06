@@ -82,7 +82,9 @@ def fetch_eod(ticker: str, start: str, end: str, adjust: bool = True) -> pd.Data
     try:
         resp = requests.get(url, params=params, timeout=_TIMEOUT)
     except Exception as exc:  # network / TLS / timeout
-        log.warning("EODHD: request failed for %s (%s): %r", ticker, symbol, exc)
+        # Sanitize exception to avoid leaking api_token in URL/query params
+        exc_msg = str(exc).replace(key, "***REDACTED***") if key in str(exc) else str(exc)
+        log.warning("EODHD: request failed for %s (%s): %s", ticker, symbol, exc_msg)
         return pd.DataFrame()
 
     if resp.status_code != 200:
@@ -136,11 +138,16 @@ def _to_frame(rows: list[dict], adjust: bool, ticker: str) -> pd.DataFrame:
 
     if adjust:
         # Match yfinance auto_adjust: scale OHL by adjusted_close/close, Close := adj.
-        factor = out["_adj"] / out["Close"]
-        for col in ("Open", "High", "Low"):
-            out[col] = out[col] * factor
-        out["Close"] = out["_adj"]
-        out = out.dropna(subset=["Close"])
+        # Guard against zero/non-finite Close to prevent inf/NaN in factor
+        out = out[out["Close"] != 0]
+        out = out.dropna(subset=["_adj"])
+        if not out.empty:
+            factor = out["_adj"] / out["Close"]
+            for col in ("Open", "High", "Low"):
+                out[col] = out[col] * factor
+            out["Close"] = out["_adj"]
+            # Drop any rows where adjustment produced non-finite values
+            out = out.dropna(subset=["Close", "Open", "High", "Low"])
 
     out = out.drop(columns=["_adj"]).sort_index()
     out.index.name = "Date"
