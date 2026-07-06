@@ -90,6 +90,10 @@ jobs:
           # the `|| '...'` fallback keeps a valid non-empty UA (an empty string
           # would otherwise override the in-code default).
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT || 'recovery-detector-daily (github actions; contact via repo owner)' }}
+          # Price data source (EODHD). The daily run uses the same EODHD-backed
+          # PriceData as the web service; without this secret every fetch returns
+          # empty and the run produces no signals. Add it as a repo Actions secret.
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
         # run_daily.py exits non-zero on any unhandled error (sys.exit(main());
         # main() returns 1 and logs a full traceback), so a failed run fails the
         # step — and therefore the workflow — visibly. No extra handling needed.
