@@ -122,6 +122,12 @@ def main() -> None:
     # --raw: store UNADJUSTED prices under data/cache/prices_raw (for point-in-time
     # market cap). Default: split/div-adjusted prices for the backtest.
     raw = "--raw" in sys.argv
+    # --eodhd: source from EODHD instead of Yahoo. EODHD serves delisted tickers
+    # (which Yahoo often drops) and returns raw + adjusted close in one call.
+    # Requires EODHD_API_KEY in the environment.
+    use_eodhd = "--eodhd" in sys.argv
+    if use_eodhd:
+        from core.data.eodhd import fetch_eod
     cache_dir = (_CACHE_DIR.parent / "prices_raw") if raw else _CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
     tickers = _load_ticker_list()
@@ -134,7 +140,10 @@ def main() -> None:
             ok += 1
             continue
         try:
-            df = fetch_chart(t, _START, _END, adjust=not raw)
+            if use_eodhd:
+                df = fetch_eod(t, _START, _END, adjust=not raw)
+            else:
+                df = fetch_chart(t, _START, _END, adjust=not raw)
             if df.empty or len(df) < 252:
                 print(f"  SKIP {t}: only {len(df)} rows")
                 fail += 1

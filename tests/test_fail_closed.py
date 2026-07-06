@@ -9,7 +9,7 @@ from core.data.prices import PriceData
 
 def test_prices_network_exception_returns_empty(tmp_path):
     prices = PriceData(cache_dir=tmp_path)
-    with patch("yfinance.download", side_effect=Exception("network error")):
+    with patch("core.data.prices.fetch_eod", side_effect=Exception("network error")):
         df = prices.get_prices("AAPL", "2022-01-01", "2022-12-31")
     assert isinstance(df, pd.DataFrame)
     assert df.empty
@@ -17,14 +17,14 @@ def test_prices_network_exception_returns_empty(tmp_path):
 
 def test_prices_empty_response_returns_empty(tmp_path):
     prices = PriceData(cache_dir=tmp_path)
-    with patch("yfinance.download", return_value=pd.DataFrame()):
+    with patch("core.data.prices.fetch_eod", return_value=pd.DataFrame()):
         df = prices.get_prices("AAPL", "2022-01-01", "2022-12-31")
     assert df.empty
 
 
 def test_get_return_network_exception_returns_none(tmp_path):
     prices = PriceData(cache_dir=tmp_path)
-    with patch("yfinance.download", side_effect=Exception("network error")):
+    with patch("core.data.prices.fetch_eod", side_effect=Exception("network error")):
         result = prices.get_return("AAPL", "2022-01-01", "2022-12-31")
     assert result is None
 
@@ -53,7 +53,7 @@ def test_no_exception_propagates(tmp_path):
     prices = PriceData(cache_dir=tmp_path)
     pit = PointInTimeFundamentals(cache_dir=tmp_path)
 
-    with patch("yfinance.download", side_effect=RuntimeError("boom")):
+    with patch("core.data.prices.fetch_eod", side_effect=RuntimeError("boom")):
         prices.get_prices("ZZZINVALID", "2022-01-01", "2022-12-31")
         prices.get_return("ZZZINVALID", "2022-01-01", "2022-12-31")
 
