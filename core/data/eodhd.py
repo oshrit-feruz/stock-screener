@@ -30,6 +30,24 @@ _BASE_URL = "https://eodhd.com/api/eod"
 _TIMEOUT = 30
 _ENV_KEY = "EODHD_API_KEY"
 
+# One-time runtime diagnostics (logged at WARNING so they surface even when the
+# root logger is left at its default level, e.g. under uvicorn on Render). They
+# NEVER print the key value — only whether it was found and the first HTTP
+# status. This is the fast way to tell, from prod logs, whether EODHD is being
+# reached and authed vs. the key simply being absent from the environment.
+_diag_key_logged = False
+_diag_status_logged = False
+
+
+def _log_key_presence_once() -> None:
+    global _diag_key_logged
+    if not _diag_key_logged:
+        _diag_key_logged = True
+        log.warning(
+            "EODHD diagnostic: %s present in environment: %s",
+            _ENV_KEY, _api_key() is not None,
+        )
+
 
 def normalize_ticker(ticker: str) -> str:
     """Map an internal ticker to EODHD's ``SYMBOL.US`` form.
@@ -65,6 +83,7 @@ def fetch_eod(ticker: str, start: str, end: str, adjust: bool = True) -> pd.Data
     columns Open/High/Low/Close/Volume, or an EMPTY DataFrame on any failure
     (missing key, HTTP/JSON error, no rows). Never raises.
     """
+    _log_key_presence_once()
     key = _api_key()
     if key is None:
         log.warning("EODHD: %s is not set; cannot fetch %s", _ENV_KEY, ticker)
@@ -86,6 +105,14 @@ def fetch_eod(ticker: str, start: str, end: str, adjust: bool = True) -> pd.Data
         exc_msg = str(exc).replace(key, "***REDACTED***") if key in str(exc) else str(exc)
         log.warning("EODHD: request failed for %s (%s): %s", ticker, symbol, exc_msg)
         return pd.DataFrame()
+
+    global _diag_status_logged
+    if not _diag_status_logged:
+        _diag_status_logged = True
+        log.warning(
+            "EODHD diagnostic: first fetch %s (%s) -> HTTP %s",
+            ticker, symbol, resp.status_code,
+        )
 
     if resp.status_code != 200:
         # 404 => unknown symbol (e.g. wrong suffix); others => transient/server.
