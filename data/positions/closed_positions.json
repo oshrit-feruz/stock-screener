@@ -1,13 +1,1 @@
-[
-  {
-    "ticker": "ORCL",
-    "entry_date": "2026-06-12",
-    "entry_price": 184.1,
-    "signal_composite": null,
-    "signal_drawdown": null,
-    "exit_date": "2026-06-12",
-    "exit_price": 184.10000610351562,
-    "realized_return": 3.31532625796882e-08,
-    "days_held": 0
-  }
-]
+[]
