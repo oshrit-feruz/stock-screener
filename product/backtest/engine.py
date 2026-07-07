@@ -43,6 +43,24 @@ def _safe_float(v) -> Optional[float]:
         return None
 
 
+def _downcast(df: pd.DataFrame) -> pd.DataFrame:
+    """Downcast float64->float32 and int64->int32 in place (returns df for chaining).
+
+    Retained OHLCV + signal DataFrames are the dominant memory cost when the
+    universe/date-range is large (each column is 2x float32 vs float64). Prices
+    are $0.01-$100k range and scores are 0-1 — float32's ~7 significant digits
+    is far more precision than the signal math or position sizing needs, so this
+    only affects memory, not results (verified against the float64 baseline).
+    Volume fits int32 (max ~2.1B; no single-day US equity volume gets close).
+    """
+    for col in df.columns:
+        if df[col].dtype == np.float64:
+            df[col] = df[col].astype(np.float32)
+        elif df[col].dtype == np.int64:
+            df[col] = df[col].astype(np.int32)
+    return df
+
+
 def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_year: int,
                         start_date: Optional[date] = None) -> dict:
     """Pre-load OHLCV, compute signals, and pre-fetch quality gates for all tickers.
@@ -63,6 +81,8 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
 
     # SPY first — its trading calendar defines the first-of-month rebuild dates.
     spy_ohlcv = prices.get_prices("SPY", fetch_start, end_date.isoformat())
+    if spy_ohlcv is not None and not spy_ohlcv.empty:
+        spy_ohlcv = _downcast(spy_ohlcv)
 
     # ── Point-in-time Top-100 universe, rebuilt on the first trading day of each
     #    month and reused all month — consistent with the research harness
@@ -129,7 +149,11 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 scored = compute_recovery_signals(ohlcv)
-            scored_data[ticker] = scored
+            # Downcast AFTER signal computation (compute_recovery_signals is
+            # shared with the screener/research paths — left untouched — so the
+            # float32 memory optimization stays local to what the backtest
+            # retains for the whole run).
+            scored_data[ticker] = _downcast(scored)
         except Exception:
             continue
     logger.warning("Backtest data loaded: %d/%d tickers scored; entering simulation.",

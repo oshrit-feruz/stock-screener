@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the COMPLETE prebuilt Simulator cache for the full 2018-2024 window.
+"""Build the COMPLETE prebuilt Simulator cache for a given window (default 2018-2024).
 
 The first cut (PR #29) shipped a pit_market_cap grid that was only partly
 populated (2022-2024 nearly empty) because prefetch_pit_market_caps skips
@@ -8,21 +8,29 @@ so it never completed. This script:
 
   1. fills missing RAW prices (delisted tickers) via EODHD (adjust=False),
   2. fills missing EDGAR company-facts via SEC (get_shares_outstanding),
-  3. FORCE-recomputes the whole market-cap grid (654 members x 84 months),
+  3. FORCE-recomputes the whole market-cap grid (all members x every month),
   4. derives the true Top-100 union and rebuilds data/seed_cache/ (grid +
      adjusted prices + slim EDGAR) for that union,
   5. reports the resulting shipped-cache size.
 
 Build-time only; needs EODHD_API_KEY. Run:
     EODHD_API_KEY=... python scripts/build_full_cache.py
+    EODHD_API_KEY=... python scripts/build_full_cache.py --start 2010-01-01 --end 2026-06-30
+
+Window note: EDGAR has no reliable shares-outstanding data before ~2009 (the
+XBRL mandate rolled out through 2009-2011), so months before ~2010 may rank
+fewer than TOP_N companies — this is a genuine data-availability limit, not a
+bug; the manifest's months_full_rank reports the actual coverage.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import pickle
 import shutil
 import sys
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -35,12 +43,18 @@ from core.data.prices import PriceData  # noqa: E402
 import data.sp500_universe as u  # noqa: E402
 from scripts.build_prebuilt_cache import _slim_edgar, _dir_mb  # noqa: E402
 
-WARMUP_START = "2016-01-01"
-SIM_START, SIM_END = "2018-01-01", "2024-12-31"
+_DEFAULT_SIM_START, _DEFAULT_SIM_END = "2018-01-01", "2024-12-31"
 TOP_N = 100
 _CACHE = REPO / "data" / "cache"
 _SEED = REPO / "data" / "seed_cache"
 _RAW = _CACHE / "prices_raw"
+
+# Set by main() from CLI args; module-level so the phase functions (which
+# mirror the original single-window script) don't need a config object threaded
+# through every call.
+SIM_START = _DEFAULT_SIM_START
+SIM_END = _DEFAULT_SIM_END
+WARMUP_START = _DEFAULT_SIM_START  # recomputed in main() as SIM_START - 400 days
 
 
 def _fdates() -> list[str]:
@@ -167,6 +181,19 @@ def _report_sizes_and_manifest(fdates: list[str], pool: list[str], top_union: li
 
 
 def main() -> None:
+    global SIM_START, SIM_END, WARMUP_START
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--start", default=_DEFAULT_SIM_START, help="Simulator window start (YYYY-MM-DD)")
+    ap.add_argument("--end", default=_DEFAULT_SIM_END, help="Simulator window end (YYYY-MM-DD)")
+    args = ap.parse_args()
+    SIM_START, SIM_END = args.start, args.end
+    # 400 days of warmup >= the 252-trading-day rolling window compute_recovery_signals
+    # needs before the first signal, with margin for weekends/holidays. Mirrors the
+    # dynamic warmup engine.py computes at request time (start_date - 365 days).
+    WARMUP_START = (date.fromisoformat(SIM_START) - timedelta(days=400)).isoformat()
+
+    print(f"Window: {SIM_START} .. {SIM_END}  (warmup from {WARMUP_START})")
     fdates = _fdates()
     pool = sorted({t for d in fdates for t in u.get_universe(d)})
     print(f"Ranking pool: {len(pool)} tickers x {len(fdates)} months")

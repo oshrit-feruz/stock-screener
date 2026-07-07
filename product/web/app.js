@@ -779,7 +779,9 @@ function toggleAlertBody(id, btn) {
 // ── Simulator ─────────────────────────────────────────────────────────────────
 var _simResultA = null;
 var _simResultB = null;
+var _simPollTimers = {};  // scenario -> setTimeout id, so re-running cancels a stale poll
 var _taxMode = localStorage.getItem('tax_mode') || 'none';
+var SIM_POLL_MS = 3000;
 
 function setTaxMode(val) {
   _taxMode = val;
@@ -873,6 +875,60 @@ function _getSimParams(suffix) {
   };
 }
 
+function _simLoadingHTML(params, note) {
+  return [
+    '<div class="card" style="text-align:center;padding:28px 20px;">',
+    '  <div style="font-size:28px;margin-bottom:10px;">&#8987;</div>',
+    '  <div style="font-size:15px;font-weight:600;margin-bottom:6px;">Running simulation&hellip;</div>',
+    '  <div style="font-size:13px;color:var(--muted);">Scanning the Top-100 universe across ' +
+         Math.round((new Date(params.end_date) - new Date(params.start_date)) / (365.25 * 86400000)) +
+         ' years of data.</div>',
+    '  <div style="font-size:12px;color:var(--muted);margin-top:6px;">' + escHtml(note) + '</div>',
+    '</div>'
+  ].join('\n');
+}
+
+function _simFinish(scenario, btn) {
+  if (btn && scenario === 'A') btn.disabled = false;
+}
+
+function _pollBacktestJob(jobId, scenario, params, btn, rContainer, elapsedSec) {
+  elapsedSec = elapsedSec || 0;
+  fetch('/api/backtest/' + jobId)
+    .then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Simulation failed'); });
+      return r.json();
+    })
+    .then(function (data) {
+      if (data.status === 'running') {
+        rContainer.innerHTML = _simLoadingHTML(params,
+          'Still running (' + elapsedSec + 's)… large date ranges can take a few minutes on first run.');
+        _simPollTimers[scenario] = setTimeout(function () {
+          _pollBacktestJob(jobId, scenario, params, btn, rContainer, elapsedSec + Math.round(SIM_POLL_MS / 1000));
+        }, SIM_POLL_MS);
+        return;
+      }
+      if (data.status === 'error') {
+        throw new Error(data.detail || 'Simulation failed');
+      }
+      // status === 'done': the job's full result is spread alongside job_id/status.
+      if (scenario === 'A') {
+        _simResultA = data;
+      } else {
+        _simResultB = data;
+      }
+      rContainer.innerHTML = renderSimResults(data, scenario);
+      _simFinish(scenario, btn);
+      var addBtn = document.getElementById('sim-add-scenario');
+      if (addBtn && scenario === 'A') addBtn.style.display = '';
+      if (_simResultA && _simResultB) renderComparison();
+    })
+    .catch(function (err) {
+      rContainer.innerHTML = '<div class="err-box">&#9888;&#65039; ' + escHtml(err.message) + '</div>';
+      _simFinish(scenario, btn);
+    });
+}
+
 function runSimulation(scenario) {
   scenario = scenario || 'A';
   var suffix = scenario === 'B' ? 'B' : '';
@@ -886,24 +942,21 @@ function runSimulation(scenario) {
     showToast('End date must be after start date'); return;
   }
   if (params.start_date < '2010-01-01') {
-    showToast('Start date cannot be before 2010 — our universe has reliable data from 2010 onwards'); return;
+    showToast('Simulator covers 2010 onward — EDGAR lacks pre-2009 shares data for Top-100 ranking'); return;
   }
 
   var btn = document.getElementById('sim-run-btn');
   var rContainer = document.getElementById('sim-results-' + scenario);
   if (!rContainer) return;
 
+  // A fresh run supersedes any poll already in flight for this scenario.
+  if (_simPollTimers[scenario]) {
+    clearTimeout(_simPollTimers[scenario]);
+    delete _simPollTimers[scenario];
+  }
+
   if (btn && scenario === 'A') btn.disabled = true;
-  rContainer.innerHTML = [
-    '<div class="card" style="text-align:center;padding:28px 20px;">',
-    '  <div style="font-size:28px;margin-bottom:10px;">&#8987;</div>',
-    '  <div style="font-size:15px;font-weight:600;margin-bottom:6px;">Running simulation&hellip;</div>',
-    '  <div style="font-size:13px;color:var(--muted);">Scanning the Top-100 universe across ' +
-         Math.round((new Date(params.end_date) - new Date(params.start_date)) / (365.25 * 86400000)) +
-         ' years of data.</div>',
-    '  <div style="font-size:12px;color:var(--muted);margin-top:6px;">This takes 10&ndash;30 seconds on first run.</div>',
-    '</div>'
-  ].join('\n');
+  rContainer.innerHTML = _simLoadingHTML(params, 'Starting…');
 
   fetch('/api/backtest', {
     method:  'POST',
@@ -915,22 +968,15 @@ function runSimulation(scenario) {
     return r.json();
   })
   .then(function (data) {
-    if (scenario === 'A') {
-      _simResultA = data;
-    } else {
-      _simResultB = data;
-    }
-    rContainer.innerHTML = renderSimResults(data, scenario);
-    if (btn && scenario === 'A') btn.disabled = false;
-    // Show add-scenario button after first result
-    var addBtn = document.getElementById('sim-add-scenario');
-    if (addBtn && scenario === 'A') addBtn.style.display = '';
-    // Show comparison if both results exist
-    if (_simResultA && _simResultB) renderComparison();
+    // The backend runs the backtest in a background job and returns immediately
+    // (202) with a job_id — the run can take minutes on a large date range,
+    // well past any HTTP/proxy timeout, so the client polls for the result
+    // instead of waiting on this request.
+    _pollBacktestJob(data.job_id, scenario, params, btn, rContainer, 0);
   })
   .catch(function (err) {
     rContainer.innerHTML = '<div class="err-box">&#9888;&#65039; ' + escHtml(err.message) + '</div>';
-    if (btn && scenario === 'A') btn.disabled = false;
+    _simFinish(scenario, btn);
   });
 }
 
