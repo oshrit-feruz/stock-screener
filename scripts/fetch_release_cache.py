@@ -9,7 +9,7 @@ data/seed_cache/ exists and is populated before it runs.
 
 Configuration (env vars, all with defaults matching this repo):
     SEED_CACHE_RELEASE_REPO   "owner/repo"                  (default: oshrit-feruz/stock-screener)
-    SEED_CACHE_RELEASE_TAG    release tag holding the asset  (default: seed-cache-2010-2026)
+    SEED_CACHE_RELEASE_TAG    release tag holding the asset  (default: cache-v1)
     SEED_CACHE_RELEASE_ASSET  asset file name                (default: seed_cache_2010_2026.tar.gz)
     GITHUB_TOKEN              optional; required only if the repo is private
                               (a public repo's release assets download without one)
@@ -41,7 +41,7 @@ REPO = Path(__file__).resolve().parent.parent
 _SEED = REPO / "data" / "seed_cache"
 
 _DEFAULT_REPO = "oshrit-feruz/stock-screener"
-_DEFAULT_TAG = "seed-cache-2010-2026"
+_DEFAULT_TAG = "cache-v1"
 _DEFAULT_ASSET = "seed_cache_2010_2026.tar.gz"
 _TIMEOUT = 300  # the archive can be a few hundred MB; allow a slow connection
 
