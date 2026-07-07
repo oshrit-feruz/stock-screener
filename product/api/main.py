@@ -83,8 +83,8 @@ def _startup_cache_report() -> None:
     try:
         if grid.exists():
             months = len({k.rsplit("|", 1)[1] for k in json.loads(grid.read_text())})
-    except Exception:
-        pass
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to read/parse grid file %s: %s", grid, exc)
     prices = len(list((cache / "prices").glob("*.pkl"))) if (cache / "prices").is_dir() else 0
     seed_files = sum(1 for _ in seed_dir.rglob("*") if _.is_file()) if seed_dir.is_dir() else 0
     logger.warning(
