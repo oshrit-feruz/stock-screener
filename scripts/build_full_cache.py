@@ -103,15 +103,36 @@ def _fill_edgar_facts(pool: list[str]) -> None:
 
 
 def _force_recompute_grid(pool: list[str], fdates: list[str]) -> tuple[int, int]:
-    """Phase 3: FORCE-recompute the whole grid (delete first so nothing is skipped)."""
+    """Phase 3: FORCE-recompute the whole grid (delete first so nothing is skipped).
+
+    Loops TICKER-outer (not u.prefetch_pit_market_caps's date-outer order) and
+    evicts each ticker's cached EDGAR company-facts JSON from memory once done
+    with it. EdgarFundamentals._facts_mem is a plain in-process dict that never
+    evicts, so date-outer order (which touches every ticker within the first
+    date) accumulates ALL ~840 companies' full facts JSON — several MB each —
+    simultaneously, several GB total. Ticker-outer + per-ticker eviction bounds
+    memory to ~1 company's facts at a time; the on-disk facts cache (unaffected)
+    still makes every call after the first EODHD/SEC fetch instant. Grid is
+    checkpointed to disk every 50 tickers so a crash doesn't lose all progress.
+    """
     grid_file = _CACHE / "pit_market_cap" / "pit_market_caps.json"
     if grid_file.exists():
         grid_file.unlink()
     u._pit_cache = None
     u._raw_frames.clear()
     u._shares_memo.clear()
-    print("Force-recomputing full market-cap grid…")
-    u.prefetch_pit_market_caps(pool, fdates)
+    print("Force-recomputing full market-cap grid (ticker-outer, memory-bounded)…")
+    cache = u._load_pit_cache()
+    now = time.time()
+    edgar = u._get_edgar()
+    for i, t in enumerate(pool):
+        for d in fdates:
+            cache[f"{t}|{d}"] = {"mcap": u._compute_pit_mcap(t, d), "ts": now}
+        edgar._facts_mem.pop(t, None)  # bound memory: drop this ticker's full facts JSON
+        if (i + 1) % 50 == 0:
+            u._save_pit_cache()
+            print(f"  grid checkpoint: {i + 1}/{len(pool)} tickers")
+    u._save_pit_cache()
     grid = json.loads(grid_file.read_text())
     nonnull = sum(1 for v in grid.values() if v.get("mcap"))
     from collections import defaultdict
