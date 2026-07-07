@@ -41,6 +41,7 @@ from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
 from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
+from scripts.seed_cache import seed as _seed_cache  # noqa: E402
 
 
 def _warm_screener_cache() -> None:
@@ -67,6 +68,16 @@ def _warm_screener_cache() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Seed the prebuilt cache into data/cache/ BEFORE anything reads it, so the
+    # Simulator builds the true Top-100 universe on a cold Render start instead
+    # of silently falling back to the 50-ticker set. Idempotent (skips files
+    # already present) and guarded so a seeding error never blocks startup — it
+    # runs regardless of how the Render service was created (no reliance on
+    # render.yaml's buildCommand, which Blueprint-less services ignore).
+    try:
+        _seed_cache()
+    except Exception:
+        logger.exception("startup cache seeding failed")
     threading.Thread(target=_warm_screener_cache, daemon=True).start()
     yield
 
