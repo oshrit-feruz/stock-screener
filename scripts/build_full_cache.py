@@ -209,10 +209,21 @@ def main() -> None:
     ap.add_argument("--end", default=_DEFAULT_SIM_END, help="Simulator window end (YYYY-MM-DD)")
     args = ap.parse_args()
     SIM_START, SIM_END = args.start, args.end
-    # 400 days of warmup >= the 252-trading-day rolling window compute_recovery_signals
-    # needs before the first signal, with margin for weekends/holidays. Mirrors the
-    # dynamic warmup engine.py computes at request time (start_date - 365 days).
-    WARMUP_START = (date.fromisoformat(SIM_START) - timedelta(days=400)).isoformat()
+    # PriceData._cache_path keys the price pkl by an EXACT string match on the
+    # requested `start` date — no glob, no nearest-date fallback (unlike the raw
+    # price / EDGAR lookups elsewhere in this pipeline, which do glob). So this
+    # MUST compute byte-for-byte the same date product/backtest/engine.py's
+    # _load_backtest_data uses at request time, or every shipped price file is
+    # invisible to the runtime and silently live-refetched on every request —
+    # exactly the bug this comment is here to prevent regressing (discovered when
+    # the 2010-2026 cache's 400-day placeholder didn't match the runtime's
+    # 365-day-capped-at-2016-01-01 formula: 2008-11-27 vs 2009-01-01, a 100%
+    # cache-miss for the price cache specifically — the grid/ranking still worked
+    # because that lookup path glob-matches, not exact-matches).
+    _ENGINE_WARMUP_FLOOR = date(2016, 1, 1)   # product/backtest/engine.py _WARMUP_START
+    _ENGINE_WARMUP_DAYS = 365                  # product/backtest/engine.py's start_date offset
+    WARMUP_START = min(_ENGINE_WARMUP_FLOOR,
+                       date.fromisoformat(SIM_START) - timedelta(days=_ENGINE_WARMUP_DAYS)).isoformat()
 
     print(f"Window: {SIM_START} .. {SIM_END}  (warmup from {WARMUP_START})")
     fdates = _fdates()
