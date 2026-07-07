@@ -2,9 +2,13 @@ services:
   - type: web
     name: recovery-detector
     runtime: python
-    # Seed the runtime cache from the committed prebuilt cache so the Simulator's
-    # first request is already warm (true Top-100 universe, no cold-fetch timeout).
-    buildCommand: pip install -r requirements.txt && python scripts/seed_cache.py
+    # 1) Download the full 2010-2026 prebuilt cache from its GitHub Release asset
+    #    (too large to commit — see scripts/fetch_release_cache.py). Fails open:
+    #    if the release/asset isn't published yet, the build continues and the
+    #    app falls back to a cold cache (fallback universe) until it is.
+    # 2) Seed data/cache/ from data/seed_cache/ so the Simulator's first request
+    #    is already warm (true Top-100 universe, no cold-fetch timeout).
+    buildCommand: pip install -r requirements.txt && python scripts/fetch_release_cache.py && python scripts/seed_cache.py
     startCommand: uvicorn product.api.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: NEWS_API_KEY
@@ -14,6 +18,11 @@ services:
       # "No price data found". Set the value in the Render dashboard (sync:false
       # keeps the secret out of the repo).
       - key: EODHD_API_KEY
+        sync: false
+      # Only required if this repo is PRIVATE — needed to download the seed-cache
+      # release asset (see scripts/fetch_release_cache.py). A public repo's
+      # release assets download without one; leave unset in that case.
+      - key: GITHUB_TOKEN
         sync: false
 
   # The daily scheduled run has moved to GitHub Actions (free tier) —

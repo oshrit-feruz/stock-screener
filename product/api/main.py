@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
@@ -41,6 +42,7 @@ from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
 from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
+from scripts.fetch_release_cache import fetch_and_extract as _fetch_release_cache  # noqa: E402
 from scripts.seed_cache import seed as _seed_cache  # noqa: E402
 
 
@@ -96,12 +98,19 @@ def _startup_cache_report() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    # Seed the prebuilt cache into data/cache/ BEFORE anything reads it, so the
-    # Simulator builds the true Top-100 universe on a cold Render start instead
-    # of silently falling back to the 50-ticker set. Idempotent (skips files
-    # already present) and guarded so a seeding error never blocks startup — it
-    # runs regardless of how the Render service was created (no reliance on
-    # render.yaml's buildCommand, which Blueprint-less services ignore).
+    # Safety-net path: render.yaml's buildCommand normally downloads the release
+    # cache and seeds data/cache/ at BUILD time, before the app process starts —
+    # so this is usually a fast idempotent no-op (manifest.json already present).
+    # It only does real work when render.yaml wasn't honored (a dashboard-created,
+    # non-Blueprint Render service ignores it), which is exactly the scenario that
+    # caused the original "0 members / fallback-50" bug — so this must not depend
+    # on the build step having run. Both calls fail open: any error is logged and
+    # startup continues regardless (a cold cache means a slower/fallback-universe
+    # backtest, not a crash).
+    try:
+        _fetch_release_cache()
+    except Exception:
+        logger.exception("startup release-cache fetch failed")
     try:
         n = _seed_cache()
         logger.warning("STARTUP %s: seed_cache.seed() copied %d file(s)", _BUILD_MARKER, n)
@@ -138,6 +147,16 @@ _sc_lock = threading.Lock()  # guards _sc_data / _sc_ts / _sc_warming
 _sc_data: dict | None = None
 _sc_ts: float = 0.0
 _sc_warming = False          # True while background scan is running
+
+# Backtest job store — the backtest can run for minutes (large universe / cold
+# cache), well past any HTTP proxy timeout, so /api/backtest kicks it off in a
+# background thread and returns a job_id immediately; the client polls for the
+# result. In-memory only (no DB): fine for a single-instance deploy, and a lost
+# job on restart just means the user re-submits.
+_bt_lock = threading.Lock()  # guards _bt_jobs and _bt_semaphore
+_bt_jobs: dict[str, dict] = {}
+_BT_JOB_TTL_SECONDS = 3600   # stale jobs are pruned lazily on each new submission
+_bt_semaphore = threading.Semaphore(3)  # cap concurrent backtest threads at 3
 
 
 # ── Pydantic models ────────────────────────────────────────────────────────────
@@ -586,16 +605,63 @@ def portfolio_alerts() -> dict:
     return {"alerts": alerts}
 
 
-# ── Backtest simulator ─────────────────────────────────────────────────────────
+# ── Backtest simulator (async job queue) ────────────────────────────────────────
+#
+# The backtest can run for minutes on a large universe / cold cache — far past
+# any HTTP proxy or platform request timeout (this is what caused the Render
+# hangs). POST kicks off the run in a background thread and returns a job_id
+# immediately (202); the client polls GET .../{job_id} for the result.
 
-@app.post("/api/backtest")
+_SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
+
+
+def _prune_old_jobs(now: float) -> None:
+    """Drop jobs older than the TTL. Called with _bt_lock held."""
+    stale = [jid for jid, j in _bt_jobs.items() if now - j["created"] > _BT_JOB_TTL_SECONDS]
+    for jid in stale:
+        del _bt_jobs[jid]
+
+
+def _run_backtest_job(job_id: str, params: dict) -> None:
+    logger.warning("BACKTEST %s: job %s started (start=%s end=%s thr=%s)",
+                   _BUILD_MARKER, job_id, params["start_date"], params["end_date"],
+                   params["entry_threshold"])
+    t0 = time.time()
+    try:
+        result = run_backtest(params)
+        logger.warning("BACKTEST %s: job %s run_backtest returned in %.1fs (error=%s)",
+                       _BUILD_MARKER, job_id, time.time() - t0, "error" in result)
+        with _bt_lock:
+            job = _bt_jobs.get(job_id)
+            if job is None:
+                return  # pruned mid-run (TTL far exceeds any realistic run time)
+            if "error" in result:
+                job["status"] = "error"
+                job["error"] = result["error"]
+            else:
+                job["status"] = "done"
+                job["result"] = result
+    except Exception as exc:
+        # run_backtest already fails closed internally; this is a last-resort
+        # guard so a job can never be stuck "running" forever on an unexpected
+        # crash (which would otherwise poll forever with no explanation).
+        logger.exception("BACKTEST %s: job %s crashed", _BUILD_MARKER, job_id)
+        with _bt_lock:
+            job = _bt_jobs.get(job_id)
+            if job is not None:
+                job["status"] = "error"
+                job["error"] = f"Internal error: {exc}"
+    finally:
+        _bt_semaphore.release()
+
+
+@app.post("/api/backtest", status_code=202)
 def backtest(body: BacktestParams) -> dict:
     # FIRST line: proves the request reaches the handler at all. If this never
     # appears in the logs, the request is dying before the app (proxy/timeout/
     # routing), not inside run_backtest.
     logger.warning("BACKTEST %s: handler reached (start=%s end=%s thr=%s)",
                    _BUILD_MARKER, body.start_date, body.end_date, body.entry_threshold)
-    t0 = time.time()
     try:
         start = date.fromisoformat(body.start_date)
         end   = date.fromisoformat(body.end_date)
@@ -603,6 +669,12 @@ def backtest(body: BacktestParams) -> dict:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {exc}")
     if end <= start:
         raise HTTPException(status_code=400, detail="End date must be after start date")
+    if start < _SIM_MIN_START:
+        raise HTTPException(
+            status_code=400,
+            detail="Simulator covers 2010 onward — EDGAR lacks pre-2009 shares "
+                   "data for Top-100 ranking",
+        )
 
     params = {
         "entry_threshold":  body.entry_threshold,
@@ -616,15 +688,32 @@ def backtest(body: BacktestParams) -> dict:
         "start_date":       body.start_date,
         "end_date":         body.end_date,
     }
-    result = run_backtest(params)
-    # If this appears, run_backtest returned (no hang). If the "handler reached"
-    # line shows but this one never does, the hang is inside run_backtest
-    # (data fetch or the simulation compute).
-    logger.warning("BACKTEST %s: run_backtest returned in %.1fs (error=%s)",
-                   _BUILD_MARKER, time.time() - t0, "error" in result)
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    # Fail fast if at concurrency limit instead of queuing unboundedly
+    if not _bt_semaphore.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="Backtest capacity reached. Please wait for an in-flight backtest to complete."
+        )
+    job_id = uuid.uuid4().hex
+    now = time.time()
+    with _bt_lock:
+        _prune_old_jobs(now)
+        _bt_jobs[job_id] = {"status": "running", "result": None, "error": None, "created": now}
+    threading.Thread(target=_run_backtest_job, args=(job_id, params), daemon=True).start()
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/api/backtest/{job_id}")
+def backtest_status(job_id: str) -> dict:
+    with _bt_lock:
+        job = _bt_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Unknown or expired job_id")
+        if job["status"] == "done":
+            return {"job_id": job_id, "status": "done", **job["result"]}
+        if job["status"] == "error":
+            return {"job_id": job_id, "status": "error", "detail": job["error"]}
+        return {"job_id": job_id, "status": "running"}
 
 
 # ── Static files — mount LAST so API routes take priority ─────────────────────
