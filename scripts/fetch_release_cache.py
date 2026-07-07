@@ -26,7 +26,6 @@ not a crash.
 """
 from __future__ import annotations
 
-import io
 import logging
 import os
 import sys
@@ -94,21 +93,22 @@ def fetch_and_extract() -> bool:
             timeout=_TIMEOUT, stream=True,
         )
         dl_resp.raise_for_status()
-        archive_bytes = dl_resp.content
     except Exception as exc:
         log.warning("fetch_release_cache: download of %s failed: %r", asset_name, exc)
         return False
 
     try:
         _SEED.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+        seed_resolved = _SEED.resolve()
+        with tarfile.open(fileobj=dl_resp.raw, mode="r|gz") as tar:
             # Guard against path traversal in a (trusted, but still validated)
             # archive — refuse any member that would land outside data/seed_cache/.
-            for member in tar.getmembers():
+            for member in tar:
                 target = (_SEED / member.name).resolve()
-                if not str(target).startswith(str(_SEED.resolve())):
+                # Use proper containment check: target must be seed_cache or a descendant
+                if seed_resolved not in target.parents and target != seed_resolved:
                     raise ValueError(f"unsafe path in archive: {member.name}")
-            tar.extractall(_SEED)
+                tar.extract(member, _SEED)
     except Exception as exc:
         log.warning("fetch_release_cache: extraction failed: %r", exc)
         return False

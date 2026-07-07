@@ -153,9 +153,10 @@ _sc_warming = False          # True while background scan is running
 # background thread and returns a job_id immediately; the client polls for the
 # result. In-memory only (no DB): fine for a single-instance deploy, and a lost
 # job on restart just means the user re-submits.
-_bt_lock = threading.Lock()  # guards _bt_jobs
+_bt_lock = threading.Lock()  # guards _bt_jobs and _bt_semaphore
 _bt_jobs: dict[str, dict] = {}
 _BT_JOB_TTL_SECONDS = 3600   # stale jobs are pruned lazily on each new submission
+_bt_semaphore = threading.Semaphore(3)  # cap concurrent backtest threads at 3
 
 
 # ── Pydantic models ────────────────────────────────────────────────────────────
@@ -650,6 +651,8 @@ def _run_backtest_job(job_id: str, params: dict) -> None:
             if job is not None:
                 job["status"] = "error"
                 job["error"] = f"Internal error: {exc}"
+    finally:
+        _bt_semaphore.release()
 
 
 @app.post("/api/backtest", status_code=202)
@@ -685,6 +688,12 @@ def backtest(body: BacktestParams) -> dict:
         "start_date":       body.start_date,
         "end_date":         body.end_date,
     }
+    # Fail fast if at concurrency limit instead of queuing unboundedly
+    if not _bt_semaphore.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="Backtest capacity reached. Please wait for an in-flight backtest to complete."
+        )
     job_id = uuid.uuid4().hex
     now = time.time()
     with _bt_lock:

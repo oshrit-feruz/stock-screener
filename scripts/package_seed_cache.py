@@ -14,7 +14,6 @@ Run after build_full_cache.py:
 from __future__ import annotations
 
 import argparse
-import sys
 import tarfile
 from pathlib import Path
 

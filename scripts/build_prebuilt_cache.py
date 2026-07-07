@@ -41,12 +41,15 @@ sys.path.insert(0, str(REPO))
 
 import pandas as pd  # noqa: E402
 
+import data.sp500_universe as u  # noqa: E402
 from core.data.edgar import (  # noqa: E402
-    _EQUITY_CONCEPTS, _LT_DEBT_CONCEPTS, _NET_INCOME_CONCEPTS,
-    _REVENUE_CONCEPTS, _SHARES_OUTSTANDING_CONCEPTS,
+    _EQUITY_CONCEPTS,
+    _LT_DEBT_CONCEPTS,
+    _NET_INCOME_CONCEPTS,
+    _REVENUE_CONCEPTS,
+    _SHARES_OUTSTANDING_CONCEPTS,
 )
 from core.data.prices import PriceData  # noqa: E402
-import data.sp500_universe as u  # noqa: E402
 
 # ── Window: the validated Simulator range (2016 warmup, months 2018-2024). ──
 WARMUP_START = "2016-01-01"

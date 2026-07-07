@@ -38,10 +38,10 @@ sys.path.insert(0, str(REPO))
 
 import pandas as pd  # noqa: E402
 
+import data.sp500_universe as u  # noqa: E402
 from core.data.eodhd import fetch_eod  # noqa: E402
 from core.data.prices import PriceData  # noqa: E402
-import data.sp500_universe as u  # noqa: E402
-from scripts.build_prebuilt_cache import _slim_edgar, _dir_mb  # noqa: E402
+from scripts.build_prebuilt_cache import _dir_mb, _slim_edgar  # noqa: E402
 
 _DEFAULT_SIM_START, _DEFAULT_SIM_END = "2018-01-01", "2024-12-31"
 TOP_N = 100
@@ -129,6 +129,8 @@ def _force_recompute_grid(pool: list[str], fdates: list[str]) -> tuple[int, int]
         for d in fdates:
             cache[f"{t}|{d}"] = {"mcap": u._compute_pit_mcap(t, d), "ts": now}
         edgar._facts_mem.pop(t, None)  # bound memory: drop this ticker's full facts JSON
+        u._raw_frames.pop(t, None)     # bound memory: drop this ticker's price cache
+        u._shares_memo.pop(t, None)    # bound memory: drop this ticker's shares cache
         if (i + 1) % 50 == 0:
             u._save_pit_cache()
             print(f"  grid checkpoint: {i + 1}/{len(pool)} tickers")
