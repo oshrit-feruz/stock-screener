@@ -66,6 +66,34 @@ def _warm_screener_cache() -> None:
             _sc_warming = False
 
 
+# Bumped on each diagnostic push so the deployed commit is identifiable in the
+# Render logs (if this marker is absent from startup, Render did not redeploy).
+_BUILD_MARKER = "backtest-diag-v1"
+
+
+def _startup_cache_report() -> None:
+    """Log, at WARNING, what the cache looks like after seeding — so a cold Render
+    boot is fully diagnosable from stdout: build marker, whether the committed
+    seed tree is on the runtime filesystem, and the resulting grid/price coverage."""
+    root = Path(__file__).resolve().parent.parent.parent
+    seed_dir = root / "data" / "seed_cache"
+    cache = root / "data" / "cache"
+    grid = cache / "pit_market_cap" / "pit_market_caps.json"
+    months = 0
+    try:
+        if grid.exists():
+            months = len({k.rsplit("|", 1)[1] for k in json.loads(grid.read_text())})
+    except Exception:
+        pass
+    prices = len(list((cache / "prices").glob("*.pkl"))) if (cache / "prices").is_dir() else 0
+    seed_files = sum(1 for _ in seed_dir.rglob("*") if _.is_file()) if seed_dir.is_dir() else 0
+    logger.warning(
+        "STARTUP %s: seed_cache tree present=%s (%d files) | after seed: "
+        "data/cache prices=%d pkl, pit_market_cap months=%d",
+        _BUILD_MARKER, seed_dir.is_dir(), seed_files, prices, months,
+    )
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # Seed the prebuilt cache into data/cache/ BEFORE anything reads it, so the
@@ -75,9 +103,11 @@ async def _lifespan(app: FastAPI):
     # runs regardless of how the Render service was created (no reliance on
     # render.yaml's buildCommand, which Blueprint-less services ignore).
     try:
-        _seed_cache()
+        n = _seed_cache()
+        logger.warning("STARTUP %s: seed_cache.seed() copied %d file(s)", _BUILD_MARKER, n)
     except Exception:
         logger.exception("startup cache seeding failed")
+    _startup_cache_report()
     threading.Thread(target=_warm_screener_cache, daemon=True).start()
     yield
 
@@ -560,6 +590,12 @@ def portfolio_alerts() -> dict:
 
 @app.post("/api/backtest")
 def backtest(body: BacktestParams) -> dict:
+    # FIRST line: proves the request reaches the handler at all. If this never
+    # appears in the logs, the request is dying before the app (proxy/timeout/
+    # routing), not inside run_backtest.
+    logger.warning("BACKTEST %s: handler reached (start=%s end=%s thr=%s)",
+                   _BUILD_MARKER, body.start_date, body.end_date, body.entry_threshold)
+    t0 = time.time()
     try:
         start = date.fromisoformat(body.start_date)
         end   = date.fromisoformat(body.end_date)
@@ -581,6 +617,11 @@ def backtest(body: BacktestParams) -> dict:
         "end_date":         body.end_date,
     }
     result = run_backtest(params)
+    # If this appears, run_backtest returned (no hang). If the "handler reached"
+    # line shows but this one never does, the hang is inside run_backtest
+    # (data fetch or the simulation compute).
+    logger.warning("BACKTEST %s: run_backtest returned in %.1fs (error=%s)",
+                   _BUILD_MARKER, time.time() - t0, "error" in result)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
