@@ -113,7 +113,9 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
         )
         universe = list(VALIDATION_UNIVERSE)
         month_members = {}
-    logger.info(
+    # WARNING (not INFO) so it surfaces under uvicorn's default log config on
+    # Render: 167 => true Top-100 loaded; 50 => cold-cache fallback.
+    logger.warning(
         "Backtest universe: %d tickers (%d months with non-empty PIT membership).",
         len(universe), n_members,
     )
@@ -130,6 +132,8 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
             scored_data[ticker] = scored
         except Exception:
             continue
+    logger.warning("Backtest data loaded: %d/%d tickers scored; entering simulation.",
+                   len(scored_data), len(universe))
 
     # ── Idle-cash yield: real historical Fed Funds Rate (FRED FEDFUNDS). Reuses
     #    load_fedfunds from the research money-market study — not reimplemented. ─
