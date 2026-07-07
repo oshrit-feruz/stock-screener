@@ -5,7 +5,11 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 data/cache/
+data/cache_real/
 *.pkl
+# Packaged release-asset tarball built by scripts/package_seed_cache.py — ships
+# via a GitHub Release, never committed to the repo.
+seed_cache_*.tar.gz
 # The prebuilt Simulator seed cache (2010-2026, hundreds of MB) is fetched from
 # a GitHub Release asset at build/startup time (scripts/fetch_release_cache.py),
 # not committed. seed_cache.py then copies it into data/cache/.
