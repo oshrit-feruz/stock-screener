@@ -896,6 +896,13 @@ function _pollBacktestJob(jobId, scenario, params, btn, rContainer, elapsedSec) 
   elapsedSec = elapsedSec || 0;
   fetch('/api/backtest/' + jobId)
     .then(function (r) {
+      // The job store is an in-memory dict (by design, no DB) — it only survives
+      // as long as this server process does. A mid-run process restart (deploy,
+      // or an OOM-kill from too much concurrent memory use) wipes it, and the
+      // next poll gets a 404 for a job_id that was valid moments ago. Surface
+      // that distinctly from a real backtest failure so the user understands
+      // it's a transient server hiccup, not a bad simulation.
+      if (r.status === 404) throw new Error('SERVER_RESTARTED');
       if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Simulation failed'); });
       return r.json();
     })
@@ -924,7 +931,11 @@ function _pollBacktestJob(jobId, scenario, params, btn, rContainer, elapsedSec) 
       if (_simResultA && _simResultB) renderComparison();
     })
     .catch(function (err) {
-      rContainer.innerHTML = '<div class="err-box">&#9888;&#65039; ' + escHtml(err.message) + '</div>';
+      var msg = err.message === 'SERVER_RESTARTED'
+        ? 'The server restarted while your simulation was running (a deploy or a brief ' +
+          'memory spike can cause this). Nothing wrong with your inputs — just run it again.'
+        : err.message;
+      rContainer.innerHTML = '<div class="err-box">&#9888;&#65039; ' + escHtml(msg) + '</div>';
       _simFinish(scenario, btn);
     });
 }
