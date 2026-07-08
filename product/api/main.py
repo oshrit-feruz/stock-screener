@@ -70,13 +70,15 @@ def _warm_screener_cache() -> None:
 
 # Bumped on each diagnostic push so the deployed commit is identifiable in the
 # Render logs (if this marker is absent from startup, Render did not redeploy).
-_BUILD_MARKER = "backtest-diag-v1"
+_BUILD_MARKER = "release-cache-diag-v2"
 
 
 def _startup_cache_report() -> None:
     """Log, at WARNING, what the cache looks like after seeding — so a cold Render
     boot is fully diagnosable from stdout: build marker, whether the committed
-    seed tree is on the runtime filesystem, and the resulting grid/price coverage."""
+    seed tree is on the runtime filesystem, and the resulting grid/price coverage.
+    "months seeded" is the number of distinct PIT market-cap months on disk after
+    seeding — 0 here is the direct cause of the "0 members / fallback-50" bug."""
     root = Path(__file__).resolve().parent.parent.parent
     seed_dir = root / "data" / "seed_cache"
     cache = root / "data" / "cache"
@@ -91,8 +93,10 @@ def _startup_cache_report() -> None:
     seed_files = sum(1 for _ in seed_dir.rglob("*") if _.is_file()) if seed_dir.is_dir() else 0
     logger.warning(
         "STARTUP %s: seed_cache tree present=%s (%d files) | after seed: "
-        "data/cache prices=%d pkl, pit_market_cap months=%d",
+        "data/cache prices=%d pkl, pit_market_cap months seeded=%d%s",
         _BUILD_MARKER, seed_dir.is_dir(), seed_files, prices, months,
+        " -- WARNING: 0 months means the ranking cache is empty; Simulator "
+        "will fall back to a 50-ticker static universe" if months == 0 else "",
     )
 
 
@@ -107,15 +111,17 @@ async def _lifespan(app: FastAPI):
     # on the build step having run. Both calls fail open: any error is logged and
     # startup continues regardless (a cold cache means a slower/fallback-universe
     # backtest, not a crash).
+    logger.warning("STARTUP %s: lifespan starting — attempting release-cache fetch", _BUILD_MARKER)
     try:
-        _fetch_release_cache()
+        fetched = _fetch_release_cache()
+        logger.warning("STARTUP %s: release-cache fetch returned present=%s", _BUILD_MARKER, fetched)
     except Exception:
-        logger.exception("startup release-cache fetch failed")
+        logger.exception("STARTUP %s: release-cache fetch raised", _BUILD_MARKER)
     try:
         n = _seed_cache()
         logger.warning("STARTUP %s: seed_cache.seed() copied %d file(s)", _BUILD_MARKER, n)
     except Exception:
-        logger.exception("startup cache seeding failed")
+        logger.exception("STARTUP %s: cache seeding raised", _BUILD_MARKER)
     _startup_cache_report()
     threading.Thread(target=_warm_screener_cache, daemon=True).start()
     yield
