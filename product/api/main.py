@@ -156,7 +156,11 @@ _sc_warming = False          # True while background scan is running
 _bt_lock = threading.Lock()  # guards _bt_jobs and _bt_semaphore
 _bt_jobs: dict[str, dict] = {}
 _BT_JOB_TTL_SECONDS = 3600   # stale jobs are pruned lazily on each new submission
-_bt_semaphore = threading.Semaphore(3)  # cap concurrent backtest threads at 3
+# Measured peak RSS for a single full-window (2010-2026, 229-ticker true Top-100)
+# backtest is ~430MB against a 512MB free-tier ceiling (~82MB headroom) — so this
+# MUST stay at 1. A cap of 2+ risks two full-window requests running concurrently
+# (2 x 430MB = 860MB, guaranteed OOM); 3 (an earlier value here) would be worse.
+_bt_semaphore = threading.Semaphore(1)  # cap concurrent backtest threads at 1
 
 
 # ── Pydantic models ────────────────────────────────────────────────────────────
