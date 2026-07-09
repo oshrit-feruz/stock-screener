@@ -210,6 +210,48 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     if not scored_data:
         return {"error": "No price data found for this date range. The backtest universe covers large-cap US equities with reliable data from 2010 onwards — try a start date of 2010 or later."}
 
+    # ── Per-ticker column arrays for O(log n) point-in-time lookups ─────────────
+    # The day loop below repeatedly needs "the last row of a ticker at or before
+    # date T" — for portfolio valuation, exit checks, and the entry scan. Done the
+    # obvious way (`sc.loc[sc.index <= ts].iloc[-1]`) that materializes a fresh
+    # copy of the ticker's ENTIRE history-up-to-T, every ticker, every day: O(days²)
+    # per ticker, which turns a 15-year run into 15+ minutes (a 3-year run spends
+    # ~42s of 59s inside pandas .loc row-copying). Instead precompute each ticker's
+    # index (as int64 ns) plus its Close/composite_score columns as plain numpy
+    # once, then find the row with np.searchsorted — O(log n), no per-lookup copy.
+    # Values are read back through _safe_float exactly as before, so results are
+    # bit-for-bit identical to the row-based path.
+    _cols_cache: dict[str, Optional[tuple]] = {}
+
+    def _cols(tkr: str):
+        if tkr not in _cols_cache:
+            sc = scored_data.get(tkr)
+            if sc is None or sc.empty:
+                _cols_cache[tkr] = None
+            else:
+                close = sc["Close"].to_numpy(dtype="float64")
+                if "composite_score" in sc.columns:
+                    comp = sc["composite_score"].to_numpy(dtype="float64")
+                else:
+                    comp = np.full(len(sc), np.nan)
+                # sc.index is a sorted, unique DatetimeIndex; its own searchsorted
+                # is unit-safe (the frames come back as datetime64[us], so a raw
+                # np.searchsorted against ts.value in ns would silently mismatch).
+                _cols_cache[tkr] = (close, comp, sc.index)
+        return _cols_cache[tkr]
+
+    def _pos_at(tkr: str, ts: pd.Timestamp):
+        """Integer position of the last row of `tkr` with index <= ts, or
+        (None, None) if the ticker is absent or has no such row. Mirrors
+        `sc.loc[sc.index <= ts].iloc[-1]` exactly (index is sorted & unique)."""
+        cols = _cols(tkr)
+        if cols is None:
+            return None, None
+        pos = int(cols[2].searchsorted(ts, side="right")) - 1
+        if pos < 0:
+            return None, None
+        return pos, cols
+
     entry_threshold = float(params.get("entry_threshold", 0.60))
     pos_size_pct    = float(params.get("position_size_pct", 10.0)) / 100.0
     max_positions   = int(params.get("max_positions", 10))
@@ -296,16 +338,12 @@ def _simulate(preloaded: dict, params: dict) -> dict:
     prev_buy_set: set[str] = set()
 
     def _cur_price(tkr: str, ts: pd.Timestamp) -> Optional[float]:
-        sc = scored_data.get(tkr)
-        if sc is None:
+        pos, cols = _pos_at(tkr, ts)
+        if pos is None:
             return None
-        mask = sc.index <= ts
-        if not mask.any():
+        if (ts.date() - cols[2][pos].date()).days > 5:
             return None
-        row = sc.loc[mask].iloc[-1]
-        if (ts.date() - row.name.date()).days > 5:
-            return None
-        return _safe_float(row["Close"])
+        return _safe_float(cols[0][pos])
 
     for di, today in enumerate(trading_dates):
         today_ts = pd.Timestamp(today)
@@ -332,17 +370,13 @@ def _simulate(preloaded: dict, params: dict) -> dict:
         # ── Check exits ────────────────────────────────────────────────────
         to_close: list[tuple] = []
         for tkr, pos in positions.items():
-            sc = scored_data.get(tkr)
-            if sc is None:
+            ipos, cols = _pos_at(tkr, today_ts)
+            if ipos is None:
                 continue
-            mask = sc.index <= today_ts
-            if not mask.any():
-                continue
-            row  = sc.loc[mask].iloc[-1]
-            cp   = _safe_float(row["Close"])
+            cp   = _safe_float(cols[0][ipos])
             if cp is None:
                 continue
-            comp = _safe_float(row.get("composite_score"))
+            comp = _safe_float(cols[1][ipos])
             hold = int(np.busday_count(pos["entry_date"].isoformat(), today.isoformat()))
 
             # Update peak price (high-water mark since entry)
@@ -408,26 +442,25 @@ def _simulate(preloaded: dict, params: dict) -> dict:
         today_candidates: list[tuple] = []
 
         members_today = month_members.get((today.year, today.month)) if month_members else None
-        for tkr, sc in scored_data.items():
+        for tkr in scored_data:
             if tkr in positions:
                 continue
             # Only consider this month's point-in-time Top-100 members (when a
             # membership map is present; empty map → legacy full-universe scan).
             if members_today is not None and tkr not in members_today:
                 continue
-            mask = sc.index <= today_ts
-            if not mask.any():
+            pos, cols = _pos_at(tkr, today_ts)
+            if pos is None:
                 continue
-            row = sc.loc[mask].iloc[-1]
-            if row.name.date() != today:
+            if cols[2][pos].date() != today:
                 continue
-            comp = _safe_float(row.get("composite_score"))
+            comp = _safe_float(cols[1][pos])
             if comp is None or comp < entry_threshold:
                 continue
             gate = _gate_at(tkr, today)
             if gate is not True:
                 continue
-            cp = _safe_float(row["Close"])
+            cp = _safe_float(cols[0][pos])
             if cp is None or cp <= 0:
                 continue
             today_buy_set.add(tkr)
