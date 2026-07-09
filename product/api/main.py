@@ -623,6 +623,15 @@ def portfolio_alerts() -> dict:
 # immediately (202); the client polls GET .../{job_id} for the result.
 
 _SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
+# Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and
+# the UI date-picker's max in product/web/index.html). Requests past this have no
+# cached prices for the tail, so every universe ticker would live-refetch its
+# entire history — the exact slow "still running for minutes" path the cache
+# exists to avoid. The UI already caps the picker here; this server-side guard
+# makes the boundary real for stale clients / direct API callers, returning a
+# clean 400 instead of a silent slow refetch. Bump this (and the UI max, and the
+# cache) together whenever the prebuilt cache is extended.
+_SIM_MAX_END = date(2026, 6, 30)
 
 
 def _prune_old_jobs(now: float) -> None:
@@ -684,6 +693,12 @@ def backtest(body: BacktestParams) -> dict:
             status_code=400,
             detail="Simulator covers 2010 onward — EDGAR lacks pre-2009 shares "
                    "data for Top-100 ranking",
+        )
+    if end > _SIM_MAX_END:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Simulator data currently runs through {_SIM_MAX_END.isoformat()}. "
+                   f"Pick an end date on or before {_SIM_MAX_END.isoformat()}.",
         )
 
     params = {
