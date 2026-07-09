@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import pickle
 from pathlib import Path
 
 import pandas as pd
 
 from core.data.eodhd import fetch_eod
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_CACHE = Path(__file__).parent.parent.parent / "data" / "cache" / "prices"
 
@@ -27,16 +30,51 @@ class PriceData:
         safe_start = start.replace("/", "-").replace("\\", "-")
         return self.cache_dir / f"{_safe_ticker(ticker)}_{safe_start}.pkl"
 
+    def _find_covering_cache(self, ticker: str, start_ts: pd.Timestamp,
+                              end_ts: pd.Timestamp) -> pd.DataFrame | None:
+        """Fall back to ANY cached file for this ticker that covers
+        [start_ts, end_ts), not just the one keyed by this exact call's
+        `start` string.
+
+        Prices for a ticker+date don't depend on which `start` a previous
+        call used when it fetched and cached them — but `_cache_path`'s exact
+        string match treats them as unrelated files. A prebuilt cache seeded
+        at deploy time is written with one `start` (e.g. a build script's
+        warmup floor for its whole window); a live request computes its own
+        `start` per its own start_date (e.g. product/backtest/engine.py's
+        per-request warmup formula). Those two strings only coincide for the
+        exact date that produced the prebuilt cache's warmup — any other
+        request silently misses the entire prebuilt cache and re-fetches the
+        whole universe live. This mirrors the glob-based lookup already used
+        for raw prices/EDGAR facts elsewhere in this codebase.
+        """
+        best = None
+        for p in sorted(self.cache_dir.glob(f"{_safe_ticker(ticker)}_*.pkl")):
+            try:
+                with open(p, "rb") as f:
+                    df = pickle.load(f)
+            except (pickle.UnpicklingError, EOFError, OSError, ValueError, AttributeError) as exc:
+                log.warning("Failed to load cache file %s: %s", p, exc)
+                continue
+            if df is None or df.empty:
+                continue
+            if df.index.min() <= start_ts and df.index.max() >= end_ts - pd.Timedelta(days=1):
+                if best is None or df.index.min() < best.index.min():
+                    best = df
+        return best
+
     def get_prices(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        path   = self._cache_path(ticker, start)
-        end_ts = pd.Timestamp(end)
+        path     = self._cache_path(ticker, start)
+        start_ts = pd.Timestamp(start)
+        end_ts   = pd.Timestamp(end)
 
         cached: pd.DataFrame | None = None
         if path.exists():
             try:
                 with open(path, "rb") as f:
                     cached = pickle.load(f)
-            except Exception:
+            except (pickle.UnpicklingError, EOFError, OSError, ValueError, AttributeError) as exc:
+                log.warning("Failed to load exact-key cache file %s: %s", path, exc)
                 cached = None
 
         # Reuse the cache when it already extends to (or past) the requested
@@ -46,6 +84,19 @@ class PriceData:
         if (cached is not None and not cached.empty
                 and cached.index.max() >= end_ts - pd.Timedelta(days=1)):
             return cached[cached.index < end_ts]
+
+        # Exact key missed (or was too short) — try any cached file for this
+        # ticker with broad-enough coverage before treating it as a real miss.
+        fallback = self._find_covering_cache(ticker, start_ts, end_ts)
+        if fallback is not None:
+            # Persist the fallback to the exact-key cache path so future identical
+            # requests hit the fast path instead of re-scanning all candidate files.
+            try:
+                with open(path, "wb") as f:
+                    pickle.dump(fallback, f)
+            except OSError as exc:
+                log.warning("Failed to persist fallback cache to %s: %s", path, exc)
+            return fallback[fallback.index < end_ts]
 
         try:
             # EODHD (split+dividend adjusted, Close == adjusted_close) replaces
