@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import pickle
 from pathlib import Path
 
 import pandas as pd
 
 from core.data.eodhd import fetch_eod
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_CACHE = Path(__file__).parent.parent.parent / "data" / "cache" / "prices"
 
@@ -50,7 +53,8 @@ class PriceData:
             try:
                 with open(p, "rb") as f:
                     df = pickle.load(f)
-            except Exception:
+            except (pickle.UnpicklingError, EOFError, OSError, ValueError, AttributeError) as exc:
+                log.warning("Failed to load cache file %s: %s", p, exc)
                 continue
             if df is None or df.empty:
                 continue
@@ -69,7 +73,8 @@ class PriceData:
             try:
                 with open(path, "rb") as f:
                     cached = pickle.load(f)
-            except Exception:
+            except (pickle.UnpicklingError, EOFError, OSError, ValueError, AttributeError) as exc:
+                log.warning("Failed to load exact-key cache file %s: %s", path, exc)
                 cached = None
 
         # Reuse the cache when it already extends to (or past) the requested
@@ -84,6 +89,13 @@ class PriceData:
         # ticker with broad-enough coverage before treating it as a real miss.
         fallback = self._find_covering_cache(ticker, start_ts, end_ts)
         if fallback is not None:
+            # Persist the fallback to the exact-key cache path so future identical
+            # requests hit the fast path instead of re-scanning all candidate files.
+            try:
+                with open(path, "wb") as f:
+                    pickle.dump(fallback, f)
+            except OSError as exc:
+                log.warning("Failed to persist fallback cache to %s: %s", path, exc)
             return fallback[fallback.index < end_ts]
 
         try:
