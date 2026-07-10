@@ -51,6 +51,13 @@ def _warm_screener_cache() -> None:
     global _sc_data, _sc_ts, _sc_warming
     with _sc_lock:
         _sc_warming = True
+    # Logged at WARNING because this thread competes with any in-flight backtest
+    # for the free tier's fractional vCPU — a backtest submitted right after a
+    # deploy runs at roughly half speed until this line's matching "finished"
+    # appears. Without these two lines that slowdown is invisible in the logs.
+    logger.warning("STARTUP %s: screener warm-up started (shares CPU with any running backtest)",
+                   _BUILD_MARKER)
+    t0 = time.time()
     try:
         result = run_screener()
         data = {
@@ -61,8 +68,9 @@ def _warm_screener_cache() -> None:
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
+        logger.warning("STARTUP %s: screener warm-up finished in %.0fs", _BUILD_MARKER, time.time() - t0)
     except Exception:
-        pass
+        logger.warning("STARTUP %s: screener warm-up failed after %.0fs", _BUILD_MARKER, time.time() - t0)
     finally:
         with _sc_lock:
             _sc_warming = False
@@ -70,7 +78,7 @@ def _warm_screener_cache() -> None:
 
 # Bumped on each diagnostic push so the deployed commit is identifiable in the
 # Render logs (if this marker is absent from startup, Render did not redeploy).
-_BUILD_MARKER = "release-cache-diag-v2"
+_BUILD_MARKER = "perf-v3"  # includes PR #35 (cache-key fix) + #36 (O(log n) engine)
 
 
 def _startup_cache_report() -> None:

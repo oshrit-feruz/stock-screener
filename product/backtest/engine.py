@@ -10,6 +10,7 @@ thresholds and portfolio construction rules are configurable here.
 from __future__ import annotations
 
 import logging
+import time
 import warnings
 from datetime import date, timedelta
 from typing import Optional
@@ -140,8 +141,16 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
         len(universe), n_members,
     )
 
+    # Progress lines at WARNING so a slow load is diagnosable from the Render
+    # logs in real time (free-tier 0.5 vCPU makes this phase minutes-long even
+    # when every ticker cache-hits; without these lines a slow-but-healthy load
+    # is indistinguishable from a hang).
+    t_load = time.time()
     scored_data: dict[str, pd.DataFrame] = {}
-    for ticker in universe:
+    for i, ticker in enumerate(universe):
+        if i > 0 and i % 25 == 0:
+            logger.warning("Backtest load progress: %d/%d tickers (%.0fs elapsed)",
+                           i, len(universe), time.time() - t_load)
         try:
             ohlcv = prices.get_prices(ticker, fetch_start, end_date.isoformat())
             if ohlcv is None or ohlcv.empty or len(ohlcv) < 252:
@@ -156,8 +165,8 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
             scored_data[ticker] = _downcast(scored)
         except Exception:
             continue
-    logger.warning("Backtest data loaded: %d/%d tickers scored; entering simulation.",
-                   len(scored_data), len(universe))
+    logger.warning("Backtest data loaded: %d/%d tickers scored in %.0fs; entering simulation.",
+                   len(scored_data), len(universe), time.time() - t_load)
 
     # ── Idle-cash yield: real historical Fed Funds Rate (FRED FEDFUNDS). Reuses
     #    load_fedfunds from the research money-market study — not reimplemented. ─
@@ -707,4 +716,8 @@ def run_backtest(params: dict) -> dict:
     end_year   = end_date.year
 
     preloaded = _load_backtest_data(end_date, start_year, end_year, start_date)
-    return _simulate(preloaded, params)
+    t_sim = time.time()
+    result = _simulate(preloaded, params)
+    logger.warning("Backtest simulation finished in %.0fs (%s..%s).",
+                   time.time() - t_sim, start_date_str, end_date_str)
+    return result
