@@ -43,51 +43,59 @@ class RecoverySignal:
 # ── scoring helpers ───────────────────────────────────────────────────────────
 
 def _dip_score_series(close: pd.Series) -> pd.Series:
+    # NOTE: signature and semantics are frozen — scripts/run_dip_40_60_validation.py
+    # monkey-patches this function, so it must remain callable as f(close).
     high_52w     = close.rolling(252).max()
     drawdown_abs = ((high_52w - close) / high_52w).clip(lower=0)
 
     # Tier structure validated by sensitivity analysis (pre-Stage 6).
     # Sweet spot 40-60%; 20-30% shallow band dropped (negative spread in testing).
-    score = pd.Series(np.nan, index=close.index, dtype=float)
-    valid = drawdown_abs.notna()
-    score[valid & (drawdown_abs <  0.30)]                            = 0.0
-    score[valid & (drawdown_abs >= 0.30) & (drawdown_abs <  0.40)]  = 0.7
-    score[valid & (drawdown_abs >= 0.40) & (drawdown_abs <= 0.60)]  = 1.0
-    score[valid & (drawdown_abs >  0.60) & (drawdown_abs <= 0.70)]  = 0.5
-    score[valid & (drawdown_abs >  0.70)]                            = 0.0
-    return score
+    # np.select over one numpy array replaces five masked-Series assignments —
+    # same tiers, same float constants, bit-identical output, ~none of the
+    # per-assignment pandas overhead (verified equal on the full universe).
+    dd = drawdown_abs.to_numpy()
+    with np.errstate(invalid="ignore"):
+        score = np.select(
+            [dd < 0.30,
+             dd < 0.40,          # implies >= 0.30 (earlier conditions win)
+             dd <= 0.60,         # implies >= 0.40
+             dd <= 0.70,         # implies >  0.60
+             dd > 0.70],
+            [0.0, 0.7, 1.0, 0.5, 0.0],
+            default=np.nan,      # NaN drawdown matches no condition -> NaN
+        )
+    return pd.Series(score, index=close.index, dtype=float)
 
 
 def _recovery_score_series(close: pd.Series) -> pd.Series:
-    w1 = close / close.shift(5)  - 1
-    w2 = close / close.shift(10) - 1
-    w3 = close / close.shift(15) - 1
-    w4 = close / close.shift(20) - 1
-    w5 = close / close.shift(25) - 1
-    w6 = close / close.shift(30) - 1
-    w7 = close / close.shift(35) - 1
-    w8 = close / close.shift(40) - 1
+    c = close.to_numpy(dtype=float)
+    n = len(c)
+    # w_k = close/close.shift(k) - 1, evaluated positionally on numpy (identical
+    # to the former eight shifted-Series divisions, without eight Series allocs).
+    pos_counts_recent = np.zeros(n)
+    pos_counts_prior  = np.zeros(n)
+    all_valid = np.ones(n, dtype=bool)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for k, bucket in ((5, "r"), (10, "r"), (15, "r"), (20, "r"),
+                          (25, "p"), (30, "p"), (35, "p"), (40, "p")):
+            w = np.full(n, np.nan)
+            w[k:] = c[k:] / c[:-k] - 1
+            valid = ~np.isnan(w)
+            all_valid &= valid
+            if bucket == "r":
+                pos_counts_recent += (w > 0)
+            else:
+                pos_counts_prior += (w > 0)
 
-    n_pos_recent = (
-        (w1 > 0).astype(float) + (w2 > 0).astype(float) +
-        (w3 > 0).astype(float) + (w4 > 0).astype(float)
+    reversal_context = all_valid & (pos_counts_prior <= 1)   # prior was mostly down
+    score = np.select(
+        [reversal_context & (pos_counts_recent >= 3),
+         reversal_context & (pos_counts_recent >= 2),
+         all_valid],
+        [1.0, 0.6, 0.0],
+        default=np.nan,
     )
-    n_pos_prior = (
-        (w5 > 0).astype(float) + (w6 > 0).astype(float) +
-        (w7 > 0).astype(float) + (w8 > 0).astype(float)
-    )
-
-    # Only compute where all 8 windows have data
-    all_valid = w1.notna() & w2.notna() & w3.notna() & w4.notna() & \
-                w5.notna() & w6.notna() & w7.notna() & w8.notna()
-
-    score = pd.Series(np.nan, index=close.index, dtype=float)
-    score[all_valid] = 0.0
-
-    reversal_context = all_valid & (n_pos_prior <= 1)   # prior was mostly down
-    score[reversal_context & (n_pos_recent >= 2)] = 0.6
-    score[reversal_context & (n_pos_recent >= 3)] = 1.0
-    return score
+    return pd.Series(score, index=close.index, dtype=float)
 
 
 # ── public API ────────────────────────────────────────────────────────────────

@@ -92,13 +92,21 @@ def _volume_score_series(volume: pd.Series) -> pd.Series:
     vol10  = volume.rolling(10).mean()
     vol90  = volume.rolling(90).mean()
     ratio  = vol10 / vol90.replace(0, float("nan"))
-    score  = pd.Series(np.nan, index=volume.index, dtype=float)
-    score[ratio.notna() & (ratio >= 2.0)] = 1.0
-    score[ratio.notna() & (ratio >= 1.5) & (ratio < 2.0)] = 0.8
-    score[ratio.notna() & (ratio >= 1.0) & (ratio < 1.5)] = 0.5
-    score[ratio.notna() & (ratio >= 0.8) & (ratio < 1.0)] = 0.3
-    score[ratio.notna() & (ratio < 0.8)]                  = 0.1
-    return score
+    # np.select over one numpy array replaces five masked-Series assignments —
+    # same tiers, same constants, bit-identical output (NaN ratio matches no
+    # condition -> NaN), without the per-assignment pandas overhead.
+    r = ratio.to_numpy()
+    with np.errstate(invalid="ignore"):
+        score = np.select(
+            [r >= 2.0,
+             r >= 1.5,          # implies < 2.0 (earlier conditions win)
+             r >= 1.0,
+             r >= 0.8,
+             r < 0.8],
+            [1.0, 0.8, 0.5, 0.3, 0.1],
+            default=np.nan,
+        )
+    return pd.Series(score, index=volume.index, dtype=float)
 
 
 def _rsi_score_series(rsi: pd.Series) -> pd.Series:
