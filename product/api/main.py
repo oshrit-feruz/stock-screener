@@ -46,20 +46,53 @@ from scripts.fetch_release_cache import fetch_and_extract as _fetch_release_cach
 from scripts.seed_cache import seed as _seed_cache  # noqa: E402
 
 
+def _backtest_active() -> bool:
+    with _bt_lock:
+        return any(j.get("status") == "running" for j in _bt_jobs.values())
+
+
+# Cap on how long the warm-up will defer to backtests in total. Backtests get
+# strict priority, but back-to-back submissions must not starve the screener
+# cache forever — after this budget the warm proceeds concurrently (previous
+# behavior) rather than never finishing.
+_WARM_YIELD_BUDGET_SECONDS = 900.0
+
+
+def _make_backtest_yield_fn():
+    """Cooperative yield for the screener warm-up: blocks (in 5s naps) while a
+    backtest job is running. run_screener calls it between tickers, so the warm
+    releases the free tier's fractional vCPU to the user-facing backtest within
+    one ticker's work instead of competing with it for the whole scan."""
+    paused_total = [0.0]
+
+    def _yield() -> None:
+        logged = False
+        while _backtest_active() and paused_total[0] < _WARM_YIELD_BUDGET_SECONDS:
+            if not logged:
+                logged = True
+                logger.warning("STARTUP %s: screener warm-up paused — yielding CPU to a running backtest",
+                               _BUILD_MARKER)
+            time.sleep(5.0)
+            paused_total[0] += 5.0
+        if logged:
+            logger.warning("STARTUP %s: screener warm-up resumed (paused %.0fs total so far)",
+                           _BUILD_MARKER, paused_total[0])
+
+    return _yield
+
+
 def _warm_screener_cache() -> None:
     """Run screener in background at startup; populate memory + disk cache."""
     global _sc_data, _sc_ts, _sc_warming
     with _sc_lock:
         _sc_warming = True
-    # Logged at WARNING because this thread competes with any in-flight backtest
-    # for the free tier's fractional vCPU — a backtest submitted right after a
-    # deploy runs at roughly half speed until this line's matching "finished"
-    # appears. Without these two lines that slowdown is invisible in the logs.
-    logger.warning("STARTUP %s: screener warm-up started (shares CPU with any running backtest)",
+    logger.warning("STARTUP %s: screener warm-up started (yields CPU to backtests between tickers)",
                    _BUILD_MARKER)
     t0 = time.time()
     try:
-        result = run_screener()
+        _yield_fn = _make_backtest_yield_fn()
+        _yield_fn()  # a backtest already running at boot delays the warm entirely
+        result = run_screener(yield_fn=_yield_fn)
         data = {
             "as_of":        result.as_of_date.isoformat(),
             "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
@@ -68,7 +101,8 @@ def _warm_screener_cache() -> None:
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
-        logger.warning("STARTUP %s: screener warm-up finished in %.0fs", _BUILD_MARKER, time.time() - t0)
+        logger.warning("STARTUP %s: screener warm-up finished in %.0fs (incl. any yield pauses)",
+                       _BUILD_MARKER, time.time() - t0)
     except Exception:
         logger.warning("STARTUP %s: screener warm-up failed after %.0fs", _BUILD_MARKER, time.time() - t0)
     finally:

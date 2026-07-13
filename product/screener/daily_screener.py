@@ -21,7 +21,7 @@ import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import pandas as pd
 
@@ -149,6 +149,7 @@ def run_screener(
     prices: Optional[PriceData] = None,
     fundamentals: Optional[EdgarFundamentals] = None,
     apply_8k_veto: bool = True,
+    yield_fn: Optional[Callable[[], None]] = None,
 ) -> ScreenerResult:
     """Scan the point-in-time Top-100 universe and return BUY signals plus the
     full ranked table.
@@ -161,6 +162,12 @@ def run_screener(
                        "VETO") if data.sec_8k_veto.is_vetoed flags a recent
                        distress 8-K / going-concern filing as of the run date.
                        Fact-only and fail-safe: a lookup error never blocks.
+        yield_fn:      Optional cooperative-yield hook, called once per ticker.
+                       The API's startup cache warm passes a function that
+                       blocks while a backtest job is running, so the warm
+                       (a nice-to-have) never competes with a user-facing
+                       backtest for the free tier's fractional vCPU. None
+                       (the default, used by the daily run/CLI) is a no-op.
 
     Returns:
         ScreenerResult with buy_signals, full_ranking, and vetoed.
@@ -196,6 +203,8 @@ def run_screener(
     rows: List[ScreenerRow] = []
 
     for ticker in universe:
+        if yield_fn is not None:
+            yield_fn()
         try:
             ohlcv = prices.get_prices(ticker, _WARMUP_START, as_of_date.isoformat())
             if ohlcv is None or ohlcv.empty:
