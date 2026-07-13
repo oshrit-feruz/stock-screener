@@ -81,9 +81,47 @@ def _make_backtest_yield_fn():
     return _yield
 
 
+def _warm_today_is_cheap() -> bool:
+    """True when the startup screener warm can run without a point-in-time
+    market-cap recomputation: either today's screener result is already on
+    disk (run_screener returns it instantly), or today's date appears in the
+    prebuilt PIT grid.
+
+    Today is virtually never a grid date (the grid holds first-trading-day-of-
+    month keys), so on a typical deploy the warm's get_universe_top_n(today)
+    recomputes market caps for ALL ~503 members. Measured cost of that path:
+    +188MB RSS (grid churn + EDGAR facts accumulation) at boot, concurrent
+    with any user backtest — the direct cause of the 512MB OOM restarts.
+    Skipping leaves the served screener output UNCHANGED: /api/screener's
+    on-demand path still computes for today exactly as before, just on first
+    request instead of automatically at boot alongside a backtest.
+
+    The grid check is a substring scan of the JSON file, NOT a parse — the
+    parsed grid dict costs 51MB of RSS and must not be loaded just for this.
+    """
+    today = date.today()
+    if (_ROOT / "data" / "screener_cache" / f"{today.isoformat()}.json").exists():
+        return True
+    grid = _ROOT / "data" / "cache" / "pit_market_cap" / "pit_market_caps.json"
+    try:
+        return f"|{today.isoformat()}\"" in grid.read_text()
+    except Exception:
+        return False
+
+
 def _warm_screener_cache() -> None:
     """Run screener in background at startup; populate memory + disk cache."""
     global _sc_data, _sc_ts, _sc_warming
+    if not _warm_today_is_cheap():
+        logger.warning(
+            "STARTUP %s: screener warm-up SKIPPED — today is not covered by the "
+            "prebuilt PIT grid, so warming would recompute market caps for the "
+            "full membership at boot (measured ~+190MB RSS, concurrent with any "
+            "backtest — the 512MB OOM cause). The screener will compute on the "
+            "first /api/screener request instead; served results are unchanged.",
+            _BUILD_MARKER,
+        )
+        return
     with _sc_lock:
         _sc_warming = True
     logger.warning("STARTUP %s: screener warm-up started (yields CPU to backtests between tickers)",
