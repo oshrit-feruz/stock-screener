@@ -38,6 +38,15 @@ _ENV_KEY = "EODHD_API_KEY"
 _diag_key_logged = False
 _diag_status_logged = False
 
+# Count of live fetch_eod calls this process. Read via get_fetch_count() by the
+# backtest loader to log "EODHD fetches this run: N" — the direct measure of
+# whether a run was served by the prebuilt cache (expect 0 on a seeded window).
+_fetch_count = 0
+
+
+def get_fetch_count() -> int:
+    return _fetch_count
+
 
 def _log_key_presence_once() -> None:
     global _diag_key_logged
@@ -83,6 +92,8 @@ def fetch_eod(ticker: str, start: str, end: str, adjust: bool = True) -> pd.Data
     columns Open/High/Low/Close/Volume, or an EMPTY DataFrame on any failure
     (missing key, HTTP/JSON error, no rows). Never raises.
     """
+    global _fetch_count
+    _fetch_count += 1
     _log_key_presence_once()
     key = _api_key()
     if key is None:

@@ -20,6 +20,7 @@ import pandas as pd
 
 from config.tickers import VALIDATION_UNIVERSE
 from core.data.edgar import EdgarFundamentals
+from core.data.eodhd import get_fetch_count
 from core.data.eodhd_fundamentals import EODHDFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import compute_recovery_signals, passes_quality_gate
@@ -146,6 +147,7 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     # when every ticker cache-hits; without these lines a slow-but-healthy load
     # is indistinguishable from a hang).
     t_load = time.time()
+    fetches_before = get_fetch_count()
     scored_data: dict[str, pd.DataFrame] = {}
     for i, ticker in enumerate(universe):
         if i > 0 and i % 25 == 0:
@@ -165,8 +167,10 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
             scored_data[ticker] = _downcast(scored)
         except Exception:
             continue
-    logger.warning("Backtest data loaded: %d/%d tickers scored in %.0fs; entering simulation.",
-                   len(scored_data), len(universe), time.time() - t_load)
+    logger.warning("Backtest data loaded: %d/%d tickers scored in %.0fs "
+                   "(EODHD fetches this run: %d); entering simulation.",
+                   len(scored_data), len(universe), time.time() - t_load,
+                   get_fetch_count() - fetches_before)
 
     # ── Idle-cash yield: real historical Fed Funds Rate (FRED FEDFUNDS). Reuses
     #    load_fedfunds from the research money-market study — not reimplemented. ─

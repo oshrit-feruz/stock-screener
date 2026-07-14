@@ -18,6 +18,15 @@ def _safe_ticker(ticker: str) -> str:
     return "".join(c for c in ticker if c.isalnum() or c in "-_")
 
 
+def _key_start_ts(path: Path) -> pd.Timestamp | None:
+    """The `start` date encoded in a cache filename ({ticker}_{start}.pkl), or
+    None if it doesn't parse. rsplit tolerates underscores in the ticker part."""
+    try:
+        return pd.Timestamp(path.stem.rsplit("_", 1)[1])
+    except Exception:
+        return None
+
+
 class PriceData:
     def __init__(self, cache_dir: Path = _DEFAULT_CACHE):
         self.cache_dir = cache_dir
@@ -58,7 +67,21 @@ class PriceData:
                 continue
             if df is None or df.empty:
                 continue
-            if df.index.min() <= start_ts and df.index.max() >= end_ts - pd.Timedelta(days=1):
+            # Start-side coverage is satisfied by EITHER of:
+            #   1. the data itself reaching back to start_ts, or
+            #   2. the file's KEY start (the `start` of the request that produced
+            #      it, encoded in the filename) being <= start_ts. EODHD returns
+            #      everything it has from the requested start, so a file fetched
+            #      from an earlier start is complete even when its first data bar
+            #      is later — the ticker simply has no earlier data (IPO/spinoff:
+            #      APP 2021, GEV 2024, ...). Without (2), every late-IPO ticker
+            #      failed the min<=start check and live-refetched its full range
+            #      on every cold boot, only to receive bytes identical to this
+            #      cached file.
+            key_start = _key_start_ts(p)
+            starts_ok = (df.index.min() <= start_ts
+                         or (key_start is not None and key_start <= start_ts))
+            if starts_ok and df.index.max() >= end_ts - pd.Timedelta(days=1):
                 if best is None or df.index.min() < best.index.min():
                     best = df
         return best
