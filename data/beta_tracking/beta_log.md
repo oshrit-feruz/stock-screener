@@ -1,6 +1,6 @@
 # Beta tracking — opened positions
 
-_As of 2026-07-21 · observation-only (does not affect trading logic)._
+_As of 2026-07-22 · observation-only (does not affect trading logic)._
 
 ## Summary
 
