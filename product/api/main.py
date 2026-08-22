@@ -208,8 +208,10 @@ class BacktestParams(BaseModel):
     position_size_pct: float = 10.0
     max_positions:    int   = 10
     start_date:       str   = "2018-01-01"
-    # Default to today so the backtest end does not silently freeze in time.
-    end_date:         str   = Field(default_factory=lambda: date.today().isoformat())
+    # Default to today, capped at _SIM_MAX_END — otherwise every request that
+    # omits end_date would hit the cap check below and get a 400 once today
+    # passes the simulator's data boundary.
+    end_date:         str   = Field(default_factory=lambda: min(date.today(), _SIM_MAX_END).isoformat())
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
