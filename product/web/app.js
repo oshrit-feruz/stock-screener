@@ -1027,7 +1027,7 @@ function renderSimResults(data, scenario) {
   // same mark-to-market number, over the identical period — never against
   // the realized-at-cost figure, which is shown below only as a labeled
   // secondary line so it can't be mistaken for the headline.
-  var hasOpen   = s.final_portfolio !== s.final_portfolio_realized;
+  var hasOpen   = s.n_open_at_end > 0;
   var beatLabel = s.beat_spy === true  ? '&#9989; Beat S&P 500'  :
                   s.beat_spy === false ? '&#10060; Underperformed S&P 500' : '';
   var beatHtml = beatLabel
@@ -1089,7 +1089,7 @@ function renderSimResults(data, scenario) {
       '  Realized (closed trades only; ' + s.n_open_at_end + ' open position' + (s.n_open_at_end === 1 ? '' : 's') +
           ' held at cost): $' + fmtK(s.final_portfolio_realized) +
           ' (<span class="' + realCls + '">' + (s.total_return_realized_pct >= 0 ? '+' : '') + fmt(s.total_return_realized_pct, 1) + '%</span>)',
-      '  <br>Open positions today, marked to market: ' +
+      '  <br>Open positions at simulation end (final trading date), marked to market: ' +
           '<span class="' + unrCls + '">$' + fmtK(Math.abs(s.unrealized_pnl_usd)) +
           (s.unrealized_pnl_usd < 0 ? ' loss' : ' gain') +
           (s.unrealized_pnl_pct !== null && s.unrealized_pnl_pct !== undefined
