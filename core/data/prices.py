@@ -23,7 +23,7 @@ def _key_start_ts(path: Path) -> pd.Timestamp | None:
     None if it doesn't parse. rsplit tolerates underscores in the ticker part."""
     try:
         return pd.Timestamp(path.stem.rsplit("_", 1)[1])
-    except Exception:
+    except (IndexError, ValueError):
         return None
 
 

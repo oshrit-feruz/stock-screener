@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 
 import pandas as pd
 import requests
@@ -41,11 +42,25 @@ _diag_status_logged = False
 # Count of live fetch_eod calls this process. Read via get_fetch_count() by the
 # backtest loader to log "EODHD fetches this run: N" — the direct measure of
 # whether a run was served by the prebuilt cache (expect 0 on a seeded window).
+# Lock-protected: fetch_eod can run concurrently from the startup screener-warm
+# thread and a user backtest thread (or two backtest threads).
+_fetch_count_lock = threading.Lock()
 _fetch_count = 0
+
+# Per-thread counter alongside the process-wide one: get_fetch_count() answers
+# "how many fetches has this whole process done", which a concurrent warm-up
+# thread or second backtest pollutes for anyone diffing it around a single
+# run. get_thread_fetch_count() answers "how many fetches has THIS thread
+# done" — safe to diff before/after a single backtest's data-load phase.
+_thread_local = threading.local()
 
 
 def get_fetch_count() -> int:
     return _fetch_count
+
+
+def get_thread_fetch_count() -> int:
+    return getattr(_thread_local, "count", 0)
 
 
 def _log_key_presence_once() -> None:
@@ -93,7 +108,9 @@ def fetch_eod(ticker: str, start: str, end: str, adjust: bool = True) -> pd.Data
     (missing key, HTTP/JSON error, no rows). Never raises.
     """
     global _fetch_count
-    _fetch_count += 1
+    with _fetch_count_lock:
+        _fetch_count += 1
+    _thread_local.count = getattr(_thread_local, "count", 0) + 1
     _log_key_presence_once()
     key = _api_key()
     if key is None:

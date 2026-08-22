@@ -20,7 +20,7 @@ import pandas as pd
 
 from config.tickers import VALIDATION_UNIVERSE
 from core.data.edgar import EdgarFundamentals
-from core.data.eodhd import get_fetch_count
+from core.data.eodhd import get_thread_fetch_count
 from core.data.eodhd_fundamentals import EODHDFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import compute_recovery_signals, passes_quality_gate
@@ -69,6 +69,10 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
 
     Expensive step done once for batch runs — amortizes across all simulations.
     """
+    # Baseline for this run's fetch count, taken before ANY fetch this function
+    # can trigger (including SPY below) — thread-local so a concurrent screener
+    # warm-up or a second backtest thread can't skew the delta.
+    fetches_before = get_thread_fetch_count()
     prices       = PriceData()
     # EDGAR primary; EODHD (requests, not yfinance) as the fallback so the quality
     # gate never hangs on yfinance's TLS failure on Render. See eodhd_fundamentals.
@@ -147,7 +151,6 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     # when every ticker cache-hits; without these lines a slow-but-healthy load
     # is indistinguishable from a hang).
     t_load = time.time()
-    fetches_before = get_fetch_count()
     scored_data: dict[str, pd.DataFrame] = {}
     for i, ticker in enumerate(universe):
         if i > 0 and i % 25 == 0:
@@ -170,7 +173,7 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     logger.warning("Backtest data loaded: %d/%d tickers scored in %.0fs "
                    "(EODHD fetches this run: %d); entering simulation.",
                    len(scored_data), len(universe), time.time() - t_load,
-                   get_fetch_count() - fetches_before)
+                   get_thread_fetch_count() - fetches_before)
 
     # ── Idle-cash yield: real historical Fed Funds Rate (FRED FEDFUNDS). Reuses
     #    load_fedfunds from the research money-market study — not reimplemented. ─
