@@ -1021,27 +1021,23 @@ function renderSimResults(data, scenario) {
     exitLabel += ' · TS −' + fmt(params.trailing_stop_pct, 0) + '% from peak';
   }
 
-  var hasOpen   = s.final_portfolio !== s.final_portfolio_realized;
-  var beatLabel = hasOpen
-    ? (s.beat_spy === true  ? '&#9989; Beat S&P 500 (incl. open)'  :
-       s.beat_spy === false ? '&#10060; Underperformed S&P 500 (incl. open)' : '')
-    : (s.beat_spy === true  ? '&#9989; Beat S&P 500'  :
-       s.beat_spy === false ? '&#10060; Underperformed S&P 500' : '');
-  var realizedBeatHtml = (hasOpen && s.beat_spy_realized !== undefined && s.beat_spy_realized !== s.beat_spy)
-    ? (s.beat_spy_realized === true
-        ? ' &nbsp;<span class="beat-badge beat-yes" style="font-size:11px;">&#9989; Realized also beats</span>'
-        : ' &nbsp;<span class="beat-badge beat-no"  style="font-size:11px;">&#10060; Realized does not beat</span>')
-    : '';
+  // Headline is ALWAYS mark-to-market (total_return_pct / final_portfolio:
+  // open positions valued at today's price, computed by engine.py's
+  // force-close-at-end-date step). SPY comparison (beat_spy) is against this
+  // same mark-to-market number, over the identical period — never against
+  // the realized-at-cost figure, which is shown below only as a labeled
+  // secondary line so it can't be mistaken for the headline.
+  var hasOpen   = s.n_open_at_end > 0;
+  var beatLabel = s.beat_spy === true  ? '&#9989; Beat S&P 500'  :
+                  s.beat_spy === false ? '&#10060; Underperformed S&P 500' : '';
   var beatHtml = beatLabel
-    ? '<span class="beat-badge ' + (s.beat_spy ? 'beat-yes' : 'beat-no') + '">' + beatLabel + '</span>' + realizedBeatHtml
+    ? '<span class="beat-badge ' + (s.beat_spy ? 'beat-yes' : 'beat-no') + '">' + beatLabel + '</span>'
     : '';
 
   var cmpGrid = '';
   if (data.spy_comparison.final_spy) {
-    var hasOpen    = s.final_portfolio !== s.final_portfolio_realized;
     var spyCls     = s.spy_total_return_pct >= 0 ? 'ret-pos' : 'ret-neg';
     var botRetCls  = s.total_return_pct    >= 0 ? 'ret-pos' : 'ret-neg';
-    var realRetCls = (s.total_return_realized_pct >= 0) ? 'ret-pos' : 'ret-neg';
 
     // Tax column
     var taxColHtml = '';
@@ -1058,24 +1054,16 @@ function renderSimResults(data, scenario) {
       ].join('\n');
     }
 
-    var numCols = (hasOpen ? 3 : 2) + (_taxMode === 'israel_25' ? 1 : 0);
+    var numCols = 2 + (_taxMode === 'israel_25' ? 1 : 0);
     var gridClass = numCols >= 4 ? 'sim-cmp-4col' : numCols === 3 ? 'sim-cmp-3col' : '';
     cmpGrid = [
       '<div class="sim-cmp-grid ' + gridClass + '" style="margin-top:12px;">',
       '  <div class="cmp-card">',
-      '    <div class="cmp-label">Bot (incl. open)</div>',
+      '    <div class="cmp-label">Portfolio (mark-to-market)</div>',
       '    <div class="cmp-val">$' + fmtK(s.final_portfolio) + '</div>',
       '    <div class="cmp-sub ' + botRetCls + '">' + (s.total_return_pct >= 0 ? '+' : '') + fmt(s.total_return_pct, 1) + '%</div>',
       '    <div class="cmp-sub">' + fmt(s.cagr, 1) + '% / yr</div>',
       '  </div>',
-      (hasOpen ? [
-        '  <div class="cmp-card">',
-        '    <div class="cmp-label">Bot (realized)</div>',
-        '    <div class="cmp-val">$' + fmtK(s.final_portfolio_realized) + '</div>',
-        '    <div class="cmp-sub ' + realRetCls + '">' + (s.total_return_realized_pct >= 0 ? '+' : '') + fmt(s.total_return_realized_pct, 1) + '%</div>',
-        '    <div class="cmp-sub">' + fmt(s.cagr_realized, 1) + '% / yr</div>',
-        '  </div>',
-      ].join('\n') : ''),
       taxColHtml,
       '  <div class="cmp-card">',
       '    <div class="cmp-label">S&P 500 (SPY)</div>',
@@ -1083,6 +1071,30 @@ function renderSimResults(data, scenario) {
       '    <div class="cmp-sub ' + spyCls + '">' + (s.spy_total_return_pct >= 0 ? '+' : '') + fmt(s.spy_total_return_pct, 1) + '%</div>',
       '    <div class="cmp-sub">' + fmt(s.spy_cagr, 1) + '% / yr</div>',
       '  </div>',
+      '</div>',
+    ].join('\n');
+  }
+
+  // Secondary, visually subordinate lines — never adjacent to the headline
+  // card as an equal. "Realized" values every still-open position at cost
+  // (hides unrealized gains AND losses), so it's labeled explicitly rather
+  // than left as an unqualified "Return". The open-cohort line makes that
+  // hidden drag/gain visible instead of silently assuming breakeven.
+  var secondaryMetricsHtml = '';
+  if (hasOpen) {
+    var realCls = s.total_return_realized_pct >= 0 ? 'ret-pos' : 'ret-neg';
+    var unrCls  = (s.unrealized_pnl_usd || 0) >= 0 ? 'ret-pos' : 'ret-neg';
+    secondaryMetricsHtml = [
+      '<div class="disclaimer" style="margin-top:6px;">',
+      '  Realized (closed trades only; ' + s.n_open_at_end + ' open position' + (s.n_open_at_end === 1 ? '' : 's') +
+          ' held at cost): $' + fmtK(s.final_portfolio_realized) +
+          ' (<span class="' + realCls + '">' + (s.total_return_realized_pct >= 0 ? '+' : '') + fmt(s.total_return_realized_pct, 1) + '%</span>)',
+      '  <br>Open positions at simulation end (final trading date), marked to market: ' +
+          '<span class="' + unrCls + '">$' + fmtK(Math.abs(s.unrealized_pnl_usd)) +
+          (s.unrealized_pnl_usd < 0 ? ' loss' : ' gain') +
+          (s.unrealized_pnl_pct !== null && s.unrealized_pnl_pct !== undefined
+            ? ' (' + (s.unrealized_pnl_pct >= 0 ? '+' : '') + fmt(s.unrealized_pnl_pct, 1) + '% on cost)' : '') +
+          '</span> — not yet realized.',
       '</div>',
     ].join('\n');
   }
@@ -1178,6 +1190,7 @@ function renderSimResults(data, scenario) {
 
     cmpGrid,
     '<div style="margin:8px 0;">' + beatHtml + '</div>',
+    secondaryMetricsHtml,
 
     '<div class="card">',
     '  <div class="subsection" style="margin-top:0;">Details</div>',

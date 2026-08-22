@@ -521,17 +521,23 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                     "position_value": desired_alloc,
                 }
 
-    # ── Realized-only value: open positions returned at cost (no unrealized P&L) ─
-    final_value_realized = cash + sum(pos["shares"] * pos["entry_price"] for pos in positions.values())
-
     # ── Force-close remaining open positions at end_date ──────────────────────
+    # Also captures the still-open cohort's mark-to-market P&L/cost basis for
+    # the summary (n_open_at_end / unrealized_pnl_usd / unrealized_pnl_pct) —
+    # display-only bookkeeping alongside the existing force-close; it does not
+    # change cash, trades, or any entry/exit decision.
     last_date = trading_dates[-1]
     last_ts   = pd.Timestamp(last_date)
+    open_at_end_pnl_usd    = 0.0
+    open_at_end_cost_basis = 0.0
     for tkr, pos in list(positions.items()):
         cp = _cur_price(tkr, last_ts) or pos["entry_price"]
         hold = int(np.busday_count(pos["entry_date"].isoformat(), last_date.isoformat()))
         ret  = cp / pos["entry_price"] - 1
+        pnl  = (cp - pos["entry_price"]) * pos["shares"]
         cash += pos["shares"] * cp
+        open_at_end_pnl_usd    += pnl
+        open_at_end_cost_basis += pos["shares"] * pos["entry_price"]
         trades.append({
             "ticker":      tkr,
             "entry_date":  pos["entry_date"].isoformat(),
@@ -540,10 +546,18 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "exit_price":  round(cp, 2),
             "hold_days":   hold,
             "return_pct":  round(ret * 100, 2),
-            "pnl_usd":     round((cp - pos["entry_price"]) * pos["shares"], 2),
+            "pnl_usd":     round(pnl, 2),
             "exit_reason": "open_at_end",
         })
+    n_open_at_end = sum(1 for t in trades if t["exit_reason"] == "open_at_end")
+    unrealized_pnl_pct = (open_at_end_pnl_usd / open_at_end_cost_basis * 100
+                          if open_at_end_cost_basis > 0 else None)
     positions.clear()
+
+    # ── Realized-only value: open positions counted at cost (no unrealized P&L) ─
+    # NOT the headline — see total_return_pct below, which marks the same open
+    # positions to market. Kept for the UI's secondary "closed trades only" line.
+    final_value_realized = cash - open_at_end_pnl_usd
 
     # ── Summary metrics ────────────────────────────────────────────────────────
     final_value      = cash
@@ -658,6 +672,11 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "spy_cagr":                    round(spy_cagr_val, 1) if spy_cagr_val is not None else None,
             "beat_spy":                    bool(final_value > spy_final)          if spy_final is not None else None,
             "beat_spy_realized":           bool(final_value_realized > spy_final) if spy_final is not None else None,
+            # Still-open-at-end cohort, marked to market — the immature-position
+            # drag that final_portfolio_realized hides by valuing these at cost.
+            "n_open_at_end":               n_open_at_end,
+            "unrealized_pnl_usd":          int(round(open_at_end_pnl_usd)),
+            "unrealized_pnl_pct":          round(unrealized_pnl_pct, 1) if unrealized_pnl_pct is not None else None,
             "sharpe":                 round(sharpe, 2),
             "max_drawdown_pct":       round(max_dd, 1),
             "best_year":              best_year,
