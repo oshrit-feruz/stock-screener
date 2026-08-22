@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections import OrderedDict
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -127,7 +128,14 @@ class EdgarFundamentals:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._fallback = fallback
-        self._facts_mem: dict[str, dict | None] = {}  # in-memory parsed companyfacts
+        # In-memory parsed companyfacts, LRU-bounded. Full companyfacts JSONs
+        # are several MB each; an unbounded dict scanning a ~500-member
+        # universe accumulates hundreds of MB — and on the module-singleton
+        # instance (data.sp500_universe._edgar) it persists for the process
+        # lifetime, a direct contributor to the 512MB free-tier OOM. Evicted
+        # entries reload from the on-disk cache (identical values, small
+        # re-parse cost); the cap comfortably covers a scan's working set.
+        self._facts_mem: OrderedDict[str, dict | None] = OrderedDict()
 
     # ── CIK lookup ────────────────────────────────────────────────────────
 
@@ -163,10 +171,19 @@ class EdgarFundamentals:
     def _facts_cache_path(self, ticker: str) -> Path:
         return self.cache_dir / f"{_safe_ticker(ticker)}.json"
 
+    _FACTS_MEM_MAX = 32  # LRU cap; see __init__ — bounds RSS, not correctness
+
+    def _facts_memo_put(self, ticker: str, data: dict | None) -> None:
+        self._facts_mem[ticker] = data
+        self._facts_mem.move_to_end(ticker)
+        while len(self._facts_mem) > self._FACTS_MEM_MAX:
+            self._facts_mem.popitem(last=False)
+
     def _get_facts(self, ticker: str) -> dict | None:
         # In-memory memo: companyfacts JSON can be several MB; repeated point-in-
         # time lookups across many dates would otherwise re-parse it every call.
         if ticker in self._facts_mem:
+            self._facts_mem.move_to_end(ticker)   # LRU touch
             return self._facts_mem[ticker]
 
         path = self._facts_cache_path(ticker)
@@ -174,19 +191,19 @@ class EdgarFundamentals:
             try:
                 with open(path) as f:
                     data = json.load(f)
-                self._facts_mem[ticker] = data
+                self._facts_memo_put(ticker, data)
                 return data
             except Exception:
                 pass
 
         cik = self._get_cik(ticker)
         if cik is None:
-            self._facts_mem[ticker] = None
+            self._facts_memo_put(ticker, None)
             return None
 
         data = _fetch_json(_FACTS_URL.format(cik=int(cik)))
         if data is None:
-            self._facts_mem[ticker] = None
+            self._facts_memo_put(ticker, None)
             return None
 
         try:
@@ -194,7 +211,7 @@ class EdgarFundamentals:
                 json.dump(data, f)
         except Exception:
             pass
-        self._facts_mem[ticker] = data
+        self._facts_memo_put(ticker, data)
         return data
 
     # ── public interface ──────────────────────────────────────────────────
