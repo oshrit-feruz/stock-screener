@@ -13,6 +13,7 @@ swapped for the FMP paid API without touching any caller):
 """
 from __future__ import annotations
 
+import atexit
 import bisect
 import csv
 import io
@@ -151,6 +152,7 @@ _PIT_MCAP_FILE = _PIT_MCAP_DIR / "pit_market_caps.json"
 _PIT_MCAP_TTL_SECONDS = 30 * 86400
 
 _pit_cache: dict[str, dict] | None = None
+_pit_dirty = False                       # unsaved in-memory grid entries pending flush
 _raw_frames: dict[str, object] = {}      # ticker -> DataFrame | None (memoised)
 _edgar = None                            # lazy EdgarFundamentals
 _shares_memo: dict[tuple[str, str], float | None] = {}
@@ -222,9 +224,30 @@ def _load_pit_cache() -> dict[str, dict]:
 
 
 def _save_pit_cache() -> None:
+    global _pit_dirty
     if _pit_cache is not None:
         _PIT_MCAP_DIR.mkdir(parents=True, exist_ok=True)
         _PIT_MCAP_FILE.write_text(json.dumps(_pit_cache))
+    _pit_dirty = False
+
+
+def _flush_pit_cache() -> None:
+    """Write the grid to disk only if new entries are pending.
+
+    pit_market_cap() used to call _save_pit_cache() after EVERY computed
+    entry — a json.dumps of the whole grid (166k entries, ~51MB as Python
+    objects, ~11MB serialized) per member. A single screener universe build
+    for an uncached date triggers ~503 computes, i.e. ~503 full-grid dumps:
+    measured as the bulk of a +188MB RSS spike (transient dump strings) and
+    a large slice of the recompute wall time. Computes now just mark the
+    grid dirty; outer loops flush once when done (plus an atexit flush as a
+    backstop for direct pit_market_cap callers, e.g. research scripts).
+    """
+    if _pit_dirty:
+        _save_pit_cache()
+
+
+atexit.register(_flush_pit_cache)
 
 
 # A point-in-time market cap for a date more than this many days in the past is
@@ -268,7 +291,8 @@ def pit_market_cap(ticker: str, date: str) -> float | None:
 
     mc = _compute_pit_mcap(ticker, date)
     cache[ck] = {"mcap": mc, "ts": time.time()}
-    _save_pit_cache()
+    global _pit_dirty
+    _pit_dirty = True   # batched: flushed by the outer loop / atexit, not per entry
     return mc
 
 
@@ -306,6 +330,7 @@ def get_universe_top_n(date: str, n: int) -> list[str]:
     """
     members = get_universe(date)
     capped = [(t, pit_market_cap(t, date)) for t in members]
+    _flush_pit_cache()   # one write for the whole ranking, not one per member
     capped = [(t, mc) for t, mc in capped if mc is not None and mc > 0]
     capped.sort(key=lambda x: -x[1])
     return [t for t, _ in capped[:n]]
