@@ -105,7 +105,8 @@ def _warm_today_is_cheap() -> bool:
     grid = _ROOT / "data" / "cache" / "pit_market_cap" / "pit_market_caps.json"
     try:
         return f"|{today.isoformat()}\"" in grid.read_text()
-    except Exception:
+    except Exception as exc:
+        logger.debug("STARTUP %s: pit grid check failed — %s", _BUILD_MARKER, exc)
         return False
 
 
