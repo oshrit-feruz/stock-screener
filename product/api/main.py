@@ -105,7 +105,8 @@ def _warm_today_is_cheap() -> bool:
     grid = _ROOT / "data" / "cache" / "pit_market_cap" / "pit_market_caps.json"
     try:
         return f"|{today.isoformat()}\"" in grid.read_text()
-    except Exception as exc:  # noqa: BLE001 — intentional fail-open: skip warm-up, never crash startup
+    except Exception as exc:  # noqa: BLE001
+        # Intentional fail-open: skip warm-up, never crash startup on a grid-read error.
         logger.debug("STARTUP %s: pit grid check failed — %s", _BUILD_MARKER, exc)
         return False
 
