@@ -20,6 +20,7 @@ import pandas as pd
 
 from config.tickers import VALIDATION_UNIVERSE
 from core.data.edgar import EdgarFundamentals
+from core.data.eodhd import get_thread_fetch_count
 from core.data.eodhd_fundamentals import EODHDFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import compute_recovery_signals, passes_quality_gate
@@ -68,6 +69,10 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
 
     Expensive step done once for batch runs — amortizes across all simulations.
     """
+    # Baseline for this run's fetch count, taken before ANY fetch this function
+    # can trigger (including SPY below) — thread-local so a concurrent screener
+    # warm-up or a second backtest thread can't skew the delta.
+    fetches_before = get_thread_fetch_count()
     prices       = PriceData()
     # EDGAR primary; EODHD (requests, not yfinance) as the fallback so the quality
     # gate never hangs on yfinance's TLS failure on Render. See eodhd_fundamentals.
@@ -165,8 +170,10 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
             scored_data[ticker] = _downcast(scored)
         except Exception:
             continue
-    logger.warning("Backtest data loaded: %d/%d tickers scored in %.0fs; entering simulation.",
-                   len(scored_data), len(universe), time.time() - t_load)
+    logger.warning("Backtest data loaded: %d/%d tickers scored in %.0fs "
+                   "(EODHD fetches this run: %d); entering simulation.",
+                   len(scored_data), len(universe), time.time() - t_load,
+                   get_thread_fetch_count() - fetches_before)
 
     # ── Idle-cash yield: real historical Fed Funds Rate (FRED FEDFUNDS). Reuses
     #    load_fedfunds from the research money-market study — not reimplemented. ─
