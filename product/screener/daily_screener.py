@@ -1,9 +1,15 @@
 """Daily screener: scan the point-in-time Top-100 universe as of today and
 return BUY signals.
 
-The universe is the 100 largest S&P 500 members by point-in-time market cap
-as of the run date (data.sp500_universe.get_universe_top_n), evaluated once
-per run. Reuses existing signal logic from core.signals.recovery_score and
+The universe is the 100 largest S&P 500 members by point-in-time market cap,
+ranked MONTHLY by scripts/build_universe_list.py in GitHub Actions and read
+here from data/universe/current.json (see docs/ARCHITECTURE.md). This process
+never ranks and never substitutes a fallback universe. Monthly matches the
+rebuild cadence of the validated backtest (product/backtest/engine.py's
+_UNIVERSE_N, "rebuilt monthly") — live and backtest must stay in lockstep or
+the live results are no longer attributable to the backtested strategy.
+
+Reuses existing signal logic from core.signals.recovery_score and
 core.data.edgar — no signal logic is reimplemented here.
 
 Signal parameters (FROZEN — do not modify):
@@ -36,7 +42,7 @@ from core.signals.recovery_score import (  # noqa: E402
     passes_quality_gate,
 )
 from data.sec_8k_veto import is_vetoed  # noqa: E402
-from data.sp500_universe import get_universe_top_n  # noqa: E402
+from product.screener.universe_list import load_universe_list  # noqa: E402
 
 # Point-in-time universe size: the 100 largest S&P 500 members by market cap as
 # of each run date (matches the research harness). Rebuilt once per run.
@@ -192,13 +198,26 @@ def run_screener(
     if fundamentals is None:
         fundamentals = EdgarFundamentals(fallback=PointInTimeFundamentals())
 
-    # Build the point-in-time Top-100 universe once for this run.
-    try:
-        universe = get_universe_top_n(as_of_date.isoformat(), _UNIVERSE_N)
-    except Exception as exc:
-        logger.warning("screener: universe lookup failed for %s — %s", as_of_date, exc)
-        universe = []
-    logger.info("Daily screener starting — %s, scanning %d tickers", as_of_date, len(universe))
+    # Universe source: the monthly Top-N list produced by GitHub Actions and
+    # committed to main (docs/ARCHITECTURE.md — Actions computes, this process
+    # only reads). No market-cap ranking happens here.
+    #
+    # There is deliberately NO fallback. load_universe_list raises on a missing,
+    # malformed, empty or stale list, and that exception is allowed to propagate:
+    # run_daily.py exits non-zero and the workflow goes red. The previous code
+    # caught this at WARNING and set `universe = []`, which reported "0 signals"
+    # as a successful run every day from 2026-07-01 to 2026-08-23 — a scan of
+    # nothing must look like a failure, not like a quiet day in the market.
+    ulist = load_universe_list(today=as_of_date)
+    universe = ulist.tickers
+    if ulist.is_late:
+        logger.warning(
+            "screener: universe list is LATE — as_of %s is %d days old (previous month). "
+            "Scanning last month's Top-%d; the monthly-universe workflow needs attention.",
+            ulist.as_of, ulist.age_days, _UNIVERSE_N,
+        )
+    logger.info("Daily screener starting — %s, scanning %d tickers (universe as_of %s)",
+                as_of_date, len(universe), ulist.as_of)
 
     rows: List[ScreenerRow] = []
 

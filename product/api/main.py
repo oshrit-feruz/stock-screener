@@ -42,6 +42,7 @@ from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
 from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
+from product.screener.universe_list import UniverseListError, load_universe_list  # noqa: E402
 from scripts.fetch_release_cache import fetch_and_extract as _fetch_release_cache  # noqa: E402
 from scripts.seed_cache import seed as _seed_cache  # noqa: E402
 
@@ -179,6 +180,36 @@ def _startup_cache_report() -> None:
         _BUILD_MARKER, seed_dir.is_dir(), seed_files, prices, months,
         " -- WARNING: 0 months means the ranking cache is empty; Simulator "
         "will fall back to a 50-ticker static universe" if months == 0 else "",
+    )
+    _report_universe_list()
+
+
+def _report_universe_list() -> None:
+    """Log the monthly universe list's state at boot.
+
+    This is the screener's ONLY input on this service (docs/ARCHITECTURE.md:
+    Actions computes, Render reads), so it is the thing worth monitoring. The
+    previous report counted data/cache/prices and the PIT grid — both of which
+    read healthy for 7.5 weeks while the screener returned zero tickers every
+    day, because neither was the dependency that was actually missing. A health
+    check that watches the wrong directory is worse than none: it produces
+    confident green lights over a broken system.
+    """
+    try:
+        ul = load_universe_list()
+    except UniverseListError as exc:
+        logger.warning(
+            "STARTUP %s: universe list UNUSABLE — %s "
+            "/api/screener will return 503 until the monthly-universe workflow "
+            "commits a valid data/universe/current.json to main.",
+            _BUILD_MARKER, exc,
+        )
+        return
+    logger.warning(
+        "STARTUP %s: universe list OK — %d tickers, as_of %s (%d days old)%s",
+        _BUILD_MARKER, len(ul.tickers), ul.as_of, ul.age_days,
+        " -- WARNING: LATE, the monthly rebuild has not run for the current month"
+        if ul.is_late else "",
     )
 
 
@@ -439,7 +470,15 @@ def health() -> dict:
 
 @app.get("/api/screener")
 def screener() -> dict:
-    return _get_screener_data()
+    try:
+        return _get_screener_data()
+    except UniverseListError as exc:
+        # Loud by design. The universe list is produced by GitHub Actions and
+        # committed to main; if it is missing or stale this service has nothing
+        # legitimate to screen. Returning 503 with the reason is the honest
+        # answer — serving an empty ranking as a 200 is what hid this exact
+        # failure for 7.5 weeks.
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.get("/api/alerts")
