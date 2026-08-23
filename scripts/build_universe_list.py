@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import pickle
 import sys
@@ -239,7 +240,43 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
     return got, failed
 
 
+def _diagnose_empty_ranking(pool: list[str], as_of: date, sample: int = 5) -> str:
+    """Explain WHICH market-cap input is missing, for the abort message.
+
+    "ranking produced 0/100" on its own is not actionable — market cap is
+    raw_close x EDGAR shares, and the two fail for completely different reasons
+    (price provider vs SEC). Naming the failing side turns a debugging session
+    into a glance at the log.
+    """
+    no_price, no_shares, ok = [], [], []
+    for t in pool[:sample]:
+        px = u._raw_close(t, as_of.isoformat())
+        if not px or px <= 0:
+            no_price.append(t)
+            continue
+        sh = u._shares(t, as_of.isoformat())
+        (ok if (sh and sh > 0) else no_shares).append(t)
+    parts = [f"sampled {len(pool[:sample])} pool tickers"]
+    if no_price:
+        parts.append(f"{len(no_price)} missing raw close ({', '.join(no_price)})")
+    if no_shares:
+        parts.append(
+            f"{len(no_shares)} missing EDGAR shares ({', '.join(no_shares)}) — "
+            f"check the 'EDGAR diagnostic:' lines above for the SEC HTTP status"
+        )
+    if ok:
+        parts.append(f"{len(ok)} had both")
+    return "; ".join(parts)
+
+
 def main() -> int:
+    # Without this the module loggers have no handler configured and the EDGAR /
+    # EODHD diagnostics fall back to Python's bare lastResort output. This job's
+    # whole value when it fails is its log.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--month", help="Target month YYYY-MM (default: current month)")
     ap.add_argument("--top-n", type=int, default=TOP_N)
@@ -296,7 +333,8 @@ def main() -> int:
         print(
             f"ERROR: ranking produced {len(tickers)}/{args.top_n} tickers — the pool's "
             f"market caps are incomplete (missing raw prices or EDGAR shares). "
-            f"Refusing to publish a partial universe.",
+            f"Refusing to publish a partial universe. "
+            f"Diagnostic: {_diagnose_empty_ranking(pool, as_of)}",
             file=sys.stderr,
         )
         return 1
