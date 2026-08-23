@@ -43,6 +43,7 @@ from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
 from product.screener.daily_screener import (  # noqa: E402
     ScreenerRow,
+    _load_disk_cache,
     _universe_fingerprint,
     run_screener,
 )
@@ -118,7 +119,7 @@ def _warm_today_is_cheap() -> bool:
 
 def _warm_screener_cache() -> None:
     """Run screener in background at startup; populate memory + disk cache."""
-    global _sc_data, _sc_ts, _sc_warming, _sc_universe_fp
+    global _sc_data, _sc_ts, _sc_warming, _sc_universe_fp, _sc_warm_started
     if not _warm_today_is_cheap():
         logger.warning(
             "STARTUP %s: screener warm-up SKIPPED — today is not covered by the "
@@ -131,6 +132,9 @@ def _warm_screener_cache() -> None:
         return
     with _sc_lock:
         _sc_warming = True
+        # Stamp it here too, so a warm thread killed mid-scan cannot wedge the
+        # flag for the life of the process.
+        _sc_warm_started = time.time()
     logger.warning("STARTUP %s: screener warm-up started (yields CPU to backtests between tickers)",
                    _BUILD_MARKER)
     t0 = time.time()
@@ -275,6 +279,27 @@ _sc_data: dict | None = None
 _sc_ts: float = 0.0
 _sc_warming = False          # True while background scan is running
 _sc_universe_fp: str | None = None   # universe fingerprint _sc_data was computed under
+_sc_warm_started: float = 0.0        # when the in-flight scan began (0 = none)
+
+# How long an in-flight scan may hold the single-flight flag before another
+# request may take over. _sc_warming is cleared in a `finally`, which does NOT
+# run when the thread holding it dies without unwinding — a worker timeout, or
+# the OOM killer taking the process mid-scan. When that happens the flag wedges
+# True forever and EVERY later request answers {"warming": true} while nothing
+# is actually computing. That is not a hypothetical: it is the observed
+# production symptom.
+_SC_WARM_TIMEOUT = 900.0
+
+# Whether this process may run the full 100-ticker scan inside a request.
+# Default OFF. docs/ARCHITECTURE.md: GitHub Actions computes, Render reads. A
+# scan in the request path on the 512MB tier is what the OOM kills came from,
+# and it is precisely the "(re)compute expensive things itself" the split
+# forbids. Set SCREENER_ONDEMAND_SCAN=1 to restore the old behaviour.
+_ALLOW_ONDEMAND_SCAN = os.environ.get("SCREENER_ONDEMAND_SCAN", "").strip().lower() in {"1", "true", "yes"}
+
+
+class ScreenerStateUnavailable(RuntimeError):
+    """No precomputed screener state, and this process may not compute one."""
 
 # Backtest job store — the backtest can run for minutes (large universe / cold
 # cache), well past any HTTP proxy timeout, so /api/backtest kicks it off in a
@@ -452,16 +477,59 @@ def _get_screener_data() -> dict:
     # computed from THAT list.
     ulist = load_universe_list()
     universe_fp = _universe_fingerprint(ulist)
+    global _sc_warm_started
     with _sc_lock:
         # Return memory cache if fresh AND from the same universe
         if _sc_data and time.time() - _sc_ts < 3600 and _sc_universe_fp == universe_fp:
             return _sc_data
-        # Background warming still running — return immediately, client retries
-        if _sc_warming:
+        # Background warming still running — return immediately, client retries.
+        # Unless the flag has wedged: see _SC_WARM_TIMEOUT. Without this, a scan
+        # killed mid-flight (worker timeout, OOM) leaves the flag True with no
+        # computation behind it and the endpoint answers "warming" forever.
+        if _sc_warming and (time.time() - _sc_warm_started) < _SC_WARM_TIMEOUT:
             return {"warming": True, "message": "Screener is warming up, please wait…"}
+        if _sc_warming:
+            logger.warning(
+                "screener: in-flight scan flag has been set for %.0fs with no result "
+                "(> %.0fs timeout) — assuming the worker died mid-scan and reclaiming it.",
+                time.time() - _sc_warm_started, _SC_WARM_TIMEOUT,
+            )
         # Mark refresh as in-flight before releasing lock
         _sc_warming = True
-    # No cache and not warming — run synchronously (should be fast from disk cache)
+        _sc_warm_started = time.time()
+
+    # Prefer precomputed state. This read is cheap — a JSON load, fingerprint
+    # compare, no scan — so it is safe on the 512MB tier and is the path the
+    # producer/consumer split intends.
+    try:
+        cached = _load_disk_cache(date.today(), universe_fp)
+    except Exception:
+        logger.exception("screener: disk-cache read failed")
+        cached = None
+    if cached is not None:
+        data = {
+            "as_of":        cached.as_of_date.isoformat(),
+            "buy_signals":  [_row_to_dict(r) for r in cached.buy_signals],
+            "full_ranking": [_row_to_dict(r) for r in cached.full_ranking],
+        }
+        with _sc_lock:
+            _sc_data = data
+            _sc_ts = time.time()
+            _sc_universe_fp = universe_fp
+            _sc_warming = False
+        return data
+
+    if not _ALLOW_ONDEMAND_SCAN:
+        with _sc_lock:
+            _sc_warming = False
+        raise ScreenerStateUnavailable(
+            "No precomputed screener result for today and this service does not "
+            "scan on demand. The 100-ticker scan is produced by the daily "
+            "screener workflow in GitHub Actions; running it here has repeatedly "
+            "OOM-killed the 512MB instance. See docs/ARCHITECTURE.md. "
+            "Set SCREENER_ONDEMAND_SCAN=1 to re-enable in-process scanning."
+        )
+
     try:
         result = run_screener()
         data = {
@@ -492,6 +560,10 @@ def health() -> dict:
 def screener() -> dict:
     try:
         return _get_screener_data()
+    except ScreenerStateUnavailable as exc:
+        # Same honesty rule as below: no state is a 503 with the reason, never a
+        # 200 carrying an empty ranking.
+        raise HTTPException(status_code=503, detail=str(exc))
     except UniverseListError as exc:
         # Loud by design. The universe list is produced by GitHub Actions and
         # committed to main; if it is missing or stale this service has nothing
