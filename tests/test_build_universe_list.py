@@ -22,7 +22,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from scripts.build_universe_list import _covers
+from scripts.build_universe_list import _covers, _ticker_is_current
 
 _AS_OF = date(2026, 9, 1)
 
@@ -91,6 +91,35 @@ def test_replacement_leaves_exactly_one_file_so_raw_close_reads_the_fresh_one(tm
     files = sorted(tmp_path.glob("AAPL_*.pkl"))
     assert len(files) == 1, "refresh must replace, not accumulate"
     assert _covers(files[0], _AS_OF) is True
+
+
+# ── _ticker_is_current: judged on the file _raw_close actually reads ──────────
+
+def test_ticker_with_no_files_is_not_current(tmp_path):
+    assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is False
+
+
+def test_ticker_with_single_fresh_file_is_current(tmp_path):
+    _pickle(tmp_path, "AAPL_2025-09-01.pkl", _frame("2026-09-01"))
+    assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is True
+
+
+def test_ticker_with_single_stale_file_is_not_current(tmp_path):
+    _pickle(tmp_path, "AAPL_2025-08-01.pkl", _frame("2026-08-03"))
+    assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is False
+
+
+def test_ticker_with_stale_AND_fresh_file_is_not_current(tmp_path):
+    """The regression an `any(covers)` test would miss: a fresh file exists, but
+    _raw_close reads the earliest-start one, which is stale. Must refresh."""
+    _pickle(tmp_path, "AAPL_2025-08-01.pkl", _frame("2026-08-03"))   # earliest -> chosen
+    _pickle(tmp_path, "AAPL_2025-09-01.pkl", _frame("2026-09-01"))   # fresh but ignored
+    assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is False
+
+
+def test_other_tickers_do_not_leak_into_the_decision(tmp_path):
+    _pickle(tmp_path, "MSFT_2025-09-01.pkl", _frame("2026-09-01"))
+    assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is False
 
 
 def test_accumulating_would_have_regressed(tmp_path):

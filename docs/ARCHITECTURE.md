@@ -7,10 +7,28 @@
 
 > **GitHub Actions computes. Render reads.**
 >
-> Anything expensive — universe ranking, daily screening, cache building — runs
-> in GitHub Actions and is written down. The Render web service only ever reads
-> what Actions produced and serves it. Render never (re)computes expensive
-> things on the 512MB free tier.
+> Anything expensive — universe ranking, cache building — runs in GitHub Actions
+> and is written down. The Render web service reads what Actions produced.
+
+**Where the rule holds today, precisely** — stated exactly rather than
+aspirationally, because a doc that overstates the invariant is the same hazard
+as a health check that watches the wrong directory:
+
+| Work | Runs on Render? |
+|---|---|
+| Universe ranking (~500-member PIT market cap) | **No.** Actions only. Render reads `data/universe/current.json`. |
+| Prebuilt PIT grid / price cache build | **No.** Manual `build_full_cache.py`, shipped as a Release asset. |
+| Daily signal scan of the 100 listed tickers | **Yes, still** — `main.py`'s `_get_screener_data()` calls `run_screener()` on a cache miss, and the startup warm can too. |
+
+So the rule is fully enforced for the expensive part (the ~500-ticker ranking,
+the +188MB path that caused the OOM restarts) and **not yet** for the 100-ticker
+signal scan. That scan is roughly a fifth of the work and no longer does any
+market-cap computation, but it is not zero and it is not precomputed.
+
+**Follow-up to close the gap:** Actions already computes the daily screen and
+persists it to `automation/daily-state`, which Render does not read. Making
+Render serve that artifact instead of calling `run_screener()` would make the
+rule absolute. Until then, do not read the heading as "Render computes nothing".
 
 Two corollaries, both load-bearing:
 

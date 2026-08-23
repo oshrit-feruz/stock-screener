@@ -106,6 +106,23 @@ def _covers(path: Path, as_of: date) -> bool:
     return df.index.max().date() >= as_of
 
 
+def _ticker_is_current(raw_dir: Path, ticker: str, as_of: date) -> bool:
+    """True if the raw file `_raw_close()` will actually read reaches `as_of`.
+
+    Freshness must be judged on the CHOSEN file — data.sp500_universe._raw_close
+    resolves a ticker with `sorted(glob(f"{ticker}_*.pkl"))[0]`, the earliest
+    start date — not on "some file for this ticker is fresh". With an old file
+    and a fresh one side by side the latter is true while the ranking still
+    reads the stale one, so an `any()` test silently passes a ticker whose price
+    is months out of date. Judging the chosen file collapses that case into
+    "stale"; the refresh then unlinks the duplicates.
+    """
+    existing = sorted(raw_dir.glob(f"{ticker}_*.pkl"))
+    if not existing:
+        return False
+    return _covers(existing[0], as_of)
+
+
 def _ensure_raw_prices(pool: list[str], as_of: date) -> int:
     """Fetch raw (unadjusted) price series that are missing OR stale for `as_of`.
 
@@ -122,11 +139,7 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> int:
     _RAW.mkdir(parents=True, exist_ok=True)
     start = (pd.Timestamp(as_of) - pd.Timedelta(days=_RAW_LOOKBACK_DAYS)).date().isoformat()
 
-    stale: list[str] = []
-    for t in pool:
-        existing = sorted(_RAW.glob(f"{t}_*.pkl"))
-        if not existing or not any(_covers(p, as_of) for p in existing):
-            stale.append(t)
+    stale = [t for t in pool if not _ticker_is_current(_RAW, t, as_of)]
 
     print(f"Raw prices: {len(pool) - len(stale)} current, fetching/refreshing {len(stale)}…")
     got = 0

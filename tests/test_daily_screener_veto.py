@@ -37,8 +37,10 @@ def _wire_mocks(tmp_path, monkeypatch):
     # (docs/ARCHITECTURE.md); stub that seam instead of get_universe_top_n.
     monkeypatch.setattr(
         ds, "load_universe_list",
+        # Provenance kept internally consistent with the run date the tests use
+        # (2024-01-03): a 2024-01-01 list is 2 days old and same-month.
         lambda **_k: UniverseList(tickers=["GOOD", "BAD"], as_of=date(2024, 1, 1),
-                                  age_days=0, is_late=False),
+                                  age_days=2, is_late=False),
     )
     monkeypatch.setattr(ds, "compute_recovery_signals", lambda ohlcv: _buy_eligible_scored())
     monkeypatch.setattr(ds, "passes_quality_gate", lambda snap: True)
