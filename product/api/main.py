@@ -144,6 +144,7 @@ def _warm_screener_cache() -> None:
         result = run_screener(yield_fn=_yield_fn)
         data = {
             "as_of":        result.as_of_date.isoformat(),
+            "computed_on":  date.today().isoformat(),
             "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
             "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
         }
@@ -465,6 +466,95 @@ def _fetch_news(ticker: str, api_key: str) -> Optional[dict]:
 
 # ── Screener cache helper ──────────────────────────────────────────────────────
 
+# Where the daily screener workflow publishes its output. The workflow pushes
+# data/screener_cache/<date>.json to the automation/daily-state branch (never
+# main, so no redeploy per day); this service pulls the one file it needs over
+# raw.githubusercontent.com. Overridable for tests and for a future move.
+#
+# Two operational caveats, deliberately documented here rather than discovered:
+#   * raw.githubusercontent.com caches responses for ~5 minutes, so a freshly
+#     pushed result can take a few minutes to become visible. At a daily
+#     cadence that is noise.
+#   * raw fetch on a PRIVATE repo returns 404 — indistinguishable from a
+#     missing file. If this repo ever goes private, every fetch will miss and
+#     the endpoint will 503; the 503 text and the log line below both name
+#     this failure mode so it is diagnosed in one read instead of re-derived.
+_DAILY_STATE_RAW_BASE = os.environ.get(
+    "DAILY_STATE_RAW_BASE",
+    "https://raw.githubusercontent.com/oshrit-feruz/stock-screener/automation/daily-state",
+)
+
+# How far back a published daily result may be and still be served. The daily
+# run fires weekdays at 11:30 UTC, so "today's file" does not exist on
+# weekends, holidays, or any weekday morning before ~11:35 UTC. 4 calendar
+# days covers a long weekend plus the Monday-morning gap. This is BOUNDED
+# staleness with provenance — the response carries computed_on so a client
+# showing Friday's scan on Sunday says so — not a silent fallback.
+_DAILY_STATE_LOOKBACK_DAYS = 4
+
+
+def _fetch_published_daily_result(as_of: date) -> bool:
+    """Fetch <as_of>.json from the daily-state branch into the local
+    data/screener_cache/, atomically. Returns True if a file was written.
+    Every failure mode logs and returns False — the caller falls through to
+    the honest 503, never to a scan."""
+    url = f"{_DAILY_STATE_RAW_BASE}/data/screener_cache/{as_of.isoformat()}.json"
+    try:
+        resp = requests.get(url, timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("screener: daily-state fetch failed for %s: %s", url, str(exc)[:200])
+        return False
+    if resp.status_code == 404:
+        # Expected for weekends/holidays/not-yet-run mornings. Also what a
+        # private repo returns for EVERY file — see _DAILY_STATE_RAW_BASE.
+        logger.info("screener: no published daily result at %s (404)", url)
+        return False
+    if resp.status_code != 200:
+        logger.warning("screener: daily-state fetch HTTP %s for %s", resp.status_code, url)
+        return False
+    try:
+        payload = resp.json()   # reject non-JSON before it can poison the cache
+        _sc_cache_dir = _screener_cache_dir()
+        _sc_cache_dir.mkdir(parents=True, exist_ok=True)
+        target = _sc_cache_dir / f"{as_of.isoformat()}.json"
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, target)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("screener: failed to store fetched daily result from %s", url)
+        return False
+
+
+def _screener_cache_dir():
+    from product.screener.daily_screener import _CACHE_DIR
+    return _CACHE_DIR
+
+
+def _load_recent_published_result(universe_fp: str):
+    """Newest usable result within the lookback window: (result, computed_on),
+    or (None, None). Local disk first, then one fetch from the daily-state
+    branch per missing date. Fingerprint mismatches are discarded by
+    _load_disk_cache — a result computed under a superseded universe is not
+    'slightly stale', it is wrong."""
+    for delta in range(_DAILY_STATE_LOOKBACK_DAYS + 1):
+        d = date.today() - timedelta(days=delta)
+        try:
+            cached = _load_disk_cache(d, universe_fp)
+        except Exception:
+            logger.exception("screener: disk-cache read failed for %s", d)
+            cached = None
+        if cached is None and _fetch_published_daily_result(d):
+            try:
+                cached = _load_disk_cache(d, universe_fp)
+            except Exception:
+                logger.exception("screener: fetched daily result unreadable for %s", d)
+                cached = None
+        if cached is not None:
+            return cached, d
+    return None, None
+
+
 def _get_screener_data() -> dict:
     global _sc_data, _sc_ts, _sc_warming, _sc_universe_fp
     # Validate the universe BEFORE any cache short-circuit, and bind the cache
@@ -498,17 +588,19 @@ def _get_screener_data() -> dict:
         _sc_warming = True
         _sc_warm_started = time.time()
 
-    # Prefer precomputed state. This read is cheap — a JSON load, fingerprint
-    # compare, no scan — so it is safe on the 512MB tier and is the path the
-    # producer/consumer split intends.
-    try:
-        cached = _load_disk_cache(date.today(), universe_fp)
-    except Exception:
-        logger.exception("screener: disk-cache read failed")
-        cached = None
+    # Prefer precomputed state. Local disk first, then the daily-state branch —
+    # a JSON load / one small HTTP GET, fingerprint compare, no scan — safe on
+    # the 512MB tier and the path the producer/consumer split intends.
+    cached, computed_on = _load_recent_published_result(universe_fp)
     if cached is not None:
+        if computed_on != date.today():
+            logger.info("screener: serving result computed on %s (today is %s)",
+                        computed_on, date.today())
         data = {
             "as_of":        cached.as_of_date.isoformat(),
+            # Provenance, not decoration: the newest available result may be
+            # days old (weekend, holiday, pre-run morning). The client shows it.
+            "computed_on":  computed_on.isoformat(),
             "buy_signals":  [_row_to_dict(r) for r in cached.buy_signals],
             "full_ranking": [_row_to_dict(r) for r in cached.full_ranking],
         }
@@ -523,17 +615,22 @@ def _get_screener_data() -> dict:
         with _sc_lock:
             _sc_warming = False
         raise ScreenerStateUnavailable(
-            "No precomputed screener result for today and this service does not "
-            "scan on demand. The 100-ticker scan is produced by the daily "
-            "screener workflow in GitHub Actions; running it here has repeatedly "
-            "OOM-killed the 512MB instance. See docs/ARCHITECTURE.md. "
-            "Set SCREENER_ONDEMAND_SCAN=1 to re-enable in-process scanning."
+            f"No published screener result within the last "
+            f"{_DAILY_STATE_LOOKBACK_DAYS} days, and this service does not scan "
+            "on demand. Results are produced by the daily screener workflow in "
+            "GitHub Actions and published to the automation/daily-state branch; "
+            "check that the workflow is running and pushing data/screener_cache. "
+            "(If the repository is private, the raw-file fetch returns 404 for "
+            "everything — that failure mode looks exactly like this.) "
+            "See docs/ARCHITECTURE.md. Set SCREENER_ONDEMAND_SCAN=1 to "
+            "re-enable in-process scanning."
         )
 
     try:
         result = run_screener()
         data = {
             "as_of":        result.as_of_date.isoformat(),
+            "computed_on":  date.today().isoformat(),
             "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
             "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
         }

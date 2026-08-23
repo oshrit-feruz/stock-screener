@@ -192,7 +192,6 @@ function loadSignals() {
       }
       _sigCache   = data;
       _sigCacheTs = Date.now();
-      document.getElementById('last-updated').textContent = 'Last updated: ' + data.as_of;
       renderSignals(data);
     })
     .catch(function () {
@@ -202,7 +201,15 @@ function loadSignals() {
 
 function renderSignals(data) {
   var ctr = document.getElementById('signals-container');
-  document.getElementById('last-updated').textContent = 'Last updated: ' + data.as_of;
+  // Provenance, not decoration: the server may legitimately serve the newest
+  // PUBLISHED scan (weekends, holidays, pre-run mornings — bounded at 4 days),
+  // and the reader of a signal list must see which day it was computed on.
+  var label = 'Last updated: ' + data.as_of;
+  var today = new Date().toISOString().slice(0, 10);
+  if (data.computed_on && data.computed_on !== today) {
+    label = 'Signals computed on ' + data.computed_on + ' (latest available; today is ' + today + ')';
+  }
+  document.getElementById('last-updated').textContent = label;
 
   if (!data.buy_signals || data.buy_signals.length === 0) {
     ctr.innerHTML = [
