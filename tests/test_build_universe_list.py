@@ -22,7 +22,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from scripts.build_universe_list import _covers, _refresh_start, _ticker_is_current
+from scripts.build_universe_list import (
+    _covers,
+    _frame_reaches,
+    _refresh_start,
+    _ticker_is_current,
+)
 
 _AS_OF = date(2026, 9, 1)
 
@@ -156,3 +161,25 @@ def test_refresh_start_with_no_existing_files(tmp_path):
 def test_refresh_start_ignores_unparsable_filenames(tmp_path):
     (tmp_path / "AAPL_notadate.pkl").write_bytes(b"x")
     assert _refresh_start(tmp_path, "AAPL", "2025-09-01") == "2025-09-01"
+
+
+# ── fetched frames must be validated before they are trusted or stored ────────
+
+def test_frame_reaching_as_of_is_accepted():
+    assert _frame_reaches(_frame("2026-09-01"), _AS_OF) is True
+
+
+def test_nonempty_frame_ending_before_as_of_is_rejected():
+    """fetch_eod can return a populated frame whose last bar predates as_of
+    (thin coverage, a halt, a partial response). Storing it would rank the very
+    same build on a stale close, and the file would look perfectly healthy."""
+    assert _frame_reaches(_frame("2026-08-03"), _AS_OF) is False
+
+
+def test_empty_frame_is_rejected():
+    empty = pd.DataFrame({"Close": []}, index=pd.DatetimeIndex([]))
+    assert _frame_reaches(empty, _AS_OF) is False
+
+
+def test_none_frame_is_rejected():
+    assert _frame_reaches(None, _AS_OF) is False
