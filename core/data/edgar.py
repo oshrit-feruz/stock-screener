@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from collections import OrderedDict
@@ -10,6 +11,8 @@ from pathlib import Path
 import requests
 
 from core.data.fundamentals import FundamentalSnapshot, PointInTimeFundamentals, _safe_ticker
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_EDGAR_CACHE = Path(__file__).parent.parent.parent / "data" / "cache" / "edgar"
 _PUBLICATION_LAG_DAYS = 90
@@ -22,6 +25,21 @@ _FACTS_URL   = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 _USER_AGENT  = os.environ.get(
     "EDGAR_USER_AGENT", "RecoveryDetector contact@example.com"
 )
+_UA_FROM_ENV = "EDGAR_USER_AGENT" in os.environ
+
+# One-time runtime diagnostics, mirroring core/data/eodhd.py. Logged at WARNING
+# so they surface under uvicorn's and GitHub Actions' default log config.
+#
+# These exist because EDGAR was the one dependency with NO observability: the
+# monthly universe build fetched 503 tickers, every market cap came back None,
+# and the logs said nothing at all about why — while EODHD's equivalent
+# diagnostics made its own health obvious. A dependency you cannot see the
+# status of is the one that will fail silently.
+#
+# The User-Agent VALUE is deliberately not logged (it can carry a real contact
+# email); only whether it was overridden and whether it carries a contact.
+_diag_ua_logged = False
+_diag_status_logged = False
 
 _REVENUE_CONCEPTS = [
     "Revenues",
@@ -47,13 +65,51 @@ def _cache_fresh(path: Path) -> bool:
     return path.exists() and (time.time() - path.stat().st_mtime) < _CACHE_TTL_SECONDS
 
 
+def _log_ua_once() -> None:
+    global _diag_ua_logged
+    if _diag_ua_logged:
+        return
+    _diag_ua_logged = True
+    # SEC's access policy requires a User-Agent identifying the requester with a
+    # contact address, and serves 403 to requests it considers unidentified. The
+    # "@" check is a cheap proxy for "carries a contact" — the value itself is
+    # not logged.
+    log.warning(
+        "EDGAR diagnostic: User-Agent overridden from environment: %s; carries a "
+        "contact address: %s (SEC returns 403 for unidentified User-Agents)",
+        _UA_FROM_ENV, "@" in _USER_AGENT,
+    )
+
+
 def _fetch_json(url: str) -> dict | None:
+    """GET a SEC JSON endpoint. Returns None on any failure — but now says why.
+
+    Every failure mode is logged. Previously all of them returned None silently,
+    which is how a total EDGAR outage presented as "0 tickers ranked" with no
+    indication that SEC was the cause.
+    """
+    global _diag_status_logged
     time.sleep(0.12)
+    _log_ua_once()
     try:
         resp = requests.get(url, headers={"User-Agent": _USER_AGENT}, timeout=30)
-        resp.raise_for_status()
+    except Exception as exc:  # network / TLS / timeout
+        log.warning("EDGAR: request failed for %s: %s", url, str(exc)[:200])
+        return None
+
+    if not _diag_status_logged:
+        _diag_status_logged = True
+        log.warning("EDGAR diagnostic: first fetch %s -> HTTP %s", url, resp.status_code)
+
+    if resp.status_code != 200:
+        # 403 => UA rejected / blocked; 429 => rate limited; 5xx => SEC-side.
+        log.warning("EDGAR: HTTP %s for %s: %s", resp.status_code, url, resp.text[:120])
+        return None
+
+    try:
         return resp.json()
-    except Exception:
+    except Exception as exc:
+        log.warning("EDGAR: bad JSON for %s: %r", url, exc)
         return None
 
 
