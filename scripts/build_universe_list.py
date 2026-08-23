@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pickle
 import sys
 import time
@@ -84,6 +85,28 @@ def _already_current(as_of: date, tickers: list[str]) -> bool:
     except Exception:
         return False
     return cur.get("as_of") == as_of.isoformat() and cur.get("tickers") == tickers
+
+
+def _atomic_write_pickle(target: Path, obj) -> None:
+    """Write `obj` to `target` atomically: temp file, fsync, os.replace.
+
+    A plain `open(target, "wb")` truncates the destination the instant it is
+    called, so a failure mid-write (disk full, the job's 45-minute timeout
+    killing the process) leaves a truncated file where good data was. os.replace
+    is atomic within a filesystem, so `target` is either the old bytes or the
+    complete new ones — never half of either. The temp file is removed on
+    failure so a crashed run leaves no litter.
+    """
+    tmp = target.with_name(target.name + ".tmp")   # not *.pkl -> invisible to the globs
+    try:
+        with open(tmp, "wb") as f:
+            pickle.dump(obj, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _frame_reaches(df, as_of: date) -> bool:
@@ -193,11 +216,19 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
             if not _frame_reaches(df, as_of):
                 failed.append(t)
                 continue
-            # Replace, never accumulate — see _ticker_is_current().
+            # Order matters twice over:
+            #   1. write the replacement atomically FIRST, so nothing on disk is
+            #      destroyed unless the new file is complete (round 4's rule:
+            #      never mutate before the replacement is known good);
+            #   2. only THEN drop the ticker's other files, because
+            #      _ticker_is_current()/_raw_close() depend on there being
+            #      exactly one — an atomic replace alone would leave an older
+            #      earliest-start duplicate winning the sort.
+            target = _RAW / f"{t}_{start}.pkl"
+            _atomic_write_pickle(target, df)
             for old in _RAW.glob(f"{t}_*.pkl"):
-                old.unlink(missing_ok=True)
-            with open(_RAW / f"{t}_{start}.pkl", "wb") as f:
-                pickle.dump(df, f)
+                if old != target:
+                    old.unlink(missing_ok=True)
             got += 1
         except Exception as exc:
             failed.append(t)

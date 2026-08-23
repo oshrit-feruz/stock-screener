@@ -22,7 +22,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import scripts.build_universe_list as bul
 from scripts.build_universe_list import (
+    _atomic_write_pickle,
     _covers,
     _frame_reaches,
     _refresh_start,
@@ -183,3 +185,59 @@ def test_empty_frame_is_rejected():
 
 def test_none_frame_is_rejected():
     assert _frame_reaches(None, _AS_OF) is False
+
+
+# ── atomic replace: a failed write must not destroy good data ─────────────────
+
+def test_atomic_write_creates_target_and_leaves_no_temp(tmp_path):
+    target = tmp_path / "AAPL_2025-09-01.pkl"
+    _atomic_write_pickle(target, _frame("2026-09-01"))
+    assert target.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert _covers(target, _AS_OF) is True
+
+
+def test_atomic_write_overwrites_existing_target(tmp_path):
+    target = _pickle(tmp_path, "AAPL_2025-09-01.pkl", _frame("2026-08-03"))
+    assert _covers(target, _AS_OF) is False
+    _atomic_write_pickle(target, _frame("2026-09-01"))
+    assert _covers(target, _AS_OF) is True
+
+
+def test_failed_write_preserves_existing_file_and_cleans_temp(tmp_path, monkeypatch):
+    """The reason atomicity matters: a mid-write failure must leave the previous
+    good data intact rather than a truncated file where history used to be."""
+    target = _pickle(tmp_path, "AAPL_2009-01-01.pkl", _frame("2026-08-03"))
+    before = target.read_bytes()
+
+    def _boom(*_a, **_k):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(bul.pickle, "dump", _boom)
+    with pytest.raises(OSError):
+        _atomic_write_pickle(target, _frame("2026-09-01"))
+
+    assert target.read_bytes() == before, "existing data must survive a failed write"
+    assert list(tmp_path.glob("*.tmp")) == [], "temp file must be cleaned up"
+
+
+def test_temp_file_is_invisible_to_the_ticker_glob(tmp_path):
+    """A stranded temp must never be picked up as a cache file by _raw_close's
+    glob, which matches {ticker}_*.pkl."""
+    (tmp_path / "AAPL_2025-09-01.pkl.tmp").write_bytes(b"partial")
+    assert list(tmp_path.glob("AAPL_*.pkl")) == []
+
+
+def test_duplicates_removed_after_replace_keeping_target(tmp_path):
+    """Atomic replace alone is not enough: an older earliest-start duplicate
+    would still win _raw_close's sort, so duplicates go after the replace."""
+    _pickle(tmp_path, "AAPL_2025-08-01.pkl", _frame("2026-08-03"))
+    target = tmp_path / "AAPL_2025-09-01.pkl"
+    _atomic_write_pickle(target, _frame("2026-09-01"))
+
+    for old in tmp_path.glob("AAPL_*.pkl"):          # the loop's cleanup step
+        if old != target:
+            old.unlink(missing_ok=True)
+
+    assert sorted(p.name for p in tmp_path.glob("AAPL_*.pkl")) == ["AAPL_2025-09-01.pkl"]
+    assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is True
