@@ -1136,7 +1136,10 @@ function renderSimResults(data, scenario) {
       '<div class="section-title">Currently Open Positions (' + openTrades.length + ')</div>',
       '<div class="card">',
       openTrades.map(function (t) { return tradeRowHTML(t, true); }).join('\n'),
-      '<div class="disclaimer" style="margin-top:8px;">Unrealized returns as of ' + escHtml(params.end_date) + '. Not closed yet.</div>',
+      // Open positions were force-closed on the LAST PRICE BAR the simulation
+      // loaded (their exit_date), not on the requested end_date — echoing the
+      // request here labeled month-old closes as current in production.
+      '<div class="disclaimer" style="margin-top:8px;">Unrealized returns as of ' + escHtml((openTrades[0].exit_date || '').substring(0, 10)) + ' (end of simulation window). Not closed yet.</div>',
       '</div>',
     ].join('\n');
   } else if (openTrades.length > 0) {
@@ -1290,7 +1293,13 @@ function tradeRowHTML(t, isOpen) {
 
   var entryPx = '$' + fmt(t.entry_price, 2);
   var exitPx  = '$' + fmt(t.exit_price,  2);
-  var pricesStr = entryPx + ' &rarr; ' + exitPx + (isOpen ? ' <span style="color:var(--muted);">(now)</span>' : '');
+  // Never label a simulated price "(now)": t.exit_date is the last price bar
+  // the simulation actually used (the engine stamps trading_dates[-1] on
+  // force-closed positions), and it can be well before the requested end_date
+  // when the data window ends earlier. Simulator output is historical by design.
+  var lastBar = (t.exit_date || '').substring(0, 10);
+  var pricesStr = entryPx + ' &rarr; ' + exitPx +
+    (isOpen ? ' <span style="color:var(--muted);">(as of ' + escHtml(lastBar) + ', end of simulation window)</span>' : '');
 
   var entryMo = (t.entry_date || '').substring(0, 10);
   var exitMo  = (t.exit_date  || '').substring(0, 10);
