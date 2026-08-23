@@ -26,6 +26,7 @@ from scripts.build_universe_list import (
     _covers,
     _frame_reaches,
     _refresh_start,
+    _replace_ticker_cache,
     _ticker_is_current,
 )
 
@@ -88,14 +89,45 @@ def test_replacement_leaves_exactly_one_file_so_raw_close_reads_the_fresh_one(tm
     added a file instead of replacing, that stale earliest file would still win."""
     _pickle(tmp_path, "AAPL_2025-08-01.pkl", _frame("2026-08-03"))
 
-    # What _ensure_raw_prices does on refresh: unlink existing, then write.
-    for old in tmp_path.glob("AAPL_*.pkl"):
-        old.unlink()
-    _pickle(tmp_path, "AAPL_2025-09-01.pkl", _frame("2026-09-01"))
+    _replace_ticker_cache(tmp_path, "AAPL", "2025-08-01", _frame("2026-09-01"))
 
     files = sorted(tmp_path.glob("AAPL_*.pkl"))
     assert len(files) == 1, "refresh must replace, not accumulate"
     assert _covers(files[0], _AS_OF) is True
+
+
+def test_serialization_failure_preserves_existing_cache(tmp_path, monkeypatch):
+    old = _pickle(tmp_path, "AAPL_2025-08-01.pkl", _frame("2026-08-03"))
+    original = old.read_bytes()
+
+    def fail_dump(frame, file):
+        file.write(b"partial")
+        raise RuntimeError("serialization failed")
+
+    monkeypatch.setattr("scripts.build_universe_list.pickle.dump", fail_dump)
+
+    with pytest.raises(RuntimeError, match="serialization failed"):
+        _replace_ticker_cache(tmp_path, "AAPL", "2025-08-01", _frame("2026-09-01"))
+
+    assert old.read_bytes() == original
+    assert sorted(tmp_path.glob("AAPL_*.pkl")) == [old]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_temp_file_open_failure_preserves_existing_cache(tmp_path, monkeypatch):
+    old = _pickle(tmp_path, "AAPL_2025-08-01.pkl", _frame("2026-08-03"))
+    original = old.read_bytes()
+
+    def fail_open(**kwargs):
+        raise OSError("cannot open temporary file")
+
+    monkeypatch.setattr("scripts.build_universe_list.tempfile.NamedTemporaryFile", fail_open)
+
+    with pytest.raises(OSError, match="cannot open temporary file"):
+        _replace_ticker_cache(tmp_path, "AAPL", "2025-08-01", _frame("2026-09-01"))
+
+    assert old.read_bytes() == original
+    assert sorted(tmp_path.glob("AAPL_*.pkl")) == [old]
 
 
 # ── _ticker_is_current: judged on the file _raw_close actually reads ──────────

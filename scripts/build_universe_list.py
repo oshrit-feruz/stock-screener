@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pickle
 import sys
+import tempfile
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -154,6 +156,33 @@ def _refresh_start(raw_dir: Path, ticker: str, default_start: str) -> str:
     return min(starts + [default_start])
 
 
+def _replace_ticker_cache(raw_dir: Path, ticker: str, start: str, df) -> None:
+    """Atomically replace a ticker cache, then remove duplicate cache files."""
+    target = raw_dir / f"{ticker}_{start}.pkl"
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=raw_dir,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            temp_path = Path(f.name)
+            pickle.dump(df, f)
+            f.flush()
+            os.fsync(f.fileno())
+        temp_path.replace(target)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+    for old in raw_dir.glob(f"{ticker}_*.pkl"):
+        if old != target:
+            old.unlink(missing_ok=True)
+
+
 def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
     """Fetch raw (unadjusted) price series that are missing OR stale for `as_of`.
 
@@ -193,11 +222,9 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
             if not _frame_reaches(df, as_of):
                 failed.append(t)
                 continue
-            # Replace, never accumulate — see _ticker_is_current().
-            for old in _RAW.glob(f"{t}_*.pkl"):
-                old.unlink(missing_ok=True)
-            with open(_RAW / f"{t}_{start}.pkl", "wb") as f:
-                pickle.dump(df, f)
+            # Replace, never accumulate — see _ticker_is_current(). Stage the
+            # new pickle first so a write failure cannot destroy valid history.
+            _replace_ticker_cache(_RAW, t, start, df)
             got += 1
         except Exception as exc:
             failed.append(t)
