@@ -1,9 +1,15 @@
 """Daily screener: scan the point-in-time Top-100 universe as of today and
 return BUY signals.
 
-The universe is the 100 largest S&P 500 members by point-in-time market cap
-as of the run date (data.sp500_universe.get_universe_top_n), evaluated once
-per run. Reuses existing signal logic from core.signals.recovery_score and
+The universe is the 100 largest S&P 500 members by point-in-time market cap,
+ranked MONTHLY by scripts/build_universe_list.py in GitHub Actions and read
+here from data/universe/current.json (see docs/ARCHITECTURE.md). This process
+never ranks and never substitutes a fallback universe. Monthly matches the
+rebuild cadence of the validated backtest (product/backtest/engine.py's
+_UNIVERSE_N, "rebuilt monthly") — live and backtest must stay in lockstep or
+the live results are no longer attributable to the backtested strategy.
+
+Reuses existing signal logic from core.signals.recovery_score and
 core.data.edgar — no signal logic is reimplemented here.
 
 Signal parameters (FROZEN — do not modify):
@@ -14,6 +20,7 @@ Signal parameters (FROZEN — do not modify):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sys
@@ -36,7 +43,7 @@ from core.signals.recovery_score import (  # noqa: E402
     passes_quality_gate,
 )
 from data.sec_8k_veto import is_vetoed  # noqa: E402
-from data.sp500_universe import get_universe_top_n  # noqa: E402
+from product.screener.universe_list import load_universe_list  # noqa: E402
 
 # Point-in-time universe size: the 100 largest S&P 500 members by market cap as
 # of each run date (matches the research harness). Rebuilt once per run.
@@ -55,13 +62,38 @@ def _cache_path(as_of: date) -> Path:
     return _CACHE_DIR / f"{as_of.isoformat()}.json"
 
 
-def _load_disk_cache(as_of: date) -> "ScreenerResult | None":
+def _universe_fingerprint(ulist) -> str:
+    """Stable digest of the universe a cached result was computed under.
+
+    Keyed on the ticker set as well as the as-of date: two lists could share an
+    as-of if one were regenerated, and the cached result is only reusable when
+    the actual scanned set matches.
+    """
+    payload = ulist.as_of.isoformat() + "|" + ",".join(sorted(ulist.tickers))
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _load_disk_cache(as_of: date, universe_fp: str) -> "ScreenerResult | None":
+    """Return today's cached result, but only if it was computed under the SAME
+    universe. Validating the list before the cache lookup is not sufficient on
+    its own: at a month boundary the daily run can cache a result under the old
+    list minutes before the new one lands, and every later read that day would
+    serve results for a superseded universe. A fingerprint mismatch recomputes.
+    """
     path = _cache_path(as_of)
     if not path.exists():
         return None
     try:
         with open(path) as f:
             data = json.load(f)
+        cached_fp = data.get("universe_fingerprint")
+        if cached_fp != universe_fp:
+            logger.info(
+                "screener: discarding disk cache for %s — computed under a different "
+                "universe (cached %s, current %s); recomputing.",
+                as_of, cached_fp or "<none>", universe_fp,
+            )
+            return None
         def _row(d: dict) -> ScreenerRow:
             return ScreenerRow(**d)
         full_ranking = [_row(r) for r in data["full_ranking"]]
@@ -76,13 +108,14 @@ def _load_disk_cache(as_of: date) -> "ScreenerResult | None":
         return None
 
 
-def _save_disk_cache(result: "ScreenerResult") -> None:
+def _save_disk_cache(result: "ScreenerResult", universe_fp: str) -> None:
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path = _cache_path(result.as_of_date)
         with open(path, "w") as f:
             json.dump({
                 "as_of_date":  result.as_of_date.isoformat(),
+                "universe_fingerprint": universe_fp,
                 "buy_signals": [asdict(r) for r in result.buy_signals],
                 "full_ranking": [asdict(r) for r in result.full_ranking],
             }, f)
@@ -172,8 +205,14 @@ def run_screener(
     Returns:
         ScreenerResult with buy_signals, full_ranking, and vetoed.
 
+    Raises:
+        UniverseListError: the monthly universe list is missing, malformed,
+            empty or stale. Deliberately NOT caught — a screener that cannot
+            establish what to scan must fail, not return an empty result. (It
+            used to do the latter, and reported "0 signals" as a successful run
+            every day from 2026-07-01 to 2026-08-23.)
+
     Error handling:
-        - Universe lookup failure → warning logged, empty result returned.
         - Ticker with < 252 rows of price history → skipped, warning logged.
         - Ticker with no EDGAR / fundamentals data → gate = False (fail-closed).
         - Any unexpected exception per ticker → skipped, warning logged.
@@ -181,8 +220,17 @@ def run_screener(
     if as_of_date is None:
         as_of_date = date.today()
 
+    # Universe validation happens BEFORE the cache lookup, deliberately.
+    # Checking the cache first would make the loud-failure guarantee conditional:
+    # a result cached while the universe was broken would keep being served with
+    # no validation at all — the same "looks like a successful run" shape as the
+    # original bug. Validating first makes the invariant unconditional: this
+    # function never returns without a usable universe.
+    ulist = load_universe_list(today=as_of_date)
+
     # Return disk-cached result immediately if today's run already completed
-    cached = _load_disk_cache(as_of_date)
+    universe_fp = _universe_fingerprint(ulist)
+    cached = _load_disk_cache(as_of_date, universe_fp)
     if cached is not None:
         logger.info("screener: returning disk-cached result for %s", as_of_date)
         return cached
@@ -192,13 +240,26 @@ def run_screener(
     if fundamentals is None:
         fundamentals = EdgarFundamentals(fallback=PointInTimeFundamentals())
 
-    # Build the point-in-time Top-100 universe once for this run.
-    try:
-        universe = get_universe_top_n(as_of_date.isoformat(), _UNIVERSE_N)
-    except Exception as exc:
-        logger.warning("screener: universe lookup failed for %s — %s", as_of_date, exc)
-        universe = []
-    logger.info("Daily screener starting — %s, scanning %d tickers", as_of_date, len(universe))
+    # Universe source: the monthly Top-N list produced by GitHub Actions and
+    # committed to main (docs/ARCHITECTURE.md — Actions computes, this process
+    # only reads). No market-cap ranking happens here.
+    #
+    # There is deliberately NO fallback. load_universe_list raises on a missing,
+    # malformed, empty or stale list, and that exception is allowed to propagate:
+    # run_daily.py exits non-zero and the workflow goes red. The previous code
+    # caught this at WARNING and set `universe = []`, which reported "0 signals"
+    # as a successful run every day from 2026-07-01 to 2026-08-23 — a scan of
+    # nothing must look like a failure, not like a quiet day in the market.
+    # (ulist was loaded above, before the cache lookup.)
+    universe = ulist.tickers
+    if ulist.is_late:
+        logger.warning(
+            "screener: universe list is LATE — as_of %s is %d days old (previous month). "
+            "Scanning last month's Top-%d; the monthly-universe workflow needs attention.",
+            ulist.as_of, ulist.age_days, _UNIVERSE_N,
+        )
+    logger.info("Daily screener starting — %s, scanning %d tickers (universe as_of %s)",
+                as_of_date, len(universe), ulist.as_of)
 
     rows: List[ScreenerRow] = []
 
@@ -284,7 +345,7 @@ def run_screener(
         full_ranking = rows,
         vetoed       = vetoed,
     )
-    _save_disk_cache(result)
+    _save_disk_cache(result, universe_fp)
     return result
 
 

@@ -41,7 +41,12 @@ from product.alerts.alert_templates import (  # noqa: E402
 from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
-from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
+from product.screener.daily_screener import (  # noqa: E402
+    ScreenerRow,
+    _universe_fingerprint,
+    run_screener,
+)
+from product.screener.universe_list import UniverseListError, load_universe_list  # noqa: E402
 from scripts.fetch_release_cache import fetch_and_extract as _fetch_release_cache  # noqa: E402
 from scripts.seed_cache import seed as _seed_cache  # noqa: E402
 
@@ -113,7 +118,7 @@ def _warm_today_is_cheap() -> bool:
 
 def _warm_screener_cache() -> None:
     """Run screener in background at startup; populate memory + disk cache."""
-    global _sc_data, _sc_ts, _sc_warming
+    global _sc_data, _sc_ts, _sc_warming, _sc_universe_fp
     if not _warm_today_is_cheap():
         logger.warning(
             "STARTUP %s: screener warm-up SKIPPED — today is not covered by the "
@@ -141,6 +146,10 @@ def _warm_screener_cache() -> None:
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
+            # Stamp the universe this warm ran under, so the first request can
+            # actually reuse it. Without this the fingerprint would be None and
+            # every warm result would be discarded on the next request.
+            _sc_universe_fp = _universe_fingerprint(load_universe_list())
         logger.warning("STARTUP %s: screener warm-up finished in %.0fs (incl. any yield pauses)",
                        _BUILD_MARKER, time.time() - t0)
     except Exception:
@@ -179,6 +188,36 @@ def _startup_cache_report() -> None:
         _BUILD_MARKER, seed_dir.is_dir(), seed_files, prices, months,
         " -- WARNING: 0 months means the ranking cache is empty; Simulator "
         "will fall back to a 50-ticker static universe" if months == 0 else "",
+    )
+    _report_universe_list()
+
+
+def _report_universe_list() -> None:
+    """Log the monthly universe list's state at boot.
+
+    This is the screener's ONLY input on this service (docs/ARCHITECTURE.md:
+    Actions computes, Render reads), so it is the thing worth monitoring. The
+    previous report counted data/cache/prices and the PIT grid — both of which
+    read healthy for 7.5 weeks while the screener returned zero tickers every
+    day, because neither was the dependency that was actually missing. A health
+    check that watches the wrong directory is worse than none: it produces
+    confident green lights over a broken system.
+    """
+    try:
+        ul = load_universe_list()
+    except UniverseListError as exc:
+        logger.warning(
+            "STARTUP %s: universe list UNUSABLE — %s "
+            "/api/screener will return 503 until the monthly-universe workflow "
+            "commits a valid data/universe/current.json to main.",
+            _BUILD_MARKER, exc,
+        )
+        return
+    logger.warning(
+        "STARTUP %s: universe list OK — %d tickers, as_of %s (%d days old)%s",
+        _BUILD_MARKER, len(ul.tickers), ul.as_of, ul.age_days,
+        " -- WARNING: LATE, the monthly rebuild has not run for the current month"
+        if ul.is_late else "",
     )
 
 
@@ -235,6 +274,7 @@ _sc_lock = threading.Lock()  # guards _sc_data / _sc_ts / _sc_warming
 _sc_data: dict | None = None
 _sc_ts: float = 0.0
 _sc_warming = False          # True while background scan is running
+_sc_universe_fp: str | None = None   # universe fingerprint _sc_data was computed under
 
 # Backtest job store — the backtest can run for minutes (large universe / cold
 # cache), well past any HTTP proxy timeout, so /api/backtest kicks it off in a
@@ -401,10 +441,20 @@ def _fetch_news(ticker: str, api_key: str) -> Optional[dict]:
 # ── Screener cache helper ──────────────────────────────────────────────────────
 
 def _get_screener_data() -> dict:
-    global _sc_data, _sc_ts, _sc_warming
+    global _sc_data, _sc_ts, _sc_warming, _sc_universe_fp
+    # Validate the universe BEFORE any cache short-circuit, and bind the cache
+    # to it. Two distinct failures are covered:
+    #   * list becomes unusable -> raises -> the route answers 503 instead of
+    #     serving an hour-old 200 with no indication;
+    #   * list is replaced (month boundary) -> fingerprint mismatch -> recompute,
+    #     rather than serving results for a superseded universe.
+    # Validity alone is not enough: a usable list does not prove _sc_data was
+    # computed from THAT list.
+    ulist = load_universe_list()
+    universe_fp = _universe_fingerprint(ulist)
     with _sc_lock:
-        # Return memory cache if fresh
-        if _sc_data and time.time() - _sc_ts < 3600:
+        # Return memory cache if fresh AND from the same universe
+        if _sc_data and time.time() - _sc_ts < 3600 and _sc_universe_fp == universe_fp:
             return _sc_data
         # Background warming still running — return immediately, client retries
         if _sc_warming:
@@ -422,6 +472,7 @@ def _get_screener_data() -> dict:
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
+            _sc_universe_fp = universe_fp
             _sc_warming = False
         return data
     except Exception:
@@ -439,7 +490,15 @@ def health() -> dict:
 
 @app.get("/api/screener")
 def screener() -> dict:
-    return _get_screener_data()
+    try:
+        return _get_screener_data()
+    except UniverseListError as exc:
+        # Loud by design. The universe list is produced by GitHub Actions and
+        # committed to main; if it is missing or stale this service has nothing
+        # legitimate to screen. Returning 503 with the reason is the honest
+        # answer — serving an empty ranking as a 200 is what hid this exact
+        # failure for 7.5 weeks.
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.get("/api/alerts")

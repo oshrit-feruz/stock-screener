@@ -11,6 +11,7 @@ import pytest
 
 import product.screener.daily_screener as ds
 from product.screener.daily_screener import run_screener
+from product.screener.universe_list import UniverseList
 
 
 def _buy_eligible_scored() -> pd.DataFrame:
@@ -32,7 +33,15 @@ def _buy_eligible_scored() -> pd.DataFrame:
 def _wire_mocks(tmp_path, monkeypatch):
     # Isolate disk cache; stub the whole pipeline so no network/data is needed.
     monkeypatch.setattr(ds, "_CACHE_DIR", tmp_path)
-    monkeypatch.setattr(ds, "get_universe_top_n", lambda d, n: ["GOOD", "BAD"])
+    # The screener now READS the monthly universe list rather than ranking one
+    # (docs/ARCHITECTURE.md); stub that seam instead of get_universe_top_n.
+    monkeypatch.setattr(
+        ds, "load_universe_list",
+        # Provenance kept internally consistent with the run date the tests use
+        # (2024-01-03): a 2024-01-01 list is 2 days old and same-month.
+        lambda **_k: UniverseList(tickers=["GOOD", "BAD"], as_of=date(2024, 1, 1),
+                                  age_days=2, is_late=False),
+    )
     monkeypatch.setattr(ds, "compute_recovery_signals", lambda ohlcv: _buy_eligible_scored())
     monkeypatch.setattr(ds, "passes_quality_gate", lambda snap: True)
 
