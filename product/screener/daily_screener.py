@@ -187,6 +187,14 @@ def run_screener(
     if as_of_date is None:
         as_of_date = date.today()
 
+    # Universe validation happens BEFORE the cache lookup, deliberately.
+    # Checking the cache first would make the loud-failure guarantee conditional:
+    # a result cached while the universe was broken would keep being served with
+    # no validation at all — the same "looks like a successful run" shape as the
+    # original bug. Validating first makes the invariant unconditional: this
+    # function never returns without a usable universe.
+    ulist = load_universe_list(today=as_of_date)
+
     # Return disk-cached result immediately if today's run already completed
     cached = _load_disk_cache(as_of_date)
     if cached is not None:
@@ -208,7 +216,7 @@ def run_screener(
     # caught this at WARNING and set `universe = []`, which reported "0 signals"
     # as a successful run every day from 2026-07-01 to 2026-08-23 — a scan of
     # nothing must look like a failure, not like a quiet day in the market.
-    ulist = load_universe_list(today=as_of_date)
+    # (ulist was loaded above, before the cache lookup.)
     universe = ulist.tickers
     if ulist.is_late:
         logger.warning(

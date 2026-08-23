@@ -433,6 +433,11 @@ def _fetch_news(ticker: str, api_key: str) -> Optional[dict]:
 
 def _get_screener_data() -> dict:
     global _sc_data, _sc_ts, _sc_warming
+    # Validate the universe BEFORE any cache short-circuit. Otherwise a result
+    # cached while the list was healthy keeps being served for up to an hour
+    # after it goes missing or stale — served as a 200, with no indication. The
+    # check is a few-KB file read; correctness of the 503 is worth it.
+    load_universe_list()
     with _sc_lock:
         # Return memory cache if fresh
         if _sc_data and time.time() - _sc_ts < 3600:

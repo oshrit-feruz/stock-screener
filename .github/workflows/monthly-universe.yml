@@ -37,6 +37,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # Do not leave the token in .git/config. This job installs and runs
+          # third-party code (pip deps, EODHD/SEC clients) while holding
+          # contents:write on a workflow that pushes to main — a persisted
+          # credential would be readable by any of it. The push step below
+          # supplies the token explicitly instead.
+          persist-credentials: false
 
       - name: Compute weekly cache key
         id: cachekey
@@ -72,6 +79,10 @@ jobs:
         run: python scripts/build_universe_list.py
 
       - name: Commit the list to main if it changed
+        env:
+          # Supplied only to this step (checkout used persist-credentials:false).
+          # Actions masks the value in logs.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
@@ -88,14 +99,16 @@ jobs:
           git add data/universe/current.json
           git commit -m "chore: monthly Top-${N} universe as of ${AS_OF}"
 
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
           # Rebase+retry in case main moved while this job ran.
           for attempt in 1 2 3; do
-            if git push origin HEAD:main; then
+            if git push "$REMOTE" HEAD:main; then
               echo "Universe list for ${AS_OF} pushed to main."
               exit 0
             fi
             echo "Push failed (attempt ${attempt}/3); reconciling and retrying..."
-            git pull --rebase --autostash origin main || true
+            git pull --rebase --autostash "$REMOTE" main || true
             sleep $((attempt * 5))
           done
 

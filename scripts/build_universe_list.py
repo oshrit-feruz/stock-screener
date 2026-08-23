@@ -86,30 +86,64 @@ def _already_current(as_of: date, tickers: list[str]) -> bool:
     return cur.get("as_of") == as_of.isoformat() and cur.get("tickers") == tickers
 
 
+def _covers(path: Path, as_of: date) -> bool:
+    """True if a cached raw-price frame actually reaches `as_of`.
+
+    Presence is NOT freshness. The Actions cache carries data/cache between runs,
+    so a file fetched last month still exists this month — and _raw_close() takes
+    the last bar on or before the as-of date, which would silently be last
+    month's close. Left unchecked the ranking drifts further out of date every
+    month, with no error: exactly the silent-degradation class this whole design
+    exists to prevent.
+    """
+    try:
+        with open(path, "rb") as f:
+            df = pickle.load(f)
+    except Exception:
+        return False
+    if df is None or getattr(df, "empty", True):
+        return False
+    return df.index.max().date() >= as_of
+
+
 def _ensure_raw_prices(pool: list[str], as_of: date) -> int:
-    """Fetch any raw (unadjusted) price series missing for the ranking pool.
+    """Fetch raw (unadjusted) price series that are missing OR stale for `as_of`.
 
     Raw prices are required because market cap must be raw_close x raw shares —
     split-adjusted prices would deflate every future-splitter and corrupt the
-    cross-sectional ranking. Only fetches what is absent; the Actions cache
-    carries these between runs.
+    cross-sectional ranking.
+
+    Writes exactly ONE file per ticker, replacing any earlier one. This is
+    load-bearing, not tidiness: data.sp500_universe._raw_close() resolves a
+    ticker with `sorted(glob(f"{ticker}_*.pkl"))[0]` — the EARLIEST start date.
+    Leaving last month's file alongside a fresh one would mean the ranking keeps
+    reading the stale file and the refresh silently has no effect.
     """
     _RAW.mkdir(parents=True, exist_ok=True)
-    start = (as_of - pd.Timedelta(days=_RAW_LOOKBACK_DAYS)).date().isoformat()
-    missing = [t for t in pool if not list(_RAW.glob(f"{t}_*.pkl"))]
-    print(f"Raw prices: {len(pool) - len(missing)} cached, fetching {len(missing)}…")
+    start = (pd.Timestamp(as_of) - pd.Timedelta(days=_RAW_LOOKBACK_DAYS)).date().isoformat()
+
+    stale: list[str] = []
+    for t in pool:
+        existing = sorted(_RAW.glob(f"{t}_*.pkl"))
+        if not existing or not any(_covers(p, as_of) for p in existing):
+            stale.append(t)
+
+    print(f"Raw prices: {len(pool) - len(stale)} current, fetching/refreshing {len(stale)}…")
     got = 0
-    for t in missing:
+    for t in stale:
         try:
             df = fetch_eod(t, start, as_of.isoformat(), adjust=False)
             if df is not None and not df.empty:
+                # Replace, never accumulate — see docstring.
+                for old in _RAW.glob(f"{t}_*.pkl"):
+                    old.unlink(missing_ok=True)
                 with open(_RAW / f"{t}_{start}.pkl", "wb") as f:
                     pickle.dump(df, f)
                 got += 1
         except Exception as exc:
             print(f"  raw {t}: {exc!r}"[:120])
         time.sleep(0.1)
-    print(f"  fetched {got}/{len(missing)}")
+    print(f"  fetched {got}/{len(stale)}")
     return got
 
 

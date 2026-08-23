@@ -16,8 +16,13 @@ Two corollaries, both load-bearing:
 
 1. **There is exactly one producer per artifact.** If two places can compute the
    same thing, they will disagree, and the disagreement will be silent.
-2. **A missing input is an error, never a fallback.** No substitute universe, no
-   empty list, no stale-but-servable default. Fail loudly.
+2. **A missing input is an error, never a fallback.** Never a *substitute*
+   universe, never an empty list, never an unbounded stale default. Precisely:
+   a late monthly list is served only while it is within the 62-day cutoff
+   (`universe_list.MAX_AGE_DAYS`) **and** only with a `is_late` WARNING naming
+   the problem; past the cutoff, and for anything missing/malformed/empty, the
+   caller raises. Degradation is allowed to be bounded and noisy. It is never
+   allowed to be silent.
 
 ## Why (the incident this rule comes from)
 
