@@ -88,7 +88,26 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet -- data/universe/current.json; then
+          # A missing file here means the ranking step produced nothing. Never
+          # stage that: once current.json is tracked, `git add` on a deleted
+          # path stages the DELETION, and this job would cheerfully commit the
+          # universe's removal to main and take the live screener down.
+          if [ ! -f data/universe/current.json ]; then
+            echo "No universe list on disk — nothing to commit."
+            exit 0
+          fi
+
+          # Stage FIRST, then diff the index. `git diff` compares tracked paths
+          # only, so on the very first successful build — when current.json is
+          # still untracked — it reports no difference, and this guard would
+          # skip the commit and exit 0. The job goes green having published
+          # nothing, which is exactly how the first real ranking was lost.
+          # `git add` is idempotent and `--cached` compares index against HEAD,
+          # so a new file registers as a change while an unchanged one still
+          # short-circuits, preserving the idempotence the 1st-5th cron retries
+          # rely on.
+          git add data/universe/current.json
+          if git diff --cached --quiet -- data/universe/current.json; then
             echo "No universe change to commit."
             exit 0
           fi
@@ -96,7 +115,6 @@ jobs:
           AS_OF=$(python -c "import json;print(json.load(open('data/universe/current.json'))['as_of'])")
           N=$(python -c "import json;print(len(json.load(open('data/universe/current.json'))['tickers']))")
 
-          git add data/universe/current.json
           git commit -m "chore: monthly Top-${N} universe as of ${AS_OF}"
 
           REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
