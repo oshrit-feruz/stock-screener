@@ -79,12 +79,66 @@ Three separate things kept it invisible:
 |---|---|---|---|
 | Monthly Top-100 universe | `scripts/build_universe_list.py` via `.github/workflows/monthly-universe.yml` | daily screener, `/api/screener` | `data/universe/current.json`, **committed to main** |
 | Daily screening state, positions, alerts | `.github/workflows/daily-screener.yml` | — | `automation/daily-state` branch |
+| Daily screener result (`data/screener_cache/<date>.json`) | `.github/workflows/daily-screener.yml` | `/api/screener` (raw-file fetch, 4-day lookback, `computed_on` provenance) | `automation/daily-state` branch |
 | Prebuilt PIT grid + price cache | `scripts/build_full_cache.py` (manual) | Simulator/backtest | GitHub Release asset → `scripts/fetch_release_cache.py` |
 
 The universe list is the one artifact committed to **main**, deliberately: it
 must reach the Render web service, and a Render redeploy once a month is the
 correct cost for a universe change. The daily workflow still avoids main on
 purpose — a daily redeploy would be pure churn.
+
+## Publish steps must positively verify what they published
+
+Every producer in the table above ends in a publish step — a commit, a push, a
+file landing somewhere a consumer reads. The rule for those steps:
+
+> **A publish step must positively confirm the artifact it published — its
+> presence, and the property that makes it usable — not merely finish without
+> error. "No error" and "published nothing" are indistinguishable unless you
+> make them distinguishable.**
+
+This is not hypothetical. The same bug class shipped **three times in one day**
+(2026-08-23), each through a different door, each producing a green run that
+published nothing:
+
+1. **`git diff` on an untracked file** (monthly universe, PR #49). The guard
+   `git diff --quiet -- current.json` was meant to skip no-op commits — but
+   `git diff` compares *tracked* paths only, so on the very first build the
+   brand-new file registered as "no change" and the commit was skipped. Green
+   run, no artifact, live endpoint 503.
+2. **`return None` on every failure** (EDGAR client). A total SEC outage — 503
+   identical HTTP 403s — presented as "0 tickers ranked" with no indication
+   the provider was the cause, because every failure mode collapsed into the
+   same silent `None` a legitimate miss produces.
+3. **`git add` on a gitignored path** (daily screener publish, PR #51 —
+   caught in review, not production). `data/screener_cache/*.json` is
+   gitignored, and plain `git add` skips ignored files *silently*; the
+   empty-commit guard would then pass and the run would go green having
+   published nothing. `git add -f` plus a comment is the fix.
+
+The shared shape: a tool whose "nothing to do" answer is identical to its
+"failed to do it" answer, wrapped in a step that only checks for errors.
+
+What a publish step therefore does, concretely:
+
+- **Assert the artifact exists** before the skip-guard runs, and treat absence
+  as its own explicit outcome (see the missing-file check in
+  `monthly-universe.yml` — absence must never stage a deletion either).
+- **Diff the index, not the worktree** (`git add` then `git diff --cached`)
+  when deciding "did anything change", so untracked files count.
+- **Force-add published paths that are gitignored**, with a comment saying
+  why — an unexplained `-f` will be "cleaned up" by the next reader.
+- **Echo what was published** (date, ticker count, target ref) so the log of a
+  healthy run states its output, and a run that published nothing reads wrong
+  on sight.
+- **Consumers stay loud**: a consumer finding nothing serves an explicit
+  error naming the producer (`/api/screener`'s 503 does this), never a
+  plausible empty result. The 7.5-week outage happened because an empty
+  universe was served as a normal "0 signals" day.
+
+When adding a new producer, assume its publish step has this bug until shown
+otherwise — the third instance was written *while consciously hunting the
+first two*.
 
 ## Cadence is not a free parameter
 
