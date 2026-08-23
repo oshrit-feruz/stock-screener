@@ -22,7 +22,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from scripts.build_universe_list import _covers, _ticker_is_current
+from scripts.build_universe_list import _covers, _refresh_start, _ticker_is_current
 
 _AS_OF = date(2026, 9, 1)
 
@@ -131,3 +131,28 @@ def test_accumulating_would_have_regressed(tmp_path):
     chosen = sorted(tmp_path.glob("AAPL_*.pkl"))[0]   # _raw_close's rule
     assert chosen.name == "AAPL_2025-08-01.pkl"
     assert _covers(chosen, _AS_OF) is False           # ...and it is stale
+
+
+# ── refresh must never truncate existing history ──────────────────────────────
+
+def test_refresh_start_keeps_deep_history(tmp_path):
+    """build_full_cache.py writes deep files (2009-) that the PIT grid rebuild
+    needs. A monthly refresh replaces the ticker's file, so it must refetch from
+    at least as far back — otherwise history is silently truncated and
+    build_full_cache's 'already have a file?' check skips restoring it."""
+    (tmp_path / "AAPL_2009-01-01.pkl").write_bytes(b"x")
+    assert _refresh_start(tmp_path, "AAPL", "2025-09-01") == "2009-01-01"
+
+
+def test_refresh_start_uses_default_when_no_deeper_history(tmp_path):
+    (tmp_path / "AAPL_2025-09-01.pkl").write_bytes(b"x")
+    assert _refresh_start(tmp_path, "AAPL", "2025-08-01") == "2025-08-01"
+
+
+def test_refresh_start_with_no_existing_files(tmp_path):
+    assert _refresh_start(tmp_path, "AAPL", "2025-09-01") == "2025-09-01"
+
+
+def test_refresh_start_ignores_unparsable_filenames(tmp_path):
+    (tmp_path / "AAPL_notadate.pkl").write_bytes(b"x")
+    assert _refresh_start(tmp_path, "AAPL", "2025-09-01") == "2025-09-01"

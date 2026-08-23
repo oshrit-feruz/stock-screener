@@ -41,7 +41,11 @@ from product.alerts.alert_templates import (  # noqa: E402
 from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
-from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
+from product.screener.daily_screener import (  # noqa: E402
+    ScreenerRow,
+    _universe_fingerprint,
+    run_screener,
+)
 from product.screener.universe_list import UniverseListError, load_universe_list  # noqa: E402
 from scripts.fetch_release_cache import fetch_and_extract as _fetch_release_cache  # noqa: E402
 from scripts.seed_cache import seed as _seed_cache  # noqa: E402
@@ -114,7 +118,7 @@ def _warm_today_is_cheap() -> bool:
 
 def _warm_screener_cache() -> None:
     """Run screener in background at startup; populate memory + disk cache."""
-    global _sc_data, _sc_ts, _sc_warming
+    global _sc_data, _sc_ts, _sc_warming, _sc_universe_fp
     if not _warm_today_is_cheap():
         logger.warning(
             "STARTUP %s: screener warm-up SKIPPED — today is not covered by the "
@@ -142,6 +146,10 @@ def _warm_screener_cache() -> None:
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
+            # Stamp the universe this warm ran under, so the first request can
+            # actually reuse it. Without this the fingerprint would be None and
+            # every warm result would be discarded on the next request.
+            _sc_universe_fp = _universe_fingerprint(load_universe_list())
         logger.warning("STARTUP %s: screener warm-up finished in %.0fs (incl. any yield pauses)",
                        _BUILD_MARKER, time.time() - t0)
     except Exception:
@@ -266,6 +274,7 @@ _sc_lock = threading.Lock()  # guards _sc_data / _sc_ts / _sc_warming
 _sc_data: dict | None = None
 _sc_ts: float = 0.0
 _sc_warming = False          # True while background scan is running
+_sc_universe_fp: str | None = None   # universe fingerprint _sc_data was computed under
 
 # Backtest job store — the backtest can run for minutes (large universe / cold
 # cache), well past any HTTP proxy timeout, so /api/backtest kicks it off in a
@@ -432,15 +441,20 @@ def _fetch_news(ticker: str, api_key: str) -> Optional[dict]:
 # ── Screener cache helper ──────────────────────────────────────────────────────
 
 def _get_screener_data() -> dict:
-    global _sc_data, _sc_ts, _sc_warming
-    # Validate the universe BEFORE any cache short-circuit. Otherwise a result
-    # cached while the list was healthy keeps being served for up to an hour
-    # after it goes missing or stale — served as a 200, with no indication. The
-    # check is a few-KB file read; correctness of the 503 is worth it.
-    load_universe_list()
+    global _sc_data, _sc_ts, _sc_warming, _sc_universe_fp
+    # Validate the universe BEFORE any cache short-circuit, and bind the cache
+    # to it. Two distinct failures are covered:
+    #   * list becomes unusable -> raises -> the route answers 503 instead of
+    #     serving an hour-old 200 with no indication;
+    #   * list is replaced (month boundary) -> fingerprint mismatch -> recompute,
+    #     rather than serving results for a superseded universe.
+    # Validity alone is not enough: a usable list does not prove _sc_data was
+    # computed from THAT list.
+    ulist = load_universe_list()
+    universe_fp = _universe_fingerprint(ulist)
     with _sc_lock:
-        # Return memory cache if fresh
-        if _sc_data and time.time() - _sc_ts < 3600:
+        # Return memory cache if fresh AND from the same universe
+        if _sc_data and time.time() - _sc_ts < 3600 and _sc_universe_fp == universe_fp:
             return _sc_data
         # Background warming still running — return immediately, client retries
         if _sc_warming:
@@ -458,6 +472,7 @@ def _get_screener_data() -> dict:
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
+            _sc_universe_fp = universe_fp
             _sc_warming = False
         return data
     except Exception:

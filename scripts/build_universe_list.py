@@ -123,6 +123,25 @@ def _ticker_is_current(raw_dir: Path, ticker: str, as_of: date) -> bool:
     return _covers(existing[0], as_of)
 
 
+def _refresh_start(raw_dir: Path, ticker: str, default_start: str) -> str:
+    """Earliest start to refetch from: never later than history already held.
+
+    Returns the earliest start date encoded in this ticker's existing filenames
+    if it predates `default_start`, else `default_start`. Keeps a refresh from
+    truncating the deep history build_full_cache.py relies on.
+    """
+    starts = []
+    for p in raw_dir.glob(f"{ticker}_*.pkl"):
+        stem = p.stem.rsplit("_", 1)
+        if len(stem) == 2:
+            try:
+                date.fromisoformat(stem[1])
+                starts.append(stem[1])
+            except ValueError:
+                continue
+    return min(starts + [default_start])
+
+
 def _ensure_raw_prices(pool: list[str], as_of: date) -> int:
     """Fetch raw (unadjusted) price series that are missing OR stale for `as_of`.
 
@@ -137,17 +156,25 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> int:
     reading the stale file and the refresh silently has no effect.
     """
     _RAW.mkdir(parents=True, exist_ok=True)
-    start = (pd.Timestamp(as_of) - pd.Timedelta(days=_RAW_LOOKBACK_DAYS)).date().isoformat()
+    default_start = (pd.Timestamp(as_of) - pd.Timedelta(days=_RAW_LOOKBACK_DAYS)).date().isoformat()
 
     stale = [t for t in pool if not _ticker_is_current(_RAW, t, as_of)]
 
     print(f"Raw prices: {len(pool) - len(stale)} current, fetching/refreshing {len(stale)}…")
     got = 0
     for t in stale:
+        # Never shrink a ticker's history. scripts/build_full_cache.py writes
+        # deep raw files (2009-onward) that the PIT grid rebuild depends on, and
+        # this job replaces the ticker's file. Refetching only our 1-year window
+        # would silently truncate that history, and build_full_cache's own
+        # "already have a file?" check would then skip re-fetching it — quietly
+        # breaking the next grid build. So extend from the earliest start we
+        # already hold.
+        start = _refresh_start(_RAW, t, default_start)
         try:
             df = fetch_eod(t, start, as_of.isoformat(), adjust=False)
             if df is not None and not df.empty:
-                # Replace, never accumulate — see docstring.
+                # Replace, never accumulate — see _ticker_is_current().
                 for old in _RAW.glob(f"{t}_*.pkl"):
                     old.unlink(missing_ok=True)
                 with open(_RAW / f"{t}_{start}.pkl", "wb") as f:
