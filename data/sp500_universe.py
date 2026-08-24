@@ -250,6 +250,20 @@ def _flush_pit_cache() -> None:
 atexit.register(_flush_pit_cache)
 
 
+def release_pit_cache() -> None:
+    """Flush pending grid writes, then drop the in-memory grid and the shares
+    memo. The parsed grid is ~51MB of Python objects (plus prefetch overhead —
+    measured +168MB RSS across the backtest's membership build) and is only
+    needed while rankings are being computed; a later caller simply reloads it
+    from disk. Callers that finish a ranking pass (e.g. the backtest, once
+    month membership is built) should release rather than hold it for the rest
+    of a long process."""
+    global _pit_cache
+    _flush_pit_cache()
+    _pit_cache = None
+    _shares_memo.clear()
+
+
 # A point-in-time market cap for a date more than this many days in the past is
 # immutable: the raw close is history, and the shares-outstanding figure that was
 # public as of that date can no longer change (a later filing does not alter what
