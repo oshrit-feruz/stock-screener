@@ -140,6 +140,13 @@ When adding a new producer, assume its publish step has this bug until shown
 otherwise — the third instance was written *while consciously hunting the
 first two*.
 
+The same shape exists one layer down, in tests: a broad `except` around a
+fail-soft call converts a **signature error in a test double** into a
+plausible "unavailable" (`_FakePrices.get_prices` missing a new keyword
+surfaced as `current_price=None`, not as a `TypeError`). When a fake stands in
+for a fail-soft interface, keep its signature exactly in step with the real
+one — the except block will otherwise absorb the drift silently.
+
 ## Cadence is not a free parameter
 
 The universe rebuilds **monthly** because `product/backtest/engine.py` rebuilds
