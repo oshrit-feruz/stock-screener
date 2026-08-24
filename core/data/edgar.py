@@ -60,6 +60,39 @@ _EQUITY_CONCEPTS = [
 ]
 _LT_DEBT_CONCEPTS = ["LongTermDebt", "LongTermDebtNoncurrent"]
 
+# Every (taxonomy, concept) this module ever reads out of a companyfacts JSON.
+# Used to prune the parsed document before memoizing it: the full JSON is
+# several MB per ticker (thousands of concepts), while these slices are a few
+# KB — and the in-memory LRU of 32 full documents measured as ~+175MB RSS
+# during a backtest, the second half of the 512MB OOM. The DISK cache keeps
+# the full JSON (new concepts can be adopted without refetching); only the
+# in-memory copy is pruned.
+_NEEDED_FACTS: list[tuple[str, str]] = (
+    [("us-gaap", c) for c in (
+        _REVENUE_CONCEPTS + _NET_INCOME_CONCEPTS + _EQUITY_CONCEPTS + _LT_DEBT_CONCEPTS
+    )]
+    + _SHARES_OUTSTANDING_CONCEPTS
+)
+
+
+def _prune_facts(data: dict | None) -> dict | None:
+    """Slice a parsed companyfacts document down to the concepts this module
+    reads, preserving the original nesting so every consumer indexes it
+    unchanged. Anything unexpected returns the input untouched — pruning is an
+    optimization and must never turn a readable document into an error."""
+    try:
+        facts = data["facts"]
+    except Exception:
+        return data
+    pruned: dict = {}
+    for tax, concept in _NEEDED_FACTS:
+        try:
+            entry = facts[tax][concept]
+        except Exception:
+            continue
+        pruned.setdefault(tax, {})[concept] = entry
+    return {"facts": pruned}
+
 
 def _cache_fresh(path: Path) -> bool:
     return path.exists() and (time.time() - path.stat().st_mtime) < _CACHE_TTL_SECONDS
@@ -247,6 +280,7 @@ class EdgarFundamentals:
             try:
                 with open(path) as f:
                     data = json.load(f)
+                data = _prune_facts(data)
                 self._facts_memo_put(ticker, data)
                 return data
             except Exception:
@@ -264,9 +298,10 @@ class EdgarFundamentals:
 
         try:
             with open(path, "w") as f:
-                json.dump(data, f)
+                json.dump(data, f)   # disk keeps the FULL document
         except Exception:
             pass
+        data = _prune_facts(data)
         self._facts_memo_put(ticker, data)
         return data
 

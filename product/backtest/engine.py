@@ -24,7 +24,8 @@ from core.data.eodhd import get_thread_fetch_count
 from core.data.eodhd_fundamentals import EODHDFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import compute_recovery_signals, passes_quality_gate
-from data.sp500_universe import get_universe, get_universe_top_n, prefetch_pit_market_caps
+from data.sp500_universe import (get_universe, get_universe_top_n,
+                                 prefetch_pit_market_caps, release_pit_cache)
 from scripts.run_combined_validation import load_fedfunds
 
 logger = logging.getLogger(__name__)
@@ -177,7 +178,16 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     # logs in real time (free-tier 0.5 vCPU makes this phase minutes-long even
     # when every ticker cache-hits; without these lines a slow-but-healthy load
     # is indistinguishable from a hang).
-    _log_rss("after universe/PIT-grid membership build")
+    # Month membership is now built; the parsed PIT grid has served its
+    # purpose for this run. Holding it costs ~168MB measured on the 512MB
+    # instance — release it (it reloads from disk if a later caller needs it).
+    try:
+        release_pit_cache()
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    _log_rss("after universe/PIT-grid membership build (grid released)")
     t_load = time.time()
     scored_data: dict[str, pd.DataFrame] = {}
     for i, ticker in enumerate(universe):
