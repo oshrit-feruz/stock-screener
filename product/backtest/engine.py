@@ -29,6 +29,32 @@ from scripts.run_combined_validation import load_fedfunds
 
 logger = logging.getLogger(__name__)
 
+
+def _rss_mb() -> float:
+    """Resident set size in MB, from /proc/self/status (Linux; Render runs
+    Linux). Returns -1.0 where unavailable rather than raising — these probes
+    must never be able to fail a backtest."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return -1.0
+
+
+def _log_rss(stage: str) -> None:
+    """One WARNING line per stage so Render logs show WHERE memory grows.
+
+    Measurement before mitigation: the 512MB instance dies mid-simulation with
+    no stdout trace (the OOM kill is only visible as a silent process restart),
+    so without these lines the three candidate consumers — the scored frames,
+    the parsed PIT grid, EDGAR facts accumulated by the quality gate — are
+    indistinguishable. WARNING level so uvicorn's default config surfaces it.
+    """
+    logger.warning("MEMRSS %s: %.0f MB", stage, _rss_mb())
+
 _WARMUP_START    = "2016-01-01"
 _INITIAL_CAPITAL = 100_000.0
 _MIN_SIGNALS     = 5          # below this, results are not meaningful
@@ -69,6 +95,7 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
 
     Expensive step done once for batch runs — amortizes across all simulations.
     """
+    _log_rss("backtest start (baseline)")
     # Baseline for this run's fetch count, taken before ANY fetch this function
     # can trigger (including SPY below) — thread-local so a concurrent screener
     # warm-up or a second backtest thread can't skew the delta.
@@ -150,6 +177,7 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     # logs in real time (free-tier 0.5 vCPU makes this phase minutes-long even
     # when every ticker cache-hits; without these lines a slow-but-healthy load
     # is indistinguishable from a hang).
+    _log_rss("after universe/PIT-grid membership build")
     t_load = time.time()
     scored_data: dict[str, pd.DataFrame] = {}
     for i, ticker in enumerate(universe):
@@ -174,6 +202,7 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
                    "(EODHD fetches this run: %d); entering simulation.",
                    len(scored_data), len(universe), time.time() - t_load,
                    get_thread_fetch_count() - fetches_before)
+    _log_rss("after data load (%d scored frames held)" % len(scored_data))
 
     # ── Idle-cash yield: real historical Fed Funds Rate (FRED FEDFUNDS). Reuses
     #    load_fedfunds from the research money-market study — not reimplemented. ─
@@ -361,7 +390,10 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             return None
         return _safe_float(cols[0][pos])
 
+    _log_rss("simulation start (%d trading days)" % len(trading_dates))
     for di, today in enumerate(trading_dates):
+        if di > 0 and di % 63 == 0:   # ~quarterly: catch growth DURING the loop
+            _log_rss("simulation day %d/%d (%s)" % (di, len(trading_dates), today))
         today_ts = pd.Timestamp(today)
 
         # ── Accrue idle-cash yield since the previous bar ──────────────────
@@ -744,6 +776,7 @@ def run_backtest(params: dict) -> dict:
     preloaded = _load_backtest_data(end_date, start_year, end_year, start_date)
     t_sim = time.time()
     result = _simulate(preloaded, params)
+    _log_rss("simulation complete")
     logger.warning("Backtest simulation finished in %.0fs (%s..%s).",
                    time.time() - t_sim, start_date_str, end_date_str)
     return result
