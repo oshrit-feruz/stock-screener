@@ -9,6 +9,29 @@ var _userMode  = null;
 var _portfolio = []; // [{ticker, entry_price, alert_up_pct, alert_down_pct}]
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
+
+// Parse a fetch Response as JSON, tolerating the server being mid-restart.
+// A Render redeploy (every merge to main) or an OOM restart answers in-flight
+// requests with an empty or non-JSON body; a bare r.json() then throws
+// "Unexpected end of JSON input" at the user. Read the body as text first so
+// an empty/garbage body becomes a friendly, retryable error instead. A non-ok
+// status with a JSON {detail} still surfaces that detail.
+function parseJson(r) {
+  return r.text().then(function (text) {
+    var data = null;
+    if (text) {
+      try { data = JSON.parse(text); } catch (e) { data = null; }
+    }
+    if (!r.ok) {
+      throw new Error((data && data.detail) ||
+        'Server returned ' + r.status + ' — it may be restarting. Try again in a moment.');
+    }
+    if (data === null) {
+      throw new Error('The server is restarting — try again in a moment.');
+    }
+    return data;
+  });
+}
 function showToast(msg, ms) {
   ms = ms || 2500;
   var el = document.getElementById('toast');
@@ -182,7 +205,7 @@ function loadSignals() {
   }
   ctr.innerHTML = '<div class="loading">Scanning the Top-100 universe&hellip; (may take up to 60 s on first visit)</div>';
   fetch('/api/screener')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) {
       if (data.warming) {
         // Server still warming up — retry in 15 seconds
@@ -377,7 +400,7 @@ function trackPosition(ticker) {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ ticker: ticker, entry_price: price, entry_date: today })
   })
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (res) {
       if (res.success) {
         showToast(ticker + ' added to positions');
@@ -394,7 +417,7 @@ function loadPositions() {
   var ctr = document.getElementById('positions-container');
   ctr.innerHTML = '<div class="loading">Loading positions&hellip;</div>';
   fetch('/api/positions')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) { renderPositions(data.positions || []); })
     .catch(function () {
       ctr.innerHTML = '<div class="err-box">Failed to load positions.</div>';
@@ -454,7 +477,7 @@ function closePosition(ticker) {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ ticker: ticker })
   })
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (res) {
       if (res.success) {
         var retStr = res.final_return_pct !== null
@@ -475,8 +498,7 @@ function loadBeta() {
   ctr.innerHTML = '<div class="loading">Loading beta tracking&hellip;</div>';
   fetch('/api/beta/dashboard')
     .then(function (r) {
-      if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Failed to load beta tracking'); });
-      return r.json();
+      return parseJson(r);
     })
     .then(function (data) { renderBeta(data); })
     .catch(function () {
@@ -603,7 +625,7 @@ function loadPortfolio() {
   var ctr = document.getElementById('portfolio-container');
   if (ctr) ctr.innerHTML = '<div class="loading">Loading&hellip;</div>';
   fetch('/api/portfolio')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) {
       _portfolio = (data.holdings || []).map(function (h) {
         return {
@@ -699,7 +721,7 @@ function savePortfolio() {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ holdings: _portfolio }),
   })
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function () { loadPortfolio(); showToast('Portfolio saved'); })
     .catch(function () { showToast('Failed to save portfolio'); });
 }
@@ -710,7 +732,7 @@ function savePortfolioQuiet() {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ holdings: _portfolio }),
   })
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function () { loadPortfolio(); })
     .catch(function () { showToast('Failed to save portfolio'); });
 }
@@ -720,7 +742,7 @@ function loadPortfolioAlerts() {
   var ctr = document.getElementById('alerts-container');
   if (ctr) ctr.innerHTML = '<div class="loading">Checking alerts&hellip;</div>';
   fetch('/api/portfolio/alerts')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) { renderPortfolioAlerts(data.alerts || []); })
     .catch(function () {
       if (ctr) ctr.innerHTML = '<div class="err-box">Failed to load alerts.</div>';
@@ -910,8 +932,7 @@ function _pollBacktestJob(jobId, scenario, params, btn, rContainer, elapsedSec) 
       // that distinctly from a real backtest failure so the user understands
       // it's a transient server hiccup, not a bad simulation.
       if (r.status === 404) throw new Error('SERVER_RESTARTED');
-      if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Simulation failed'); });
-      return r.json();
+      return parseJson(r);
     })
     .then(function (data) {
       if (data.status === 'running') {
@@ -981,10 +1002,7 @@ function runSimulation(scenario) {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(params),
   })
-  .then(function (r) {
-    if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Simulation failed'); });
-    return r.json();
-  })
+  .then(parseJson)
   .then(function (data) {
     // The backend runs the backtest in a background job and returns immediately
     // (202) with a job_id — the run can take minutes on a large date range,
@@ -1402,7 +1420,7 @@ function loadSettingsPortfolio() {
   var ctr = document.getElementById('settings-portfolio-list');
   if (!ctr) return;
   fetch('/api/portfolio')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) {
       var holdings = data.holdings || [];
       if (!holdings.length) {
@@ -1430,7 +1448,7 @@ function settingsRemoveHolding(ticker) {
   _portfolio = _portfolio.filter(function (h) { return h.ticker !== ticker; });
   // If _portfolio is empty (not loaded yet), fetch first then remove
   fetch('/api/portfolio')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) {
       var remaining = (data.holdings || []).filter(function (h) { return h.ticker !== ticker; });
       return fetch('/api/portfolio', {
