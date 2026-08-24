@@ -375,7 +375,10 @@ def _row_to_dict(r: ScreenerRow) -> dict:
 def _current_price(ticker: str, prices: PriceData) -> Optional[float]:
     today = date.today()
     try:
-        ohlcv = prices.get_prices(ticker, str(today - timedelta(days=10)), today.isoformat())
+        # Current-price context: a stale close here is displayed as the price
+        # NOW, so bound it (the empty-frame refusal falls through to None).
+        ohlcv = prices.get_prices(ticker, str(today - timedelta(days=10)), today.isoformat(),
+                                  max_stale_tdays=PriceData.CURRENT_MAX_STALE_TDAYS)
         if ohlcv is not None and not ohlcv.empty:
             return float(ohlcv["Close"].iloc[-1])
     except Exception:
