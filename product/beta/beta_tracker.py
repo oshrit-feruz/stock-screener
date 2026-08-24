@@ -63,8 +63,11 @@ def _load(path: Path) -> list[dict]:
 def _latest_close(ticker: str, as_of: date, prices: PriceData) -> Optional[float]:
     """Most recent close on or before `as_of` (mirrors the API's _current_price)."""
     try:
+        # Current-price context (mirrors the API's _current_price): bound the
+        # staleness so a weeks-old close is reported as unavailable, not "now".
         ohlcv = prices.get_prices(ticker, (as_of - timedelta(days=10)).isoformat(),
-                                  as_of.isoformat())
+                                  as_of.isoformat(),
+                                  max_stale_tdays=PriceData.CURRENT_MAX_STALE_TDAYS)
         if ohlcv is not None and not ohlcv.empty:
             return float(ohlcv["Close"].iloc[-1])
     except Exception:

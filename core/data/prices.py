@@ -4,6 +4,7 @@ import logging
 import pickle
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from core.data.eodhd import fetch_eod
@@ -86,7 +87,45 @@ class PriceData:
                     best = df
         return best
 
-    def get_prices(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+    # Freshness bound for "current price" contexts (dashboard marks, alert
+    # checks — anywhere the last close is presented as the price NOW). 7
+    # trading days: generous enough for a holiday-extended weekend plus a few
+    # provider hiccups, far too tight for the multi-week drift that shipped a
+    # 2026-06-30 close labeled "(now)" on 2026-08-22. Historical/backtest
+    # windows must NOT pass this — an old window is stale by definition.
+    CURRENT_MAX_STALE_TDAYS = 7
+
+    def get_prices(self, ticker: str, start: str, end: str,
+                   max_stale_tdays: int | None = None) -> pd.DataFrame:
+        """OHLCV for [start, end). Cached; falls back to a stale cache when a
+        fetch fails rather than losing data.
+
+        max_stale_tdays: freshness contract for CURRENT-price contexts. When
+        set, a result whose last bar is more than this many trading days before
+        `end` is refused (WARNING + empty frame) instead of silently served —
+        the caller's honest answer is then "unavailable", mirroring
+        /api/screener's 503 pattern. When None (historical windows, backtests,
+        the simulator), behavior is unchanged: the silent cache fallback is
+        the right call there, since old data IS the request.
+        """
+        df = self._load_prices(ticker, start, end)
+        if max_stale_tdays is None or df.empty:
+            return df
+        last_bar = df.index.max()
+        age_tdays = int(np.busday_count(last_bar.date().isoformat(),
+                                        pd.Timestamp(end).date().isoformat()))
+        if age_tdays > max_stale_tdays:
+            log.warning(
+                "get_prices: %s last bar %s is %d trading days behind requested "
+                "end %s (limit %d) — refusing stale data for a current-price "
+                "context; returning empty.",
+                ticker, last_bar.date(), age_tdays,
+                pd.Timestamp(end).date(), max_stale_tdays,
+            )
+            return pd.DataFrame()
+        return df
+
+    def _load_prices(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         path     = self._cache_path(ticker, start)
         start_ts = pd.Timestamp(start)
         end_ts   = pd.Timestamp(end)
@@ -127,17 +166,30 @@ class PriceData:
             # fetch_eod already logs and returns an empty frame on any failure.
             df = fetch_eod(ticker, start, end, adjust=True)
             if df is None or df.empty:
-                # Fall back to stale cache rather than losing data on a failed fetch.
+                # Fall back to stale cache rather than losing data on a failed
+                # fetch — but say so: this branch silently served 7-week-old
+                # closes as current during the 2026 outage.
                 if cached is not None and not cached.empty:
+                    log.warning(
+                        "get_prices: fetch for %s returned nothing — serving "
+                        "cached data ending %s (requested end %s).",
+                        ticker, cached.index.max().date(), end_ts.date(),
+                    )
                     return cached[cached.index < end_ts]
                 return pd.DataFrame()
             # Cache the full downloaded range; callers get the end-exclusive slice.
             with open(path, "wb") as f:
                 pickle.dump(df, f)
             return df[df.index < end_ts]
-        except Exception:
-            # Fall back to stale cache rather than losing data on a failed fetch.
+        except Exception as exc:
+            # Fall back to stale cache rather than losing data on a failed fetch
+            # — but say so (see above).
             if cached is not None and not cached.empty:
+                log.warning(
+                    "get_prices: fetch for %s raised (%s) — serving cached data "
+                    "ending %s (requested end %s).",
+                    ticker, str(exc)[:120], cached.index.max().date(), end_ts.date(),
+                )
                 return cached[cached.index < end_ts]
             return pd.DataFrame()
 
