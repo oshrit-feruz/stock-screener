@@ -12,6 +12,8 @@ A parsed companyfacts JSON is several MB; the LRU held 32 of them, measured as
 """
 from __future__ import annotations
 
+import time
+
 import json
 from datetime import date
 
@@ -65,12 +67,12 @@ def test_snapshot_and_shares_identical_on_pruned_vs_full(tmp_path):
     as_of = date(2022, 8, 1)   # cutoff 2022-05-03 -> the 2022-02-15 filings are in
 
     full = _fake_facts()
-    ef._facts_mem["FAKE"] = full
+    ef._facts_mem["FAKE"] = (time.time(), full)
     snap_full = ef.get_snapshot("FAKE", as_of)
     shares_full = ef.get_shares_outstanding("FAKE", as_of)
 
     ef._facts_mem.clear()
-    ef._facts_mem["FAKE"] = _prune_facts(_fake_facts())
+    ef._facts_mem["FAKE"] = (time.time(), _prune_facts(_fake_facts()))
     snap_pruned = ef.get_snapshot("FAKE", as_of)
     shares_pruned = ef.get_shares_outstanding("FAKE", as_of)
 
@@ -89,7 +91,7 @@ def test_disk_cache_keeps_full_document_memo_holds_pruned(tmp_path, monkeypatch)
     ef._get_facts("FAKE")
     on_disk = json.loads((tmp_path / "FAKE.json").read_text())
     assert "IrrelevantConcept0" in on_disk["facts"]["us-gaap"]      # disk: full
-    assert "IrrelevantConcept0" not in ef._facts_mem["FAKE"]["facts"]["us-gaap"]  # memo: pruned
+    assert "IrrelevantConcept0" not in ef._facts_mem["FAKE"][1]["facts"]["us-gaap"]  # memo: pruned
 
 
 def test_release_pit_cache_drops_grid_and_reloads_lazily(tmp_path, monkeypatch):

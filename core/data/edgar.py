@@ -224,7 +224,7 @@ class EdgarFundamentals:
         # lifetime, a direct contributor to the 512MB free-tier OOM. Evicted
         # entries reload from the on-disk cache (identical values, small
         # re-parse cost); the cap comfortably covers a scan's working set.
-        self._facts_mem: OrderedDict[str, dict | None] = OrderedDict()
+        self._facts_mem: OrderedDict[str, tuple[float, dict | None]] = OrderedDict()
 
     # ── CIK lookup ────────────────────────────────────────────────────────
 
@@ -263,7 +263,12 @@ class EdgarFundamentals:
     _FACTS_MEM_MAX = 32  # LRU cap; see __init__ — bounds RSS, not correctness
 
     def _facts_memo_put(self, ticker: str, data: dict | None) -> None:
-        self._facts_mem[ticker] = data
+        # Stamped with load time so a long-lived client (the API's process-wide
+        # fundamentals report client, in particular) can't serve a memory hit
+        # past the disk TTL forever. Without this, a ticker touched often stays
+        # at the LRU's head indefinitely — a newly filed annual report would
+        # never become visible on that process until it happened to restart.
+        self._facts_mem[ticker] = (time.time(), data)
         self._facts_mem.move_to_end(ticker)
         while len(self._facts_mem) > self._FACTS_MEM_MAX:
             self._facts_mem.popitem(last=False)
@@ -272,8 +277,11 @@ class EdgarFundamentals:
         # In-memory memo: companyfacts JSON can be several MB; repeated point-in-
         # time lookups across many dates would otherwise re-parse it every call.
         if ticker in self._facts_mem:
-            self._facts_mem.move_to_end(ticker)   # LRU touch
-            return self._facts_mem[ticker]
+            loaded_at, cached = self._facts_mem[ticker]
+            if time.time() - loaded_at < _CACHE_TTL_SECONDS:
+                self._facts_mem.move_to_end(ticker)   # LRU touch
+                return cached
+            del self._facts_mem[ticker]               # expired — fall through and refetch
 
         path = self._facts_cache_path(ticker)
         if _cache_fresh(path):
@@ -416,9 +424,15 @@ class EdgarFundamentals:
                  if 280 <= (current_end - date.fromisoformat(e["end"])).days <= 420),
                 None,
             )
-            if prior is not None and prior.get("val"):
+            if prior is not None:
                 try:
-                    yoy_pct = round((float(rev_entry["val"]) / float(prior["val"]) - 1) * 100, 1)
+                    prior_val = float(prior["val"])
+                    # A non-positive prior denominator makes the ratio meaningless
+                    # (e.g. revenue 100 vs prior -100 -> -200%, not a real "-200%
+                    # decline"). Treat it the same as no comparable prior: None,
+                    # not a fabricated-looking number.
+                    if prior_val > 0:
+                        yoy_pct = round((float(rev_entry["val"]) / prior_val - 1) * 100, 1)
                 except (TypeError, ValueError, ZeroDivisionError):
                     yoy_pct = None
             return {
