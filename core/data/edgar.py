@@ -224,7 +224,7 @@ class EdgarFundamentals:
         # lifetime, a direct contributor to the 512MB free-tier OOM. Evicted
         # entries reload from the on-disk cache (identical values, small
         # re-parse cost); the cap comfortably covers a scan's working set.
-        self._facts_mem: OrderedDict[str, dict | None] = OrderedDict()
+        self._facts_mem: OrderedDict[str, tuple[float, dict | None]] = OrderedDict()
 
     # ── CIK lookup ────────────────────────────────────────────────────────
 
@@ -263,7 +263,12 @@ class EdgarFundamentals:
     _FACTS_MEM_MAX = 32  # LRU cap; see __init__ — bounds RSS, not correctness
 
     def _facts_memo_put(self, ticker: str, data: dict | None) -> None:
-        self._facts_mem[ticker] = data
+        # Stamped with load time so a long-lived client (the API's process-wide
+        # fundamentals report client, in particular) can't serve a memory hit
+        # past the disk TTL forever. Without this, a ticker touched often stays
+        # at the LRU's head indefinitely — a newly filed annual report would
+        # never become visible on that process until it happened to restart.
+        self._facts_mem[ticker] = (time.time(), data)
         self._facts_mem.move_to_end(ticker)
         while len(self._facts_mem) > self._FACTS_MEM_MAX:
             self._facts_mem.popitem(last=False)
@@ -272,8 +277,11 @@ class EdgarFundamentals:
         # In-memory memo: companyfacts JSON can be several MB; repeated point-in-
         # time lookups across many dates would otherwise re-parse it every call.
         if ticker in self._facts_mem:
-            self._facts_mem.move_to_end(ticker)   # LRU touch
-            return self._facts_mem[ticker]
+            loaded_at, cached = self._facts_mem[ticker]
+            if time.time() - loaded_at < _CACHE_TTL_SECONDS:
+                self._facts_mem.move_to_end(ticker)   # LRU touch
+                return cached
+            del self._facts_mem[ticker]               # expired — fall through and refetch
 
         path = self._facts_cache_path(ticker)
         if _cache_fresh(path):
@@ -386,6 +394,57 @@ class EdgarFundamentals:
             s for year in years
             if (s := self.get_snapshot(ticker, date(year, 12, 31))) is not None
         ]
+
+    def get_revenue_report(self, ticker: str) -> dict | None:
+        """Latest ANNUAL revenue on record, for the /api/stock/{t}/fundamentals
+        report. Returns {"revenue", "period_end", "filed", "form", "yoy_pct"}
+        or None when EDGAR has nothing usable for this ticker.
+
+        Display-only and deliberately NOT point-in-time: cutoff is today with
+        NO publication lag, because a report should show the newest filing on
+        record, while the backtest/screener paths must not see a filing before
+        (filed + 90d). Never feed this into signal computation — get_snapshot
+        is the PIT interface. yoy_pct is derived only when a prior-year annual
+        entry exists in a 280-420 day window (53-week fiscal years included);
+        otherwise it is None, never estimated.
+        """
+        try:
+            facts = self._get_facts(ticker)
+            if not facts:
+                return None
+            today = date.today()
+            rev_concept, rev_entry = _first_concept(facts, _REVENUE_CONCEPTS, today)
+            if rev_entry is None:
+                return None
+            yoy_pct = None
+            all_rev = _annual_entries(facts, rev_concept, cutoff=today)
+            current_end = date.fromisoformat(rev_entry["end"])
+            prior = next(
+                (e for e in all_rev
+                 if 280 <= (current_end - date.fromisoformat(e["end"])).days <= 420),
+                None,
+            )
+            if prior is not None:
+                try:
+                    prior_val = float(prior["val"])
+                    # A non-positive prior denominator makes the ratio meaningless
+                    # (e.g. revenue 100 vs prior -100 -> -200%, not a real "-200%
+                    # decline"). Treat it the same as no comparable prior: None,
+                    # not a fabricated-looking number.
+                    if prior_val > 0:
+                        yoy_pct = round((float(rev_entry["val"]) / prior_val - 1) * 100, 1)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    yoy_pct = None
+            return {
+                "revenue":    float(rev_entry["val"]),
+                "period_end": rev_entry["end"],
+                "filed":      rev_entry["filed"],
+                "form":       rev_entry.get("form", "10-K"),
+                "yoy_pct":    yoy_pct,
+            }
+        except Exception:
+            log.warning("EDGAR: revenue report failed for %s", ticker, exc_info=True)
+            return None
 
     def get_shares_outstanding(self, ticker: str, as_of_date: date | str) -> float | None:
         """Common shares outstanding known as of `as_of_date`, point-in-time.

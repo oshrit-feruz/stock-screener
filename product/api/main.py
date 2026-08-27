@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
+import re as _re
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -650,6 +651,66 @@ def _get_screener_data() -> dict:
 
 
 # ── API routes ─────────────────────────────────────────────────────────────────
+
+# One process-wide EDGAR client for the fundamentals report. Same integration
+# the screener/backtest already use (shares outstanding, quality gate) — no new
+# data dependency. Its facts memo holds PRUNED slices (a few KB per ticker,
+# LRU-capped), so this stays far inside the 512MB budget: one small HTTP GET
+# on a cold ticker, dict lookups after.
+_edgar_report_client = None
+_edgar_report_lock = threading.Lock()
+
+
+def _get_edgar_report_client():
+    global _edgar_report_client
+    with _edgar_report_lock:
+        if _edgar_report_client is None:
+            from core.data.edgar import EdgarFundamentals
+            _edgar_report_client = EdgarFundamentals()
+        return _edgar_report_client
+
+
+_TICKER_RE = _re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+
+@app.get("/api/stock/{ticker}/fundamentals")
+def stock_fundamentals(ticker: str) -> dict:
+    """Fundamental highlights for one ticker, straight from SEC EDGAR.
+
+    Honest-status contract: "ok" carries real filed figures with their filing
+    date and form; anything missing or unparsable is "unavailable" with a
+    reason — never an estimated or fabricated number. Display-only and NOT
+    point-in-time (newest filing on record, no 90-day lag) — see
+    EdgarFundamentals.get_revenue_report; signals must keep using the PIT path.
+    """
+    t = ticker.upper().strip()
+    if not _TICKER_RE.match(t):
+        return {"ticker": ticker, "status": "unavailable",
+                "reason": "Invalid ticker symbol."}
+    try:
+        report = _get_edgar_report_client().get_revenue_report(t)
+    except Exception:
+        logger.exception("fundamentals report failed for %s", t)
+        report = None
+    if report is None:
+        return {"ticker": t, "status": "unavailable",
+                "reason": "No usable EDGAR filing data for this ticker (not SEC-listed, "
+                          "no annual revenue on file, or EDGAR unreachable)."}
+    return {
+        "ticker": t,
+        "status": "ok",
+        "revenue": {
+            "value":      report["revenue"],
+            "period_end": report["period_end"],
+            "yoy_pct":    report["yoy_pct"],
+        },
+        "filing": {
+            "filed": report["filed"],
+            "form":  report["form"],
+        },
+        "source": "SEC EDGAR companyfacts",
+    }
+
 
 @app.get("/api/health")
 def health() -> dict:
