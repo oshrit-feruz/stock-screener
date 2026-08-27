@@ -395,18 +395,54 @@ class EdgarFundamentals:
             if (s := self.get_snapshot(ticker, date(year, 12, 31))) is not None
         ]
 
+    _REVENUE_HISTORY_MAX_YEARS = 10  # cap the payload; older years rarely matter for display
+
+    @staticmethod
+    def _yoy_pct(current_val, prior_val) -> float | None:
+        """Percent change vs a prior-year value, or None when not derivable.
+
+        A non-positive prior denominator makes the ratio meaningless (e.g.
+        revenue 100 vs prior -100 -> -200%, not a real "-200% decline") —
+        treated the same as no comparable prior: None, never a fabricated-
+        looking number.
+        """
+        try:
+            prior_val = float(prior_val)
+            if prior_val > 0:
+                return round((float(current_val) / prior_val - 1) * 100, 1)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+        return None
+
+    @staticmethod
+    def _entry_dict(entry: dict, yoy_pct: float | None) -> dict:
+        return {
+            "revenue":    float(entry["val"]),
+            "period_end": entry["end"],
+            "filed":      entry["filed"],
+            "form":       entry.get("form", "10-K"),
+            "yoy_pct":    yoy_pct,
+        }
+
     def get_revenue_report(self, ticker: str) -> dict | None:
-        """Latest ANNUAL revenue on record, for the /api/stock/{t}/fundamentals
-        report. Returns {"revenue", "period_end", "filed", "form", "yoy_pct"}
-        or None when EDGAR has nothing usable for this ticker.
+        """Annual revenue on record, for the /api/stock/{t}/fundamentals report.
+
+        Returns {"revenue", "period_end", "filed", "form", "yoy_pct", "history"}
+        or None when EDGAR has nothing usable for this ticker. The top-level
+        fields mirror the newest (history[0]) entry for backward compatibility;
+        "history" is every annual entry EDGAR's companyfacts already returned
+        for this concept — no new data source — newest-first, capped at
+        _REVENUE_HISTORY_MAX_YEARS.
 
         Display-only and deliberately NOT point-in-time: cutoff is today with
         NO publication lag, because a report should show the newest filing on
         record, while the backtest/screener paths must not see a filing before
         (filed + 90d). Never feed this into signal computation — get_snapshot
-        is the PIT interface. yoy_pct is derived only when a prior-year annual
-        entry exists in a 280-420 day window (53-week fiscal years included);
-        otherwise it is None, never estimated.
+        is the PIT interface. Each entry's yoy_pct is derived only when a
+        prior-year annual entry exists in a 280-420 day window (53-week fiscal
+        years included); otherwise it is None, never estimated — a gap in the
+        filing history must not silently skip to an older year and produce a
+        multi-year change that LOOKS like a one-year change.
         """
         try:
             facts = self._get_facts(ticker)
@@ -416,32 +452,28 @@ class EdgarFundamentals:
             rev_concept, rev_entry = _first_concept(facts, _REVENUE_CONCEPTS, today)
             if rev_entry is None:
                 return None
-            yoy_pct = None
+            # Newest-first (per _annual_entries); cap AFTER computing yoy so a
+            # capped-out year can still serve as the prior for the oldest kept.
             all_rev = _annual_entries(facts, rev_concept, cutoff=today)
-            current_end = date.fromisoformat(rev_entry["end"])
-            prior = next(
-                (e for e in all_rev
-                 if 280 <= (current_end - date.fromisoformat(e["end"])).days <= 420),
-                None,
-            )
-            if prior is not None:
-                try:
-                    prior_val = float(prior["val"])
-                    # A non-positive prior denominator makes the ratio meaningless
-                    # (e.g. revenue 100 vs prior -100 -> -200%, not a real "-200%
-                    # decline"). Treat it the same as no comparable prior: None,
-                    # not a fabricated-looking number.
-                    if prior_val > 0:
-                        yoy_pct = round((float(rev_entry["val"]) / prior_val - 1) * 100, 1)
-                except (TypeError, ValueError, ZeroDivisionError):
-                    yoy_pct = None
-            return {
-                "revenue":    float(rev_entry["val"]),
-                "period_end": rev_entry["end"],
-                "filed":      rev_entry["filed"],
-                "form":       rev_entry.get("form", "10-K"),
-                "yoy_pct":    yoy_pct,
-            }
+
+            history: list[dict] = []
+            for i, entry in enumerate(all_rev):
+                if i >= self._REVENUE_HISTORY_MAX_YEARS:
+                    break
+                current_end = date.fromisoformat(entry["end"])
+                prior = next(
+                    (e for e in all_rev[i + 1:]
+                     if 280 <= (current_end - date.fromisoformat(e["end"])).days <= 420),
+                    None,
+                )
+                yoy_pct = self._yoy_pct(entry["val"], prior["val"]) if prior is not None else None
+                history.append(self._entry_dict(entry, yoy_pct))
+
+            if not history:
+                return None
+
+            latest = history[0]
+            return {**latest, "history": history}
         except Exception:
             log.warning("EDGAR: revenue report failed for %s", ticker, exc_info=True)
             return None

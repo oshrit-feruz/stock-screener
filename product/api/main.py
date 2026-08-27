@@ -678,9 +678,12 @@ def stock_fundamentals(ticker: str) -> dict:
     """Fundamental highlights for one ticker, straight from SEC EDGAR.
 
     Honest-status contract: "ok" carries real filed figures with their filing
-    date and form; anything missing or unparsable is "unavailable" with a
-    reason — never an estimated or fabricated number. Display-only and NOT
-    point-in-time (newest filing on record, no 90-day lag) — see
+    date and form, plus a "history" array of every annual entry EDGAR already
+    has for this ticker (newest-first, capped at 10 years) — no new data
+    source, EDGAR's companyfacts response already contains it. Anything
+    missing or unparsable is "unavailable" with a reason — never an estimated,
+    fabricated, or partial/padded history. Display-only and NOT point-in-time
+    (newest filing on record, no 90-day lag) — see
     EdgarFundamentals.get_revenue_report; signals must keep using the PIT path.
     """
     t = ticker.upper().strip()
@@ -699,6 +702,8 @@ def stock_fundamentals(ticker: str) -> dict:
     return {
         "ticker": t,
         "status": "ok",
+        # Mirrors history[0] — kept for backward compatibility with the
+        # existing display so it does not need to change to show a summary.
         "revenue": {
             "value":      report["revenue"],
             "period_end": report["period_end"],
@@ -708,6 +713,20 @@ def stock_fundamentals(ticker: str) -> dict:
             "filed": report["filed"],
             "form":  report["form"],
         },
+        # Every annual entry EDGAR's companyfacts already returned for this
+        # concept — no new data source — newest-first, capped at 10 years.
+        # Each entry's yoy_pct is None when no adjacent prior-year filing
+        # exists, never estimated across a gap.
+        "history": [
+            {
+                "revenue":    e["revenue"],
+                "period_end": e["period_end"],
+                "filed":      e["filed"],
+                "form":       e["form"],
+                "yoy_pct":    e["yoy_pct"],
+            }
+            for e in report["history"]
+        ],
         "source": "SEC EDGAR companyfacts",
     }
 
