@@ -42,7 +42,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 import data.sp500_universe as u  # noqa: E402
-from core.data.eodhd import fetch_eod  # noqa: E402
+from core.data.eodhd import fetch_eod, probe_bars  # noqa: E402
 from core.data.prices import PriceData  # noqa: E402
 
 _OUT = REPO / "data" / "universe" / "current.json"
@@ -175,7 +175,46 @@ def _refresh_start(raw_dir: Path, ticker: str, default_start: str) -> str:
     return min([s for s in starts if s] + [default_start])
 
 
-def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
+# A name whose last bar is at least this many calendar days before the as-of
+# date, and for which the provider explicitly answers "no bars" for the tail,
+# has stopped trading (acquired, taken private, delisted). Shorter gaps are
+# treated as the provider not having caught up yet, and stay a hard failure:
+# the job runs on days 1-5 of the month, so a day or two of provider lag is
+# real, while a fortnight of nothing after a final print is not.
+_DELIST_GRACE_DAYS = 7
+
+
+def _classify_stale(ticker: str, df, as_of: date, probe=None) -> str:
+    """Why a fetched frame does not reach `as_of`: 'current', 'delisted' or 'failed'.
+
+    'delisted' needs BOTH a real last bar well before as_of AND the provider's
+    own confirmation (`probe` -> False, i.e. HTTP 200 with an empty list for the
+    window after that bar). An empty frame, a probe error or a recent last bar
+    is 'failed' — the job must not rank on it, and must not drop the name
+    either, because a transient provider problem must never quietly shrink the
+    pool. That is the same silent-degradation class the whole guard exists for.
+
+    Why this is needed at all: the membership list (fja05680) is a periodic
+    snapshot, so a member acquired or delisted since the last snapshot still
+    appears in the pool while the price provider has correctly stopped printing
+    it. Without this the monthly build cannot complete until the snapshot is
+    refreshed, which can take months.
+    """
+    if _frame_reaches(df, as_of):
+        return "current"
+    if df is None or getattr(df, "empty", True):
+        return "failed"
+    last_bar = df.index.max().date()
+    if (as_of - last_bar).days < _DELIST_GRACE_DAYS:
+        return "failed"
+    tail_start = (pd.Timestamp(last_bar) + pd.Timedelta(days=1)).date().isoformat()
+    # Resolved at call time (not as a default argument) so tests can stub the
+    # module's probe_bars and the classification actually sees the stub.
+    has_more = (probe or probe_bars)(ticker, tail_start, as_of.isoformat())
+    return "delisted" if has_more is False else "failed"
+
+
+def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str], list[str]]:
     """Fetch raw (unadjusted) price series that are missing OR stale for `as_of`.
 
     Raw prices are required because dollar-volume must be raw_close x raw volume —
@@ -189,6 +228,10 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
     BOTH naming contracts. Leaving last month's file alongside a fresh one would
     mean the ranking keeps reading the stale file and the refresh silently has
     no effect.
+
+    Returns (refreshed, failed, delisted). `failed` names must abort the build;
+    `delisted` names (see `_classify_stale`) have stopped trading since the
+    membership snapshot and are excluded from the pool by the caller.
     """
     _RAW.mkdir(parents=True, exist_ok=True)
     default_start = (pd.Timestamp(as_of) - pd.Timedelta(days=_RAW_LOOKBACK_DAYS)).date().isoformat()
@@ -198,6 +241,7 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
     print(f"Raw prices: {len(pool) - len(stale)} current, fetching/refreshing {len(stale)}…")
     got = 0
     failed: list[str] = []
+    delisted: list[str] = []
     for t in stale:
         # Never shrink a ticker's history. scripts/build_full_cache.py writes
         # deep raw files (2009-onward) that the PIT grid rebuild depends on, and
@@ -213,8 +257,15 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
             # destroy good (possibly deep-history) data and replace it with a
             # short or empty response — turning a transient provider hiccup into
             # permanent cache damage.
-            if not _frame_reaches(df, as_of):
+            verdict = _classify_stale(t, df, as_of)
+            if verdict == "failed":
                 failed.append(t)
+                continue
+            if verdict == "delisted":
+                last_bar = df.index.max().date()
+                print(f"  {t}: no bars after {last_bar} and the provider confirms none — "
+                      f"stopped trading; excluded from this month's pool")
+                delisted.append(t)
                 continue
             # Order matters twice over:
             #   1. write the replacement atomically FIRST, so nothing on disk is
@@ -235,8 +286,10 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
             print(f"  raw {t}: {exc!r}"[:120])
         finally:
             time.sleep(0.1)
-    print(f"  refreshed {got}/{len(stale)}" + (f", {len(failed)} FAILED" if failed else ""))
-    return got, failed
+    print(f"  refreshed {got}/{len(stale)}"
+          + (f", {len(delisted)} stopped trading" if delisted else "")
+          + (f", {len(failed)} FAILED" if failed else ""))
+    return got, failed, delisted
 
 
 def _diagnose_empty_ranking(pool: list[str], as_of: date, sample: int = 5) -> str:
@@ -305,7 +358,17 @@ def main() -> int:
         print("ERROR: membership lookup returned 0 tickers.", file=sys.stderr)
         return 1
 
-    _got, failed = _ensure_raw_prices(pool, as_of)
+    _got, failed, delisted = _ensure_raw_prices(pool, as_of)
+    if delisted:
+        # Still members on the last membership snapshot, but the provider
+        # confirms they have stopped trading since. They cannot be ranked (no
+        # current price) and must not block the build; say so, loudly.
+        print(
+            f"WARNING: {len(delisted)} member(s) stopped trading after the membership "
+            f"snapshot and are excluded from this month's pool: {', '.join(sorted(delisted))}",
+            file=sys.stderr,
+        )
+        pool = [t for t in pool if t not in set(delisted)]
     if failed:
         # Abort BEFORE ranking. A ticker with no current raw price gets mcap
         # None and is silently dropped from the pool — and because the Top-N is

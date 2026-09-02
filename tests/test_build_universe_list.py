@@ -24,8 +24,11 @@ import pytest
 
 import scripts.build_universe_list as bul
 from scripts.build_universe_list import (
+    _DELIST_GRACE_DAYS,
     _atomic_write_pickle,
+    _classify_stale,
     _covers,
+    _ensure_raw_prices,
     _frame_reaches,
     _refresh_start,
     _ticker_is_current,
@@ -176,6 +179,76 @@ def test_refresh_start_with_no_existing_files(tmp_path):
 def test_refresh_start_ignores_unparsable_filenames(tmp_path):
     (tmp_path / "AAPL_notadate.pkl").write_bytes(b"x")
     assert _refresh_start(tmp_path, "AAPL", "2025-09-01") == "2025-09-01"
+
+
+# ── a member that stopped trading is excluded, a provider hiccup still aborts ──
+
+def _ended(last_day: str) -> pd.DataFrame:
+    idx = pd.DatetimeIndex(pd.to_datetime(["2026-06-01", last_day]))
+    return pd.DataFrame({"Close": [100.0, 90.0], "Volume": [1, 1]}, index=idx)
+
+
+def test_frame_reaching_as_of_is_current_without_probing():
+    calls = []
+    probe = lambda *a: calls.append(a)  # noqa: E731
+    assert _classify_stale("AAPL", _frame("2026-09-01"), _AS_OF, probe=probe) == "current"
+    assert calls == []
+
+
+def test_final_print_weeks_ago_plus_provider_confirmation_is_delisted():
+    """EA / AVB / EQR on 2026-09-01: last bar mid-August, membership snapshot
+    from June still lists them, provider answers 200-empty for the tail."""
+    probed = []
+
+    def probe(t, start, end):
+        probed.append((t, start, end))
+        return False
+
+    assert _classify_stale("EA", _ended("2026-08-10"), _AS_OF, probe=probe) == "delisted"
+    assert probed == [("EA", "2026-08-11", "2026-09-01")]
+
+
+def test_recent_last_bar_is_a_failure_not_a_delisting():
+    """A gap shorter than the grace period is provider lag — never treated as
+    the name having stopped trading, even if the provider says no bars yet."""
+    recent = (_AS_OF - pd.Timedelta(days=_DELIST_GRACE_DAYS - 1)).isoformat()
+    assert _classify_stale("AAPL", _ended(recent), _AS_OF, probe=lambda *a: False) == "failed"
+
+
+def test_provider_error_on_the_tail_is_a_failure():
+    """A probe that cannot get an answer (None) proves nothing; the build must
+    not shrink the pool on a timeout."""
+    assert _classify_stale("EA", _ended("2026-08-10"), _AS_OF, probe=lambda *a: None) == "failed"
+
+
+def test_bars_found_in_the_tail_is_a_failure_to_investigate():
+    """The frame stopped early but the provider has later bars: partial
+    response, not a delisting."""
+    assert _classify_stale("EA", _ended("2026-08-10"), _AS_OF, probe=lambda *a: True) == "failed"
+
+
+def test_empty_frame_is_a_failure():
+    empty = pd.DataFrame({"Close": []}, index=pd.DatetimeIndex([]))
+    assert _classify_stale("EA", empty, _AS_OF, probe=lambda *a: False) == "failed"
+    assert _classify_stale("EA", None, _AS_OF, probe=lambda *a: False) == "failed"
+
+
+def test_ensure_raw_prices_separates_delisted_from_failed(tmp_path, monkeypatch):
+    frames = {
+        "AAPL": _frame("2026-09-01"),                    # current after refresh
+        "EA": _ended("2026-08-10"),                      # stopped trading
+        "XYZ": pd.DataFrame({"Close": []}, index=pd.DatetimeIndex([])),  # provider failure
+    }
+    monkeypatch.setattr(bul, "_RAW", tmp_path)
+    monkeypatch.setattr(bul, "fetch_eod", lambda t, s, e, adjust: frames[t])
+    monkeypatch.setattr(bul, "probe_bars", lambda t, s, e: False)
+    monkeypatch.setattr(bul.time, "sleep", lambda *_: None)
+    got, failed, delisted = _ensure_raw_prices(["AAPL", "EA", "XYZ"], _AS_OF)
+    assert got == 1
+    assert delisted == ["EA"]
+    assert failed == ["XYZ"]
+    assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is True
+    assert list(tmp_path.glob("EA_*.pkl")) == []       # nothing written for a dead name
 
 
 # ── fetched frames must be validated before they are trusted or stored ────────

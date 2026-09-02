@@ -163,6 +163,36 @@ def fetch_eod(ticker: str, start: str, end: str, adjust: bool = True) -> pd.Data
     return _to_frame(rows, adjust=adjust, ticker=ticker)
 
 
+def probe_bars(ticker: str, start: str, end: str) -> bool | None:
+    """Does the provider hold ANY daily bar for ``ticker`` in ``[start, end]``?
+
+    Unlike ``fetch_eod`` this keeps the provider's own answer apart from a
+    failure to get one: True / False when EODHD answered 200 with a non-empty /
+    empty list, None on a missing key, network error, non-200 or bad JSON.
+    A caller deciding whether a name has stopped trading needs exactly that
+    distinction — a 200-empty tail after a name's last print is the provider
+    saying "no more bars", a timeout says nothing.
+    """
+    key = _api_key()
+    if key is None:
+        return None
+    symbol = normalize_ticker(ticker)
+    params = {"api_token": key, "fmt": "json", "from": start, "to": end, "period": "d"}
+    try:
+        resp = requests.get(f"{_BASE_URL}/{symbol}", params=params, timeout=_TIMEOUT)
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        rows = resp.json()
+    except Exception:
+        return None
+    if not isinstance(rows, list):
+        return None
+    return len(rows) > 0
+
+
 def _to_frame(rows: list[dict], adjust: bool, ticker: str) -> pd.DataFrame:
     """Convert the EODHD JSON array into the OHLCV frame ``PriceData`` expects."""
     df = pd.DataFrame(rows)
