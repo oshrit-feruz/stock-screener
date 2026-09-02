@@ -1,5 +1,15 @@
 {
+  "COIN": {
+    "signal": "BUY",
+    "composite": 0.825,
+    "date": "2026-09-02"
+  },
   "APP": {
+    "signal": "BUY",
+    "composite": 0.71,
+    "date": "2026-09-02"
+  },
+  "INTU": {
     "signal": "BUY",
     "composite": 0.71,
     "date": "2026-09-02"
@@ -9,9 +19,29 @@
     "composite": 0.6699999999999999,
     "date": "2026-09-02"
   },
+  "ACN": {
+    "signal": "SKIP",
+    "composite": 0.6699999999999999,
+    "date": "2026-09-02"
+  },
   "SNDK": {
     "signal": "SKIP",
     "composite": 0.635,
+    "date": "2026-09-02"
+  },
+  "HOOD": {
+    "signal": "SKIP",
+    "composite": 0.635,
+    "date": "2026-09-02"
+  },
+  "NKE": {
+    "signal": "SKIP",
+    "composite": 0.6,
+    "date": "2026-09-02"
+  },
+  "BSX": {
+    "signal": "BUY",
+    "composite": 0.6,
     "date": "2026-09-02"
   },
   "NFLX": {
@@ -24,7 +54,22 @@
     "composite": 0.52,
     "date": "2026-09-02"
   },
+  "KLAC": {
+    "signal": "WATCH",
+    "composite": 0.52,
+    "date": "2026-09-02"
+  },
   "GLW": {
+    "signal": "WATCH",
+    "composite": 0.52,
+    "date": "2026-09-02"
+  },
+  "SMCI": {
+    "signal": "WATCH",
+    "composite": 0.52,
+    "date": "2026-09-02"
+  },
+  "CIEN": {
     "signal": "WATCH",
     "composite": 0.52,
     "date": "2026-09-02"
@@ -39,18 +84,28 @@
     "composite": 0.445,
     "date": "2026-09-02"
   },
+  "VRT": {
+    "signal": "WATCH",
+    "composite": 0.445,
+    "date": "2026-09-02"
+  },
   "ISRG": {
     "signal": "SKIP",
     "composite": 0.445,
     "date": "2026-09-02"
   },
-  "CRM": {
+  "MRVL": {
     "signal": "WATCH",
-    "composite": 0.4,
+    "composite": 0.41,
     "date": "2026-09-02"
   },
-  "DE": {
-    "signal": "SKIP",
+  "COHR": {
+    "signal": "WATCH",
+    "composite": 0.41,
+    "date": "2026-09-02"
+  },
+  "CRM": {
+    "signal": "WATCH",
     "composite": 0.4,
     "date": "2026-09-02"
   },
@@ -64,7 +119,17 @@
     "composite": 0.37,
     "date": "2026-09-02"
   },
-  "MRVL": {
+  "TER": {
+    "signal": "WATCH",
+    "composite": 0.37,
+    "date": "2026-09-02"
+  },
+  "NXPI": {
+    "signal": "SKIP",
+    "composite": 0.37,
+    "date": "2026-09-02"
+  },
+  "MCHP": {
     "signal": "WATCH",
     "composite": 0.37,
     "date": "2026-09-02"
@@ -79,19 +144,9 @@
     "composite": 0.36,
     "date": "2026-09-02"
   },
-  "COP": {
-    "signal": "WATCH",
-    "composite": 0.36,
-    "date": "2026-09-02"
-  },
-  "SPGI": {
-    "signal": "WATCH",
-    "composite": 0.36,
-    "date": "2026-09-02"
-  },
-  "SBUX": {
+  "CRWD": {
     "signal": "SKIP",
-    "composite": 0.36,
+    "composite": 0.32499999999999996,
     "date": "2026-09-02"
   },
   "PG": {
@@ -100,6 +155,11 @@
     "date": "2026-09-02"
   },
   "MRK": {
+    "signal": "WATCH",
+    "composite": 0.32499999999999996,
+    "date": "2026-09-02"
+  },
+  "FCX": {
     "signal": "WATCH",
     "composite": 0.32499999999999996,
     "date": "2026-09-02"
@@ -114,12 +174,12 @@
     "composite": 0.32,
     "date": "2026-09-02"
   },
-  "VZ": {
-    "signal": "WATCH",
+  "NOW": {
+    "signal": "SKIP",
     "composite": 0.32,
     "date": "2026-09-02"
   },
-  "TMUS": {
+  "ADBE": {
     "signal": "WATCH",
     "composite": 0.32,
     "date": "2026-09-02"
@@ -129,24 +189,14 @@
     "composite": 0.32,
     "date": "2026-09-02"
   },
+  "VZ": {
+    "signal": "WATCH",
+    "composite": 0.32,
+    "date": "2026-09-02"
+  },
   "GILD": {
     "signal": "WATCH",
     "composite": 0.32,
-    "date": "2026-09-02"
-  },
-  "NOW": {
-    "signal": "SKIP",
-    "composite": 0.32,
-    "date": "2026-09-02"
-  },
-  "JNJ": {
-    "signal": "WATCH",
-    "composite": 0.285,
-    "date": "2026-09-02"
-  },
-  "AMGN": {
-    "signal": "SKIP",
-    "composite": 0.285,
     "date": "2026-09-02"
   },
   "V": {
@@ -154,7 +204,17 @@
     "composite": 0.285,
     "date": "2026-09-02"
   },
-  "WELL": {
+  "XOM": {
+    "signal": "SKIP",
+    "composite": 0.285,
+    "date": "2026-09-02"
+  },
+  "JNJ": {
+    "signal": "WATCH",
+    "composite": 0.285,
+    "date": "2026-09-02"
+  },
+  "MA": {
     "signal": "WATCH",
     "composite": 0.285,
     "date": "2026-09-02"
@@ -164,14 +224,14 @@
     "composite": 0.285,
     "date": "2026-09-02"
   },
-  "CVS": {
-    "signal": "WATCH",
+  "AMGN": {
+    "signal": "SKIP",
     "composite": 0.285,
     "date": "2026-09-02"
   },
-  "MSFT": {
+  "DIS": {
     "signal": "WATCH",
-    "composite": 0.245,
+    "composite": 0.285,
     "date": "2026-09-02"
   },
   "MU": {
@@ -179,27 +239,12 @@
     "composite": 0.245,
     "date": "2026-09-02"
   },
+  "MSFT": {
+    "signal": "WATCH",
+    "composite": 0.245,
+    "date": "2026-09-02"
+  },
   "ABBV": {
-    "signal": "SKIP",
-    "composite": 0.245,
-    "date": "2026-09-02"
-  },
-  "DIS": {
-    "signal": "WATCH",
-    "composite": 0.245,
-    "date": "2026-09-02"
-  },
-  "BMY": {
-    "signal": "SKIP",
-    "composite": 0.245,
-    "date": "2026-09-02"
-  },
-  "PGR": {
-    "signal": "WATCH",
-    "composite": 0.245,
-    "date": "2026-09-02"
-  },
-  "VRTX": {
     "signal": "SKIP",
     "composite": 0.245,
     "date": "2026-09-02"
@@ -219,17 +264,12 @@
     "composite": 0.21,
     "date": "2026-09-02"
   },
-  "KO": {
+  "META": {
     "signal": "WATCH",
     "composite": 0.21,
     "date": "2026-09-02"
   },
-  "PM": {
-    "signal": "SKIP",
-    "composite": 0.21,
-    "date": "2026-09-02"
-  },
-  "LIN": {
+  "KO": {
     "signal": "WATCH",
     "composite": 0.21,
     "date": "2026-09-02"
@@ -239,12 +279,12 @@
     "composite": 0.21,
     "date": "2026-09-02"
   },
-  "SCHW": {
+  "LIN": {
     "signal": "WATCH",
     "composite": 0.21,
     "date": "2026-09-02"
   },
-  "TMO": {
+  "LITE": {
     "signal": "WATCH",
     "composite": 0.16999999999999998,
     "date": "2026-09-02"
@@ -254,17 +294,7 @@
     "composite": 0.16999999999999998,
     "date": "2026-09-02"
   },
-  "DHR": {
-    "signal": "WATCH",
-    "composite": 0.16999999999999998,
-    "date": "2026-09-02"
-  },
-  "PLD": {
-    "signal": "WATCH",
-    "composite": 0.16999999999999998,
-    "date": "2026-09-02"
-  },
-  "FTNT": {
+  "TMO": {
     "signal": "WATCH",
     "composite": 0.16999999999999998,
     "date": "2026-09-02"
@@ -289,27 +319,12 @@
     "composite": 0.135,
     "date": "2026-09-02"
   },
-  "LOW": {
+  "WFC": {
     "signal": "SKIP",
-    "composite": 0.1,
-    "date": "2026-09-02"
-  },
-  "HWM": {
-    "signal": "WATCH",
-    "composite": 0.1,
+    "composite": 0.135,
     "date": "2026-09-02"
   },
   "UNH": {
-    "signal": "WATCH",
-    "composite": 0.095,
-    "date": "2026-09-02"
-  },
-  "WFC": {
-    "signal": "SKIP",
-    "composite": 0.095,
-    "date": "2026-09-02"
-  },
-  "ABT": {
     "signal": "WATCH",
     "composite": 0.095,
     "date": "2026-09-02"
@@ -319,8 +334,33 @@
     "composite": 0.095,
     "date": "2026-09-02"
   },
-  "BAC": {
+  "ABT": {
     "signal": "WATCH",
+    "composite": 0.095,
+    "date": "2026-09-02"
+  },
+  "DDOG": {
+    "signal": "SKIP",
+    "composite": 0.095,
+    "date": "2026-09-02"
+  },
+  "GEV": {
+    "signal": "SKIP",
+    "composite": 0.06,
+    "date": "2026-09-02"
+  },
+  "CAT": {
+    "signal": "WATCH",
+    "composite": 0.06,
+    "date": "2026-09-02"
+  },
+  "BRK.B": {
+    "signal": "WATCH",
+    "composite": 0.06,
+    "date": "2026-09-02"
+  },
+  "GS": {
+    "signal": "SKIP",
     "composite": 0.06,
     "date": "2026-09-02"
   },
@@ -329,7 +369,12 @@
     "composite": 0.06,
     "date": "2026-09-02"
   },
-  "CAT": {
+  "BAC": {
+    "signal": "WATCH",
+    "composite": 0.06,
+    "date": "2026-09-02"
+  },
+  "ADI": {
     "signal": "WATCH",
     "composite": 0.06,
     "date": "2026-09-02"
@@ -341,21 +386,6 @@
   },
   "HD": {
     "signal": "SKIP",
-    "composite": 0.06,
-    "date": "2026-09-02"
-  },
-  "GS": {
-    "signal": "SKIP",
-    "composite": 0.06,
-    "date": "2026-09-02"
-  },
-  "GEV": {
-    "signal": "SKIP",
-    "composite": 0.06,
-    "date": "2026-09-02"
-  },
-  "AXP": {
-    "signal": "WATCH",
     "composite": 0.06,
     "date": "2026-09-02"
   },
@@ -374,42 +404,22 @@
     "composite": 0.06,
     "date": "2026-09-02"
   },
-  "ADI": {
+  "AXP": {
     "signal": "WATCH",
     "composite": 0.06,
     "date": "2026-09-02"
   },
-  "BLK": {
+  "MNST": {
     "signal": "WATCH",
     "composite": 0.06,
     "date": "2026-09-02"
   },
-  "UNP": {
+  "AMD": {
     "signal": "WATCH",
-    "composite": 0.06,
+    "composite": 0.020000000000000004,
     "date": "2026-09-02"
   },
-  "LMT": {
-    "signal": "SKIP",
-    "composite": 0.06,
-    "date": "2026-09-02"
-  },
-  "CB": {
-    "signal": "WATCH",
-    "composite": 0.06,
-    "date": "2026-09-02"
-  },
-  "SYK": {
-    "signal": "WATCH",
-    "composite": 0.06,
-    "date": "2026-09-02"
-  },
-  "PH": {
-    "signal": "SKIP",
-    "composite": 0.06,
-    "date": "2026-09-02"
-  },
-  "PKG": {
+  "AMZN": {
     "signal": "WATCH",
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
@@ -424,17 +434,17 @@
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
   },
-  "AMZN": {
-    "signal": "WATCH",
+  "STX": {
+    "signal": "SKIP",
+    "composite": 0.020000000000000004,
+    "date": "2026-09-02"
+  },
+  "DELL": {
+    "signal": "SKIP",
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
   },
   "JPM": {
-    "signal": "WATCH",
-    "composite": 0.020000000000000004,
-    "date": "2026-09-02"
-  },
-  "AMD": {
     "signal": "WATCH",
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
@@ -444,22 +454,12 @@
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
   },
-  "MS": {
-    "signal": "SKIP",
-    "composite": 0.020000000000000004,
-    "date": "2026-09-02"
-  },
-  "RTX": {
+  "TXN": {
     "signal": "WATCH",
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
   },
-  "DELL": {
-    "signal": "SKIP",
-    "composite": 0.020000000000000004,
-    "date": "2026-09-02"
-  },
-  "TXN": {
+  "IBM": {
     "signal": "WATCH",
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
@@ -474,27 +474,27 @@
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
   },
-  "IBM": {
-    "signal": "WATCH",
-    "composite": 0.020000000000000004,
-    "date": "2026-09-02"
-  },
-  "STX": {
+  "MPWR": {
     "signal": "SKIP",
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
   },
-  "ETN": {
+  "MS": {
+    "signal": "SKIP",
+    "composite": 0.020000000000000004,
+    "date": "2026-09-02"
+  },
+  "HPE": {
+    "signal": "WATCH",
+    "composite": 0.020000000000000004,
+    "date": "2026-09-02"
+  },
+  "RTX": {
     "signal": "WATCH",
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
   },
   "HON": {
-    "signal": "WATCH",
-    "composite": 0.020000000000000004,
-    "date": "2026-09-02"
-  },
-  "COF": {
     "signal": "WATCH",
     "composite": 0.020000000000000004,
     "date": "2026-09-02"
