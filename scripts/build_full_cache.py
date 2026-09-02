@@ -148,19 +148,31 @@ def _force_recompute_grid(pool: list[str], fdates: list[str]) -> tuple[int, int]
 
 
 def _rebuild_seed_cache(fdates: list[str], nonnull: int, rich: int, pool: list[str]) -> None:
-    """Phase 4: True Top-100 union + rebuild seed_cache."""
+    """Phase 4: True Top-100 union + rebuild seed_cache.
+
+    Ranking is by point-in-time dollar-volume (survivorship-free), so the
+    dollar-volume grid must be warmed before get_universe_top_n is called.
+    """
+    print(f"Computing PIT dollar-volumes for {len(pool)} members over "
+          f"{len(fdates)} months…")
+    u.prefetch_pit_dollar_volumes(pool, fdates)  # warms data/cache/pit_dollar_volume
+
     top_union: set[str] = set()
     for d in fdates:
         top_union |= set(u.get_universe_top_n(d, TOP_N))
     top_union = sorted(top_union)
     print(f"True Top-{TOP_N} union: {len(top_union)} tickers")
 
-    grid_file = _CACHE / "pit_market_cap" / "pit_market_caps.json"
+    dv_grid = _CACHE / "pit_dollar_volume" / "pit_dollar_volumes.json"
+    mc_grid = _CACHE / "pit_market_cap" / "pit_market_caps.json"
     if _SEED.exists():
         shutil.rmtree(_SEED)
-    for sub in ("pit_market_cap", "prices", "edgar", "sp500_universe", "fred"):
+    for sub in ("pit_dollar_volume", "pit_market_cap", "prices", "edgar",
+                "sp500_universe", "fred"):
         (_SEED / sub).mkdir(parents=True, exist_ok=True)
-    shutil.copy2(grid_file, _SEED / "pit_market_cap" / "pit_market_caps.json")
+    shutil.copy2(dv_grid, _SEED / "pit_dollar_volume" / "pit_dollar_volumes.json")
+    if mc_grid.exists():  # reference grid; present when the market-cap phase ran
+        shutil.copy2(mc_grid, _SEED / "pit_market_cap" / "pit_market_caps.json")
 
     prices = PriceData()
     npx = 0

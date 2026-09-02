@@ -85,8 +85,9 @@ class EODHDFundamentals:
             if not _forbidden_logged:
                 _forbidden_logged = True
                 log.warning("EODHD fundamentals: HTTP 403 (the account behind %s lacks the "
-                            "Fundamentals feed) — gate falls back to fail-closed. Enable the "
-                            "feed to activate coverage.", _ENV_KEY)
+                            "Fundamentals feed) — no fundamentals from this fallback (gate=None, "
+                            "which the screener/engine treat fail-open). Enable the feed for "
+                            "coverage.", _ENV_KEY)
             return None
         if resp.status_code != 200:
             log.warning("EODHD fundamentals: HTTP %s for %s (%s)", resp.status_code, ticker, symbol)

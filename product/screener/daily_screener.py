@@ -1,15 +1,18 @@
 """Daily screener: scan the point-in-time Top-100 universe as of today and
 return BUY signals.
 
-The universe is the 100 largest S&P 500 members by point-in-time market cap
+The universe is the 100 largest S&P 500 members by point-in-time dollar-volume
 as of the run date (data.sp500_universe.get_universe_top_n), evaluated once
-per run. Reuses existing signal logic from core.signals.recovery_score and
+per run. Dollar-volume ranking is survivorship-free (it needs only prices, so
+delisted members rank too), unlike a market-cap ranking via EDGAR shares.
+Reuses existing signal logic from core.signals.recovery_score and
 core.data.edgar — no signal logic is reimplemented here.
 
 Signal parameters (FROZEN — do not modify):
   Weights:       dip=50%  momentum=30%  volume=20%
   BUY threshold: 0.60
-  Gate:          fail-closed (gate=None treated as False)
+  Gate:          fail-open (only an explicit gate=False demotes to SKIP; gate=None
+                 passes on the signal alone, so the gate adds no survivorship bias)
   Exit rule:     Hold 252 trading days. No stop-loss. (enforced by exit_tracker)
 """
 from __future__ import annotations
@@ -102,7 +105,7 @@ class ScreenerRow:
     momentum_score: Optional[float]
     volume_score: Optional[float]
     composite_score: Optional[float]
-    gate: Optional[bool]       # True=pass, False=fail, None=unknown→treated as False
+    gate: Optional[bool]       # True=pass, False=fail, None=unknown→passes (fail-open)
     signal: str                # "BUY" | "WATCH" | "SKIP" | "INSUFFICIENT_DATA" | "VETO"
     veto_reason: Optional[str] = None  # set when signal == "VETO" (8-K veto)
 
@@ -120,13 +123,15 @@ class ScreenerResult:
 def _classify(composite: Optional[float], gate: Optional[bool]) -> str:
     """Map (composite, gate) to signal string using frozen thresholds.
 
-    Gate=None is treated as False (fail-closed): we won't recommend a buy
-    without confirmed fundamental data.
+    Fail-OPEN on the quality gate: only an explicit fundamental FAIL (gate is
+    False) demotes a candidate to SKIP. Gate=None (no confirmed fundamentals —
+    e.g. a delisted name with no EDGAR CIK) passes through on the price signal
+    alone, so the gate does not re-introduce survivorship bias into the
+    dollar-volume universe. Quality still filters names where data exists.
     """
     if composite is None:
         return "INSUFFICIENT_DATA"
-    effective_gate = gate if gate is not None else False
-    if effective_gate is False:
+    if gate is False:
         return "SKIP"
     if composite >= BUY_THRESHOLD:
         return "BUY"
@@ -175,7 +180,8 @@ def run_screener(
     Error handling:
         - Universe lookup failure → warning logged, empty result returned.
         - Ticker with < 252 rows of price history → skipped, warning logged.
-        - Ticker with no EDGAR / fundamentals data → gate = False (fail-closed).
+        - Ticker with no EDGAR / fundamentals data → gate = None → passes on the
+          signal alone (fail-open); only an explicit gate = False demotes to SKIP.
         - Any unexpected exception per ticker → skipped, warning logged.
     """
     if as_of_date is None:
