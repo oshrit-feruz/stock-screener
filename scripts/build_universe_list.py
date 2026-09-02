@@ -384,7 +384,10 @@ def main() -> int:
         )
         return 1
 
-    tickers = u.get_universe_top_n(as_of.isoformat(), args.top_n)
+    # The ranking re-reads the membership itself, so the delisted names must be
+    # passed through explicitly: a cached raw file from before a name's final
+    # print would otherwise still give it a trailing dollar-volume and a slot.
+    tickers = u.get_universe_top_n(as_of.isoformat(), args.top_n, exclude=set(delisted))
     print(f"Ranked Top-{args.top_n}: {len(tickers)} tickers")
 
     # Refuse to publish a degraded list. A short list means dollar-volumes could

@@ -251,6 +251,18 @@ def test_ensure_raw_prices_separates_delisted_from_failed(tmp_path, monkeypatch)
     assert list(tmp_path.glob("EA_*.pkl")) == []       # nothing written for a dead name
 
 
+def test_ranking_drops_delisted_names_before_ranking(monkeypatch):
+    """A dead name with a cached pre-delisting raw file still has a trailing
+    dollar-volume, so filtering the fetch pool alone is not enough: the ranking
+    re-reads the membership and must be told what to leave out, or the dead
+    name takes a slot from a live one."""
+    monkeypatch.setattr(bul.u, "get_universe", lambda d: ["EA", "AAPL", "MSFT"])
+    dv = {"EA": 9e9, "AAPL": 5e9, "MSFT": 4e9}
+    monkeypatch.setattr(bul.u, "pit_dollar_volume", lambda t, d: dv[t])
+    assert bul.u.get_universe_top_n("2026-09-01", 2) == ["EA", "AAPL"]
+    assert bul.u.get_universe_top_n("2026-09-01", 2, exclude={"EA"}) == ["AAPL", "MSFT"]
+
+
 # ── fetched frames must be validated before they are trusted or stored ────────
 
 def test_frame_reaching_as_of_is_accepted():
