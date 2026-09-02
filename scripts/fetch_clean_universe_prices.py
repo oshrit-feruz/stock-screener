@@ -57,6 +57,30 @@ def _cache_ok(path: Path) -> bool:
         return False
 
 
+def _write_atomic(path: Path, df) -> None:
+    """Temp file + rename, so an interrupted run never leaves a partial pickle
+    that `_cache_ok` would then have to detect."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump(df, f)
+    tmp.replace(path)
+
+
+def _ensure_cached(ticker: str, path: Path, adjust: bool) -> bool | None:
+    """Fetch one (ticker, adjust) series into `path` unless already cached.
+
+    Returns None when nothing was needed, True on a successful fetch, False on
+    an empty/failed fetch.
+    """
+    if _cache_ok(path):
+        return None
+    df = fetch_eod(ticker, START, END, adjust=adjust)
+    if df is None or df.empty:
+        return False
+    _write_atomic(path, df)
+    return True
+
+
 def main() -> None:
     _ADJ_DIR.mkdir(parents=True, exist_ok=True)
     _RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -66,29 +90,12 @@ def main() -> None:
     failures: list[str] = []
     done = 0
     for i, t in enumerate(tickers, 1):
-        adj_path = _ADJ_DIR / f"{_safe(t)}_{START}_{END}.pkl"
-        raw_path = _RAW_DIR / f"{_safe(t)}_{START}_{END}.pkl"
-        need_adj = not _cache_ok(adj_path)
-        need_raw = not _cache_ok(raw_path)
-        if not need_adj and not need_raw:
+        got_adj = _ensure_cached(t, _ADJ_DIR / f"{_safe(t)}_{START}_{END}.pkl", adjust=True)
+        got_raw = _ensure_cached(t, _RAW_DIR / f"{_safe(t)}_{START}_{END}.pkl", adjust=False)
+        if got_adj is None and got_raw is None:      # both already cached
             done += 1
             continue
-
-        ok_any = False
-        if need_adj:
-            df = fetch_eod(t, START, END, adjust=True)
-            if df is not None and not df.empty:
-                with open(adj_path, "wb") as f:
-                    pickle.dump(df, f)
-                ok_any = True
-        if need_raw:
-            dr = fetch_eod(t, START, END, adjust=False)
-            if dr is not None and not dr.empty:
-                with open(raw_path, "wb") as f:
-                    pickle.dump(dr, f)
-                ok_any = True
-
-        if ok_any:
+        if got_adj or got_raw:
             done += 1
         else:
             failures.append(t)

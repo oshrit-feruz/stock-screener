@@ -30,9 +30,37 @@ def make_session() -> requests.Session:
     return s
 
 
+_OHLCV = ["Open", "High", "Low", "Close", "Volume"]
+
+
+def _cache_valid(path: Path) -> bool:
+    """True only if the pickle loads and has the OHLCV columns; a corrupt file
+    (e.g. an interrupted write) is removed so it gets re-fetched."""
+    if not path.exists():
+        return False
+    try:
+        with open(path, "rb") as f:
+            cached = pickle.load(f)
+        if cached is not None and not cached.empty and set(_OHLCV) <= set(cached.columns):
+            return True
+    except Exception:
+        pass
+    path.unlink(missing_ok=True)
+    return False
+
+
+def _write_atomic(path: Path, df) -> None:
+    """Write via a temp file + rename so a crash never leaves a partial pickle."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump(df, f)
+    tmp.replace(path)
+
+
 def fetch_one(session: requests.Session, ticker: str) -> bool:
     path = _DEFAULT_CACHE / f"{_safe_ticker(ticker)}_{START}_{END}.pkl"
-    if path.exists():
+    if _cache_valid(path):
         return True
     for attempt in range(6):
         try:
@@ -40,11 +68,9 @@ def fetch_one(session: requests.Session, ticker: str) -> bool:
             df = t.history(start=START, end=END, auto_adjust=True)
             if df is not None and not df.empty:
                 # Normalise to PriceData/yf.download shape: tz-naive index, OHLCV.
-                df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+                df = df[_OHLCV].copy()
                 df.index = df.index.tz_localize(None)
-                _DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)
-                with open(path, "wb") as f:
-                    pickle.dump(df, f)
+                _write_atomic(path, df)
                 print(f"  {ticker:<6} OK  {len(df)} rows  "
                       f"{df.index[0].date()}..{df.index[-1].date()}")
                 return True

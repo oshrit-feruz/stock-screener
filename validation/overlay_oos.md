@@ -1,26 +1,27 @@
-# Out-of-sample validation of the dislocation gate D
+# Out-of-sample validation of the dislocation gate
 
-SPY-core + conditional overlay, 2y sleeves, 10%×10, clean universe.
+SPY-core + conditional overlay, 2y sleeves, 10%×10, clean universe, next-session fills.
 
 ## A. Threshold sensitivity — rolling 5y windows (is 10% a plateau?)
 
-| D (market DD gate) | beat SPY | median excess | median Sharpe |
+| gate (market DD) | beat SPY | median excess | median Sharpe |
 |---|--:|--:|--:|
-| 5% | 14/17 | +3.7% | 0.83 |
-| 8% | 12/17 | +4.8% | 0.81 |
-| 10% | 14/17 | +3.2% | 0.90 |
-| 12% | 13/17 | +2.8% | 0.87 |
-| 15% | 11/17 | +0.6% | 0.75 |
+| 5% | 15/17 | +4.5% | 0.81 |
+| 8% | 12/17 | +4.8% | 0.84 |
+| 10% | 14/17 | +3.1% | 0.94 |
+| 12% | 13/17 | +2.4% | 0.87 |
+| 15% | 8/17 | +0.0% | 0.74 |
 | 20% | 7/17 | +0.0% | 0.83 |
 
-## B. Train / test split (D chosen on train, measured on test)
+## B. Train / test split (gate chosen on train, measured on test)
 
-| train (pick D) | best D | train excess | test | test excess | test Sharpe | vs SPY | verdict |
+| train (pick gate) | best gate | train excess | test | test excess | test Sharpe | vs SPY | verdict |
 |---|--:|--:|---|--:|--:|--:|:--|
-| 2004-2013 | 5% | +4.3% | 2014-2024 | +9.1% | 0.96 | 0.81 | ✅ BEATS |
-| 2014-2024 | 10% | +10.0% | 2004-2013 | +1.6% | 0.48 | 0.45 | ✅ BEATS |
+| 2004-2013 | 5% | +3.6% | 2014-2024 | +9.8% | 0.95 | 0.81 | ✅ BEATS |
+| 2014-2024 | 10% | +13.0% | 2004-2013 | +1.5% | 0.48 | 0.45 | ✅ BEATS |
 
 ## Read
 
-- Positive, majority-beating D values: 5%, 8%, 10%, 12%, 15% — a plateau here (not a lone 10% spike) means the gate is robust, not fit.
-- If the train-chosen D still beats SPY on the untouched test half in BOTH directions, the threshold generalizes out-of-sample.
+- Positive, majority-beating gate values: 5%, 8%, 10%, 12%. A plateau (rather than a lone 10% spike) is evidence of parameter INSENSITIVITY — it supports robustness but does not by itself establish that the gate is not fit.
+- The train-chosen gate beats SPY on the untouched test half in both directions. With only two splits this is supporting evidence, not proof of generalisation.
+- Caveats: the 17 five-year windows overlap (each year appears in up to five of them), so they are far from independent samples; and the edge is concentrated in a handful of dislocations (2008-09, 2020, 2022), so the effective sample of regime events is small.

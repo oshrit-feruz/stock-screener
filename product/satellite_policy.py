@@ -2,15 +2,18 @@
 recommends AND enforces, so the published `satellite_policy` can never drift
 from the exit tracker's behaviour.
 
-Validated configuration (see validation/SUMMARY.md, stages 11-14):
+Validated configuration (see validation/SUMMARY.md, stages 11-15; clean
+survivorship-free universe, next-session fills, delisted names sold at their
+final print):
   * The recovery signal's alpha is sparse — it exists during market
     dislocations and is diluted to a coin flip when run always-on. Deployed
     as a conditional overlay on an S&P 500 core it beat SPY in 14/17 rolling
-    5-year windows (median excess +3.2%, Sharpe 0.90 vs 0.80) and the gate
-    generalised out-of-sample (a 5-12% plateau, train/test in both directions).
+    5-year windows (median excess +3.1%, median Sharpe 0.94 vs 0.80) and the
+    gate held out-of-sample (a 5-12% plateau; a threshold chosen on one decade
+    beats SPY on the other, both directions).
   * Fixed 2-year hold (504 trading days), no stop-loss, no take-profit, no
     adaptive exit: every price-reactive exit clipped the volatile recovery
-    winners that carry the edge.
+    winners that carry the edge. Staged / confirmed entry did not help.
   * Sleeves sized at 10% of the satellite budget, max 10 concurrent, so the
     whole budget is deployed only in a deep dislocation.
 

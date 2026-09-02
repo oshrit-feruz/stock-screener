@@ -29,51 +29,35 @@ from data.sp500_universe import get_universe
 
 _OUT = Path(__file__).parent.parent / "validation" / "edgar_coverage.md"
 YEARS = range(2009, 2025)
+DATES = {y: f"{y}-12-31" for y in YEARS}
 
 
-def main() -> None:
-    edgar = EdgarFundamentals(fallback=None)  # pure EDGAR; no EODHD fallback
-
-    # Per-year member lists + counters.
-    dates = {y: f"{y}-12-31" for y in YEARS}
-    members_by_year = {y: get_universe(dates[y]) for y in YEARS}
-    counts = {y: {"n": len(members_by_year[y]), "cik": 0, "sh": 0, "gate": 0} for y in YEARS}
-
-    # Invert the loop: fetch each unique ticker's companyfacts ONCE, evaluate it
-    # for every year it is a member, then evict it from the in-memory memo so
-    # only one multi-MB companyfacts JSON is resident at a time (avoids OOM).
-    membership_years: dict[str, list[int]] = {}
+def _membership_years() -> tuple[dict[str, list[int]], dict[int, int]]:
+    """{ticker: [years it is a member]} and {year: member count}."""
+    members_by_year = {y: get_universe(DATES[y]) for y in YEARS}
+    membership: dict[str, list[int]] = {}
     for y in YEARS:
         for t in members_by_year[y]:
-            membership_years.setdefault(t, []).append(y)
+            membership.setdefault(t, []).append(y)
+    return membership, {y: len(members_by_year[y]) for y in YEARS}
 
-    total = len(membership_years)
-    for i, (t, yrs) in enumerate(sorted(membership_years.items()), 1):
-        has_cik = edgar._get_cik(t) is not None
-        for y in yrs:
-            if not has_cik:
-                continue
-            counts[y]["cik"] += 1
-            d = dates[y]
-            if edgar.get_shares_outstanding(t, d) is not None:
-                counts[y]["sh"] += 1
-            snap = edgar.get_snapshot(t, d)
-            if snap is not None and passes_quality_gate(snap) is not None:
-                counts[y]["gate"] += 1
-        # Free this ticker's companyfacts from the memo.
-        edgar._facts_mem.pop(t, None)
-        if i % 100 == 0:
-            print(f"  ...{i}/{total} tickers processed")
 
-    rows = []
+def _evaluate_ticker(edgar: EdgarFundamentals, t: str, years: list[int], counts: dict) -> None:
+    """Score one ticker for every year it is a member (companyfacts fetched once)."""
+    if edgar._get_cik(t) is None:
+        return
+    for y in years:
+        counts[y]["cik"] += 1
+        d = DATES[y]
+        if edgar.get_shares_outstanding(t, d) is not None:
+            counts[y]["sh"] += 1
+        snap = edgar.get_snapshot(t, d)
+        if snap is not None and passes_quality_gate(snap) is not None:
+            counts[y]["gate"] += 1
+
+
+def _render(counts: dict) -> str:
     print(f"\n{'year':<6}{'members':>8}{'cik_ok':>8}{'shares':>8}{'gate':>7}  (cik% / sh% / gate%)")
-    for y in YEARS:
-        c = counts[y]
-        n = c["n"]
-        rows.append((y, n, c["cik"], c["sh"], c["gate"]))
-        print(f"{y:<6}{n:>8}{c['cik']:>8}{c['sh']:>8}{c['gate']:>7}  "
-              f"({c['cik']/n:.0%} / {c['sh']/n:.0%} / {c['gate']/n:.0%})")
-
     lines = ["# EDGAR coverage of the PIT S&P 500 membership\n",
              "How much of each year's point-in-time membership the top-100 ranking "
              "can actually see. `cik_ok` = maps to a SEC CIK at all (delisted names "
@@ -82,9 +66,32 @@ def main() -> None:
              "usable fundamental quality-gate verdict.\n",
              "| Year | Members | CIK ok | Shares ok | Gate ok | Shares % | Gate % |",
              "|---|--:|--:|--:|--:|--:|--:|"]
-    for y, n, c, s, g in rows:
-        lines.append(f"| {y} | {n} | {c} | {s} | {g} | {s/n:.0%} | {g/n:.0%} |")
-    _OUT.write_text("\n".join(lines) + "\n")
+    for y in YEARS:
+        c = counts[y]
+        n = c["n"]
+        print(f"{y:<6}{n:>8}{c['cik']:>8}{c['sh']:>8}{c['gate']:>7}  "
+              f"({c['cik'] / n:.0%} / {c['sh'] / n:.0%} / {c['gate'] / n:.0%})")
+        lines.append(f"| {y} | {n} | {c['cik']} | {c['sh']} | {c['gate']} | "
+                     f"{c['sh'] / n:.0%} | {c['gate'] / n:.0%} |")
+    return "\n".join(lines) + "\n"
+
+
+def main() -> None:
+    edgar = EdgarFundamentals(fallback=None)  # pure EDGAR; no EODHD fallback
+    membership, n_by_year = _membership_years()
+    counts = {y: {"n": n_by_year[y], "cik": 0, "sh": 0, "gate": 0} for y in YEARS}
+
+    # Ticker-outer: fetch each unique ticker's companyfacts ONCE, evaluate it for
+    # every year it is a member, then evict it from the in-memory memo so only
+    # one multi-MB companyfacts JSON is resident at a time (avoids OOM).
+    total = len(membership)
+    for i, (t, yrs) in enumerate(sorted(membership.items()), 1):
+        _evaluate_ticker(edgar, t, yrs, counts)
+        edgar._facts_mem.pop(t, None)
+        if i % 100 == 0:
+            print(f"  ...{i}/{total} tickers processed")
+
+    _OUT.write_text(_render(counts))
     print(f"\nsaved -> {_OUT}")
 
 

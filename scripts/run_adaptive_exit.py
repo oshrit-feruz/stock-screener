@@ -1,192 +1,98 @@
 #!/usr/bin/env python3
 """Adaptive exit rules on the validated SPY-core conditional overlay.
 
-The overlay (SPY core, signals gated to market DD >= 10%, 2-year sleeves) beats
-SPY in 14/17 rolling windows but still exits each sleeve on a FIXED clock, so it
-holds through give-backs (2015, 2022). This compares exit rules, all with the
-504-day max hold as a backstop, on rolling 5-year windows vs SPY:
+The overlay (SPY core, signals gated to market DD >= 10%, 2-year sleeves) still
+exits each sleeve on a FIXED clock, so it holds through give-backs. This
+compares exit rules, all with the 504-session max hold as a backstop, on
+rolling 5-year windows vs SPY (scripts/clean_sim.py, next-session fills):
 
-  fixed      — exit at 504 days (baseline)
+  fixed      — exit at 504 sessions (baseline)
   trail_X    — exit when close <= peak-since-entry * (1 - X)
-  sma50      — exit when close < 50-day SMA, after a 63-day minimum hold
+  sma50      — exit when close < 50-day SMA, after a 63-session minimum hold
                (momentum broken; the min hold avoids immediate whipsaw)
   recover    — exit when close >= the pre-dip 252-day high captured at entry
                (recovery complete: a principled take-profit, not an arbitrary %)
 
 Reports beat-rate, median excess, median Sharpe, median drawdown, and how each
-rule's exits split between the adaptive trigger and the 504-day backstop.
+rule's exits split between the adaptive trigger, the hold backstop and delistings.
 """
 from __future__ import annotations
 
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
-from dotenv import load_dotenv  # noqa: E402
 
-load_dotenv(str(ROOT / ".env"))
+import clean_sim as cs  # noqa: E402
 
-import run_clean_pit_backtest as base  # noqa: E402
-from core.data.eodhd import fetch_eod  # noqa: E402
-
-_INITIAL = base._INITIAL_CAP
-_MIN_POS = base._MIN_POSITION
-D, HOLD, PCT, MAXP = 0.10, 504, 0.10, 10
+GATE, HOLD, PCT, MAXP = 0.10, 504, 0.10, 10
 MIN_HOLD_SMA = 63
 WIN_LEN = 5
 _OUT = ROOT / "validation" / "adaptive_exit.md"
+CFG = cs.SimConfig(hold=HOLD, pct=PCT, max_pos=MAXP, core="spy", gate_dd=GATE)
 
 RULES = [("fixed", None), ("trail_15", 0.15), ("trail_20", 0.20), ("trail_25", 0.25),
          ("trail_30", 0.30), ("sma50", None), ("recover", None)]
 
 
-def simulate(elig, panel, sma50, high252, cal, spy_px, dd, rule, param):
-    events = defaultdict(list)
-    w0, w1 = cal[0], cal[-1]
-    for t, cross in elig.items():
-        for ts, comp, close in cross:
-            if w0 <= ts <= w1:
-                events[ts].append((t, comp, close))
-    prices = panel.reindex(cal, method="ffill")
-    arr = prices.values.astype(float)
-    sma = sma50.reindex(cal, method="ffill").values.astype(float)
-    hi = high252.reindex(cal, method="ffill").values.astype(float)
-    col = {c: i for i, c in enumerate(prices.columns)}
-    spy = spy_px.reindex(cal, method="ffill").values.astype(float)
-    ddv = dd.reindex(cal).values.astype(float)
-    last_idx = len(cal) - 1
+def _hooks(rule: str, param, sma: np.ndarray, hi: np.ndarray):
+    """(on_open, exit_rule) callbacks for clean_sim.run for one rule/window."""
+    if rule == "fixed":
+        return None, None
 
-    def px(di, t):
-        ci = col.get(t)
-        return float(arr[di, ci]) if ci is not None else float("nan")
+    def on_open(p, di, mkt):
+        p["peak"] = p["entry_price"]
+        tgt = hi[di, mkt.col[p["ticker"]]]
+        p["target"] = tgt if (tgt == tgt and tgt > p["entry_price"]) else float("inf")
 
-    shares_spy = _INITIAL / spy[0]
-    pos: dict[int, dict] = {}
-    last_entry: dict[str, int] = {}
-    dvals = np.zeros(len(cal))
-    pid = 0
-    exits = defaultdict(int)
-    trade_rets = []
+    def trail(p, di, price, mkt):
+        p["peak"] = max(p["peak"], price)
+        return "trail" if price <= p["peak"] * (1 - param) else None
 
-    def total(di):
-        v = shares_spy * spy[di]
-        for p in pos.values():
-            q = px(di, p["ticker"])
-            v += p["shares"] * (q if not np.isnan(q) else p["entry_price"])
-        return v
+    def sma50(p, di, price, mkt):
+        if di - p["entry_idx"] < MIN_HOLD_SMA:
+            return None
+        s = sma[di, mkt.col[p["ticker"]]]
+        return "sma" if (s == s and price < s) else None
 
-    for di in range(len(cal)):
-        day = cal[di]
-        for k in list(pos.keys()):
-            p = pos[k]
-            price = px(di, p["ticker"])
-            if np.isnan(price):
-                continue
-            p["peak"] = max(p["peak"], price)
-            held = di - p["entry_idx"]
-            kind = None
-            if di >= p["exit_idx"]:
-                kind = "backstop"
-            elif rule.startswith("trail") and price <= p["peak"] * (1 - param):
-                kind = "trail"
-            elif rule == "sma50" and held >= MIN_HOLD_SMA:
-                ci = col.get(p["ticker"])
-                s = sma[di, ci] if ci is not None else float("nan")
-                if not np.isnan(s) and price < s:
-                    kind = "sma"
-            elif rule == "recover" and price >= p["target"]:
-                kind = "recover"
-            if kind:
-                pos.pop(k)
-                shares_spy += (p["shares"] * price) / spy[di]
-                exits[kind] += 1
-                trade_rets.append(price / p["entry_price"] - 1)
-        if ddv[di] >= D:
-            for t, comp, cprice in sorted(events.get(day, []), key=lambda x: -x[1]):
-                if di + HOLD > last_idx:
-                    continue
-                if t in last_entry and (di - last_entry[t]) < HOLD:
-                    continue
-                if len(pos) >= MAXP:
-                    continue
-                tv = total(di)
-                alloc = min(tv * PCT, shares_spy * spy[di])
-                if alloc < _MIN_POS:
-                    continue
-                ep = px(di, t)
-                if np.isnan(ep) or ep <= 0:
-                    ep = cprice
-                if ep <= 0:
-                    continue
-                ci = col.get(t)
-                tgt = hi[di, ci] if ci is not None else float("nan")
-                if np.isnan(tgt) or tgt <= ep:
-                    tgt = float("inf")
-                pid += 1
-                pos[pid] = {"ticker": t, "entry_idx": di, "exit_idx": di + HOLD,
-                            "entry_price": ep, "shares": alloc / ep, "peak": ep,
-                            "target": tgt}
-                last_entry[t] = di
-                shares_spy -= alloc / spy[di]
-        dvals[di] = total(di)
-    return pd.Series(dvals, index=cal), dict(exits), trade_rets
+    def recover(p, di, price, mkt):
+        return "recover" if price >= p["target"] else None
+
+    fn = {"sma50": sma50, "recover": recover}.get(rule, trail)
+    return on_open, fn
 
 
-def main():
-    print("Loading...", flush=True)
-    data = base.build_intermediate()
-    topn = base.top_n_by_rebal(data)
-    elig = base.eligible_crossings(data, topn)
-    spy = fetch_eod("SPY.US", base._FETCH_START, base._FETCH_END, adjust=True)
-    full_cal = spy["Close"].index
-    full_cal = full_cal[(full_cal >= pd.Timestamp("2004-01-02")) & (full_cal <= base._SIM_END)]
-    elig = base.snap_events_to_calendar(elig, full_cal)
-    panel = base._load_close_panel(sorted(elig), full_cal)
-    sma50 = panel.rolling(50, min_periods=50).mean()
-    high252 = panel.rolling(252, min_periods=60).max()
-    spy_px = spy["Close"]
-    s = spy_px.reindex(full_cal, method="ffill")
-    dd = (s.rolling(252, min_periods=1).max() - s) / s.rolling(252, min_periods=1).max()
+def _simulate(w: cs.Window, rule: str, param, sma50: np.ndarray, hi252: np.ndarray) -> cs.SimResult:
+    on_open, exit_rule = _hooks(rule, param, sma50, hi252)
+    return cs.run(w.mkt, w.events, CFG, exit_rule=exit_rule, on_open=on_open)
 
-    windows = []
-    for sy in range(2004, 2025 - WIN_LEN + 1):
-        w0 = pd.Timestamp(f"{sy}-01-01"); w1 = pd.Timestamp(f"{sy+WIN_LEN-1}-12-31")
-        cw = full_cal[(full_cal >= w0) & (full_cal <= w1)]
-        if len(cw) >= 252:
-            windows.append((f"{sy}-{sy+WIN_LEN-1}", cw))
-    spy_by_win = {n: base.spy_metrics(cw) for n, cw in windows}
-    spy_med = float(np.median([spy_by_win[n]["sharpe"] for n, _ in windows]))
 
-    rows = []
-    for rule, param in RULES:
-        full, ex_full, rets = simulate(elig, panel, sma50, high252, full_cal, spy_px, dd, rule, param)
-        fm = base.metrics(full, full_cal)
-        exc, shp, dds, beats = [], [], [], 0
-        for n, cw in windows:
-            ser, _, _ = simulate(elig, panel, sma50, high252, cw, spy_px, dd, rule, param)
-            m = base.metrics(ser, cw); sm = spy_by_win[n]
-            exc.append(m["cagr"] - sm["cagr"]); shp.append(m["sharpe"]); dds.append(m["max_dd"])
-            if m["cagr"] > sm["cagr"]:
-                beats += 1
-        r = np.array(rets)
-        rows.append({"rule": rule, "full_cagr": fm["cagr"], "full_sharpe": fm["sharpe"],
-                     "full_dd": fm["max_dd"], "beats": beats, "n": len(windows),
-                     "med_excess": float(np.median(exc)), "med_sharpe": float(np.median(shp)),
-                     "med_dd": float(np.median(dds)), "exits": ex_full,
-                     "avg_trade": float(r.mean()) if len(r) else 0.0,
-                     "win": float((r > 0).mean()) if len(r) else 0.0, "n_trades": len(r)})
-        print(f"  {rule:<9} full CAGR {fm['cagr']:+.1%} Sharpe {fm['sharpe']:.2f} DD {fm['max_dd']:.0%} "
-              f"| roll beat {beats}/{len(windows)} exc {np.median(exc):+.1%} Sharpe "
-              f"{np.median(shp):.2f} DD {np.median(dds):.0%} | exits {ex_full}", flush=True)
+def _evaluate(rule, param, full: cs.Window, windows: list[cs.Window], aux: dict) -> dict:
+    res = _simulate(full, rule, param, *aux[full.name])
+    fm = cs.metrics(res.daily, full.cal)
+    ev = cs.evaluate_rolling(
+        windows, lambda w: _simulate(w, rule, param, *aux[w.name]).daily)
+    r = np.array([t["ret"] for t in res.trades])
+    row = {"rule": rule, "full_cagr": fm["cagr"], "full_sharpe": fm["sharpe"],
+           "full_dd": fm["max_dd"], "exits": dict(res.exits),
+           "avg_trade": float(r.mean()) if len(r) else 0.0,
+           "win": float((r > 0).mean()) if len(r) else 0.0, "n_trades": len(r),
+           **{k: ev[k] for k in ("beats", "n", "med_excess", "med_sharpe", "med_dd")}}
+    print(f"  {rule:<9} full CAGR {fm['cagr']:+.1%} Sharpe {fm['sharpe']:.2f} DD "
+          f"{fm['max_dd']:.0%} | roll beat {ev['beats']}/{ev['n']} exc {ev['med_excess']:+.1%} "
+          f"Sharpe {ev['med_sharpe']:.2f} DD {ev['med_dd']:.0%} | exits {dict(res.exits)}",
+          flush=True)
+    return row
 
+
+def _report(rows: list[dict], spy_med: float) -> str:
     L = ["# Adaptive exit rules on the SPY-core overlay (gate 10%, max hold 504)\n",
          f"Rolling {WIN_LEN}y windows vs SPY (SPY median rolling Sharpe {spy_med:.2f}). "
-         "All rules keep the 504-day backstop.\n",
+         "All rules keep the 504-session backstop; next-session fills; delisted names "
+         "sold at their final print.\n",
          "| rule | full CAGR | full Sharpe | full MaxDD | roll beat | med excess | "
          "med Sharpe | med DD | avg trade | win% | exits (full) |",
          "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|---|"]
@@ -196,17 +102,34 @@ def main():
                  f"{r['med_sharpe']:.2f} | {r['med_dd']:.0%} | {r['avg_trade']:+.1%} | "
                  f"{r['win']:.0%} | {r['exits']} |")
     best = max(rows, key=lambda r: (r["med_sharpe"], r["beats"]))
-    base_r = next(r for r in rows if r["rule"] == "fixed")
-    L.append(f"\n## Read\n")
-    L.append(f"- Baseline (fixed 504): beat {base_r['beats']}/{base_r['n']}, median Sharpe "
-             f"{base_r['med_sharpe']:.2f}, median DD {base_r['med_dd']:.0%}.")
+    base = next(r for r in rows if r["rule"] == "fixed")
+    L.append("\n## Read\n")
+    L.append(f"- Baseline (fixed 504): beat {base['beats']}/{base['n']}, median Sharpe "
+             f"{base['med_sharpe']:.2f}, median DD {base['med_dd']:.0%}.")
     L.append(f"- Best by robust Sharpe: **{best['rule']}** — beat {best['beats']}/{best['n']}, "
              f"median Sharpe {best['med_sharpe']:.2f}, median DD {best['med_dd']:.0%}, "
              f"median excess {best['med_excess']:+.1%}.")
     L.append("- A rule only earns its place if it lifts median Sharpe / cuts drawdown "
              "WITHOUT lowering the beat-rate — trailing stops that fire too early "
              "clip recovery winners just like a take-profit did.")
-    _OUT.write_text("\n".join(L) + "\n")
+    return "\n".join(L) + "\n"
+
+
+def main():
+    print("Loading clean inputs...", flush=True)
+    inp = cs.load_inputs()
+    full = cs.full_window(inp)
+    windows = cs.rolling_windows(inp, WIN_LEN)
+    spy_med = cs.spy_median_sharpe(windows)
+    # Auxiliary panels on the full calendar (rolling stats need history before
+    # each window starts), aligned per window.
+    sma50 = inp.panel.df.rolling(50, min_periods=50).mean()
+    hi252 = inp.panel.df.rolling(252, min_periods=60).max()
+    aux = {w.name: (w.mkt.aux(sma50), w.mkt.aux(hi252)) for w in [full, *windows]}
+
+    rows = [_evaluate(rule, param, full, windows, aux) for rule, param in RULES]
+    _OUT.write_text(_report(rows, spy_med))
+    best = max(rows, key=lambda r: (r["med_sharpe"], r["beats"]))
     print(f"\nBEST: {best['rule']}\nsaved -> {_OUT}", flush=True)
 
 

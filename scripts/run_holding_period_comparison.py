@@ -337,20 +337,23 @@ def build_report(results: list[dict], metrics: list[dict], stats: list[dict],
              f"{s378['median']:+.0%} → {s504['median']:+.0%}) also rise monotonically. For a "
              "recovery/dip strategy on quality names, holding longer lets the recoveries "
              "compound instead of being cut at 12 months.\n")
-    L.append("**On H252 vs the published baseline V1.** The headline V1 report marks the "
-             "few late-2024 positions to market and prints a final value of ~$294,708. "
-             "Here, for an apples-to-apples three-way comparison, those same un-completable "
-             "trades are *excluded* under the completion rule, so H252 prints $265,694. The "
-             "engine, sizing, threshold and signals are otherwise identical — the gap is "
-             "purely the 16 excluded late trades, not a methodology change in the signal.\n")
+    h252_excluded = len({(e["date"], e["ticker"]) for e in results[0]["skipped_incomplete"]})
+    L.append("**On H252 vs the published baseline V1.** The headline V1 report marks its "
+             "late positions to market; here, for an apples-to-apples three-way comparison, "
+             "signals that cannot complete the horizon are *excluded* under the completion "
+             f"rule, so H252 prints ${metrics[0]['final_value']:,.0f}. The engine, sizing, "
+             "threshold and signals are otherwise identical — the gap versus the baseline "
+             f"report is the {h252_excluded} excluded late signals, not a methodology change "
+             "in the signal.\n")
+    h504 = HOLD_VARIANTS[-1]["hold"]
+    cutoff = master_cal[max(0, len(master_cal) - 1 - h504)].date()
     L.append("**Caveat on H504.** Its higher CAGR/Sharpe is real in-sample but rests on a "
              f"thin, survivorship-shaped set: only {s504['n']} completed trades, with the "
-             "no-new-entry cutoff falling around end-2022, so almost all of its trades are "
-             "the strong 2020–2022 recovery cohort and a large cash balance sits idle "
-             "through 2023–2024 (visible as the flat green tail). Read the H504 edge as "
-             "suggestive of a real 'let winners run' effect, not as a robust standalone "
-             "CAGR estimate — the longer the horizon, the fewer independent trades remain "
-             "to test it on.\n")
+             f"no-new-entry cutoff falling on {cutoff}, so every trade entered before then "
+             "and any cash freed afterwards sits idle to the end of the window (visible as "
+             "the flat tail). Read the H504 edge as suggestive of a real 'let winners run' "
+             "effect, not as a robust standalone CAGR estimate — the longer the horizon, the "
+             "fewer independent trades remain to test it on.\n")
     return "\n".join(L)
 
 
@@ -390,6 +393,11 @@ def main() -> None:
     crossings_by_ticker, prices_wide, spy_close = load_all_data(prices_obj, fund)
 
     spy_sim = spy_close[(spy_close.index >= _SIM_START) & (spy_close.index <= _SIM_END)]
+    if spy_sim.empty:
+        raise RuntimeError(
+            "Missing SPY price history for the simulation window — the master calendar "
+            "cannot be built. Populate the cache first (scripts/_prefetch_prices.py)."
+        )
     master_cal = spy_sim.index
     print(f"  Calendar {master_cal[0].date()}..{master_cal[-1].date()} ({len(master_cal)} days)")
     print(f"  Tickers with signals: {len(crossings_by_ticker)}; "

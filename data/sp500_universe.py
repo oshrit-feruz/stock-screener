@@ -17,6 +17,7 @@ import bisect
 import csv
 import io
 import json
+import math
 import time
 from datetime import date as _date
 from pathlib import Path
@@ -165,25 +166,35 @@ def _get_edgar():
     return _edgar
 
 
-def _raw_close(ticker: str, date: str) -> float | None:
-    """Unadjusted closing price on or before `date` from the raw price cache."""
+def _safe_ticker(ticker: str) -> str:
+    """Filesystem-safe ticker, as the cache writers name files (BRK.B -> BRKB)."""
+    return "".join(c for c in ticker if c.isalnum() or c in "-_")
+
+
+def _raw_frame(ticker: str):
+    """Memoised raw (unadjusted) OHLCV frame for a ticker, or None.
+
+    Prefers the EARLIEST-start raw file so it covers the most history (e.g. a
+    1998-start file is needed for 2010-2017 dates; a 2016-start one is not).
+    """
     import pickle
 
     if ticker not in _raw_frames:
-        # Prefer the EARLIEST-start raw file so it covers the most history (e.g. a
-        # 2008-start file is needed for 2010-2017 dates; a 2016-start one is not).
-        matches = sorted(_RAW_PRICE_DIR.glob(f"{ticker}_*.pkl"))
-        path = matches[0] if matches else None
+        matches = sorted(_RAW_PRICE_DIR.glob(f"{_safe_ticker(ticker)}_*.pkl"))
         frame = None
-        if path is not None and path.exists():
+        if matches:
             try:
-                with open(path, "rb") as f:
+                with open(matches[0], "rb") as f:
                     frame = pickle.load(f)
             except Exception:
                 frame = None
         _raw_frames[ticker] = frame
+    return _raw_frames[ticker]
 
-    frame = _raw_frames[ticker]
+
+def _raw_close(ticker: str, date: str) -> float | None:
+    """Unadjusted closing price on or before `date` from the raw price cache."""
+    frame = _raw_frame(ticker)
     if frame is None or getattr(frame, "empty", True):
         return None
     import pandas as pd
@@ -338,24 +349,6 @@ def _save_pit_dv_cache() -> None:
         _PIT_DV_FILE.write_text(json.dumps(_pit_dv_cache))
 
 
-def _raw_frame(ticker: str):
-    """Memoised raw (unadjusted) OHLCV frame for a ticker, or None."""
-    import pickle
-
-    if ticker not in _raw_frames:
-        matches = sorted(_RAW_PRICE_DIR.glob(f"{ticker}_*.pkl"))
-        path = matches[0] if matches else None
-        frame = None
-        if path is not None and path.exists():
-            try:
-                with open(path, "rb") as f:
-                    frame = pickle.load(f)
-            except Exception:
-                frame = None
-        _raw_frames[ticker] = frame
-    return _raw_frames[ticker]
-
-
 def _compute_pit_dollar_volume(ticker: str, date: str) -> float | None:
     """Trailing `_DV_WINDOW`-day median of raw close × volume, as of `date`.
 
@@ -372,7 +365,7 @@ def _compute_pit_dollar_volume(ticker: str, date: str) -> float | None:
         return None
     dvol = (sub["Close"].astype(float) * sub["Volume"].astype(float))
     med = float(dvol.rolling(_DV_WINDOW).median().iloc[-1])
-    return med if med > 0 and med == med else None  # med==med rejects NaN
+    return med if math.isfinite(med) and med > 0 else None
 
 
 def pit_dollar_volume(ticker: str, date: str) -> float | None:

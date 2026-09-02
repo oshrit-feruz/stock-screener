@@ -19,6 +19,7 @@ so a missing `ts` still reads back as valid.
 from __future__ import annotations
 
 import json
+import math
 import pickle
 import sys
 from pathlib import Path
@@ -96,8 +97,8 @@ def main() -> None:
             sub = med[med.index <= ts]
             if sub.empty:
                 continue
-            v = sub.iloc[-1]
-            if v == v and v > 0:  # not NaN, positive
+            v = float(sub.iloc[-1])
+            if math.isfinite(v) and v > 0:
                 grid[f"{t}|{s}"] = {"dv": int(v)}
         done += 1
         if i % 100 == 0:
