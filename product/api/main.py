@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pickle
 import re as _re
 import sys
 import threading
@@ -191,7 +192,43 @@ def _startup_cache_report() -> None:
         " -- WARNING: 0 months means the ranking cache is empty; Simulator "
         "will fall back to a 50-ticker static universe" if months == 0 else "",
     )
+    _report_cache_readable(cache / "prices")
     _report_universe_list()
+
+
+def _report_cache_readable(prices_dir: Path) -> None:
+    """Prove the seeded price pickles can actually be LOADED, not just counted.
+
+    A count of 230 files read healthy while every one of them failed to
+    unpickle: the release cache is pickled by pandas 3, and a deploy
+    environment still carrying pandas 2 cannot reconstruct those frames. The
+    Simulator then reported "No price data" on a fully seeded cache, with
+    nothing in the startup report to say why. One real load of one file, with
+    the pandas/numpy versions beside it, is the line that tells the two apart.
+    """
+    import numpy as np
+    import pandas as pd
+    sample = next(iter(sorted(prices_dir.glob("*.pkl"))), None) if prices_dir.is_dir() else None
+    if sample is None:
+        logger.warning("STARTUP %s: pandas %s / numpy %s; no price pickle to probe",
+                       _BUILD_MARKER, pd.__version__, np.__version__)
+        return
+    try:
+        with open(sample, "rb") as f:
+            df = pickle.load(f)
+        logger.warning("STARTUP %s: pandas %s / numpy %s; price cache readable — %s loads "
+                       "(%d rows)", _BUILD_MARKER, pd.__version__, np.__version__,
+                       sample.name, len(df))
+    except Exception as exc:
+        logger.warning(
+            "STARTUP %s: pandas %s / numpy %s; price cache UNREADABLE — %s fails to load: %s: %s "
+            "-- the seed was pickled by a newer pandas than this environment runs; every "
+            "cached price will be skipped and the Simulator will fetch live or report "
+            "\"No price data\". Fix: deploy with the pinned pandas (requirements.txt) and clear "
+            "the build cache.",
+            _BUILD_MARKER, pd.__version__, np.__version__, sample.name,
+            type(exc).__name__, str(exc)[:160],
+        )
 
 
 def _report_universe_list() -> None:

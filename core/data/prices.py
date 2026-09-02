@@ -13,6 +13,15 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_CACHE = Path(__file__).parent.parent.parent / "data" / "cache" / "prices"
 
+# What a cached pickle is allowed to raise on load: anything. The list used to
+# name five error types, and a frame pickled by a newer pandas fails to
+# reconstruct on an older one with none of them — TypeError on pandas 2.1/2.2
+# ("StringDtype.__init__() takes from 1 to 2 positional arguments but 3 were
+# given"), NotImplementedError on 2.3. Uncaught, that escaped get_prices and
+# took the whole backtest down. The honest outcome of an unreadable cache
+# file is a warning naming it and a live fetch, whatever the exception.
+_CACHE_LOAD_ERRORS = (Exception,)
+
 
 def _safe_ticker(ticker: str) -> str:
     """Strip path separators and dots to prevent cache path traversal."""
@@ -63,7 +72,7 @@ class PriceData:
             try:
                 with open(p, "rb") as f:
                     df = pickle.load(f)
-            except (pickle.UnpicklingError, EOFError, OSError, ValueError, AttributeError) as exc:
+            except _CACHE_LOAD_ERRORS as exc:
                 log.warning("Failed to load cache file %s: %s", p, exc)
                 continue
             if df is None or df.empty:
@@ -135,7 +144,7 @@ class PriceData:
             try:
                 with open(path, "rb") as f:
                     cached = pickle.load(f)
-            except (pickle.UnpicklingError, EOFError, OSError, ValueError, AttributeError) as exc:
+            except _CACHE_LOAD_ERRORS as exc:
                 log.warning("Failed to load exact-key cache file %s: %s", path, exc)
                 cached = None
 

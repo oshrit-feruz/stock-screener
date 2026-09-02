@@ -1,3 +1,4 @@
+import pickle
 from datetime import date
 from unittest.mock import MagicMock, patch
 
@@ -87,3 +88,33 @@ def test_fundamentals_cache_file_is_created(tmp_path):
     cache_files = list(tmp_path.glob("*.json"))
     assert len(cache_files) == 1
     assert cache_files[0].name == "AAPL.json"
+
+
+def _boom():
+    raise TypeError("StringDtype.__init__() takes from 1 to 2 positional arguments "
+                    "but 3 were given")
+
+
+class _Unloadable:
+    """Pickles fine, refuses to unpickle — the shape of a frame written by a
+    newer pandas and read by an older one."""
+
+    def __reduce__(self):
+        return (_boom, ())
+
+
+def test_unreadable_cache_pickle_falls_through_to_fetch(tmp_path):
+    """A cache file that cannot be unpickled is a warning and a live fetch,
+    never an exception out of get_prices. Both lookup paths are covered: the
+    exact-key file and the wider-coverage candidate the glob fallback tries.
+    One such file used to escape and take the whole Simulator down."""
+    prices = PriceData(cache_dir=tmp_path)
+    for name in ("AAPL_2022-01-03.pkl", "AAPL_2009-01-01.pkl"):
+        with open(tmp_path / name, "wb") as f:
+            pickle.dump(_Unloadable(), f)
+
+    with patch("core.data.prices.fetch_eod", return_value=_mock_price_df()) as mock_dl:
+        out = prices.get_prices("AAPL", "2022-01-03", "2022-01-07")
+
+    assert mock_dl.call_count == 1
+    assert not out.empty
