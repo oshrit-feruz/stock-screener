@@ -246,7 +246,8 @@ class Portfolio:
         proceeds = p["shares"] * price
         self._receive(di, proceeds)
         tr = {"ticker": p["ticker"], "entry": self.mkt.cal[p["entry_idx"]].date(),
-              "exit": self.mkt.cal[di].date(), "entry_price": p["entry_price"],
+              "exit": self.mkt.cal[di].date(), "entry_idx": p["entry_idx"], "exit_idx": di,
+              "entry_price": p["entry_price"],
               "exit_price": price, "ret": price / p["entry_price"] - 1,
               "pnl": proceeds - p["cost"], "kind": kind, "days": di - p["entry_idx"]}
         self.trades.append(tr)

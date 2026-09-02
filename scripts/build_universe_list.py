@@ -146,17 +146,18 @@ def _covers(path: Path, as_of: date) -> bool:
 
 
 def _ticker_is_current(raw_dir: Path, ticker: str, as_of: date) -> bool:
-    """True if the raw file `_raw_close()` will actually read reaches `as_of`.
+    """True if the raw file `_raw_frame()` will actually read reaches `as_of`.
 
-    Freshness must be judged on the CHOSEN file — data.sp500_universe._raw_close
-    resolves a ticker with `sorted(glob(f"{ticker}_*.pkl"))[0]`, the earliest
-    start date — not on "some file for this ticker is fresh". With an old file
-    and a fresh one side by side the latter is true while the ranking still
-    reads the stale one, so an `any()` test silently passes a ticker whose price
-    is months out of date. Judging the chosen file collapses that case into
-    "stale"; the refresh then unlinks the duplicates.
+    Freshness must be judged on the CHOSEN file — data.sp500_universe picks the
+    deepest-history candidate under either naming contract (safe `BRKB_*` or
+    legacy `BRK.B_*`, see `_raw_candidates`) — not on "some file for this
+    ticker is fresh". With an old file and a fresh one side by side the latter
+    is true while the ranking still reads the stale one, so an `any()` test
+    silently passes a ticker whose price is months out of date. Judging the
+    chosen file collapses that case into "stale"; the refresh then unlinks the
+    duplicates under both spellings.
     """
-    existing = sorted(raw_dir.glob(f"{ticker}_*.pkl"))
+    existing = u._raw_candidates(ticker, raw_dir)
     if not existing:
         return False
     return _covers(existing[0], as_of)
@@ -166,19 +167,12 @@ def _refresh_start(raw_dir: Path, ticker: str, default_start: str) -> str:
     """Earliest start to refetch from: never later than history already held.
 
     Returns the earliest start date encoded in this ticker's existing filenames
-    if it predates `default_start`, else `default_start`. Keeps a refresh from
-    truncating the deep history build_full_cache.py relies on.
+    (either naming contract) if it predates `default_start`, else
+    `default_start`. Keeps a refresh from truncating the deep history
+    build_full_cache.py relies on.
     """
-    starts = []
-    for p in raw_dir.glob(f"{ticker}_*.pkl"):
-        stem = p.stem.rsplit("_", 1)
-        if len(stem) == 2:
-            try:
-                date.fromisoformat(stem[1])
-                starts.append(stem[1])
-            except ValueError:
-                continue
-    return min(starts + [default_start])
+    starts = [u._raw_start_date(p, ticker) for p in u._raw_candidates(ticker, raw_dir)]
+    return min([s for s in starts if s] + [default_start])
 
 
 def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
@@ -188,11 +182,13 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
     split-adjusted prices and volumes would distort every future-splitter and
     corrupt the cross-sectional ranking.
 
-    Writes exactly ONE file per ticker, replacing any earlier one. This is
-    load-bearing, not tidiness: data.sp500_universe._raw_close() resolves a
-    ticker with `sorted(glob(f"{ticker}_*.pkl"))[0]` — the EARLIEST start date.
-    Leaving last month's file alongside a fresh one would mean the ranking keeps
-    reading the stale file and the refresh silently has no effect.
+    Writes exactly ONE file per ticker (canonical filesystem-safe name, the same
+    contract as the clean-universe fetch), replacing any earlier one under
+    either spelling. This is load-bearing, not tidiness:
+    data.sp500_universe._raw_frame() reads the deepest-history candidate across
+    BOTH naming contracts. Leaving last month's file alongside a fresh one would
+    mean the ranking keeps reading the stale file and the refresh silently has
+    no effect.
     """
     _RAW.mkdir(parents=True, exist_ok=True)
     default_start = (pd.Timestamp(as_of) - pd.Timedelta(days=_RAW_LOOKBACK_DAYS)).date().isoformat()
@@ -228,9 +224,9 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
             #      _ticker_is_current()/_raw_close() depend on there being
             #      exactly one — an atomic replace alone would leave an older
             #      earliest-start duplicate winning the sort.
-            target = _RAW / f"{t}_{start}.pkl"
+            target = _RAW / f"{u._safe_ticker(t)}_{start}.pkl"
             _atomic_write_pickle(target, df)
-            for old in _RAW.glob(f"{t}_*.pkl"):
+            for old in u._raw_candidates(t, _RAW):  # both spellings
                 if old != target:
                     old.unlink(missing_ok=True)
             got += 1

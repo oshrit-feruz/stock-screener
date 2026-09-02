@@ -151,22 +151,34 @@ def check_5_simulation(inp: cs.Inputs) -> bool:
         "          a ticker's final print")
     w = cs.full_window(inp)
     res = cs.run(w.mkt, w.events, cs.SimConfig(hold=504))
-    same_bar = late_fill = stale = 0
+    crossings = {t: [ts for ts, _, _ in cr] for t, cr in inp.elig.items()}
+    no_event = same_bar = wrong_session = stale = 0
     for tr in res.trades:
-        entry = pd.Timestamp(tr["entry"])
-        prior = [ts for ts, _, _ in inp.elig[tr["ticker"]] if ts < entry]
-        if not prior:
-            same_bar += 1                    # entered with no earlier signal bar
+        # The trade must correspond to the scheduled Event for THIS ticker at
+        # its own entry session — not merely to some earlier signal.
+        ev = next((e for e in w.events.get(tr["entry_idx"], ()) if e.ticker == tr["ticker"]),
+                  None)
+        if ev is None or ev.fill_idx != tr["entry_idx"]:
+            no_event += 1
             continue
-        if (entry - max(prior)).days > 7:
-            late_fill += 1                   # fill not at the next session
+        sig_ts = w.cal[ev.sig_idx]
+        if not ev.fill_idx > ev.sig_idx or not w.cal[ev.fill_idx] > sig_ts:
+            same_bar += 1                    # filled on/before its own signal bar
+        # A real crossing of this ticker must sit on the signal session (or a
+        # non-master day right after it) and the fill must be the very next
+        # master-calendar session: nothing lies strictly between them.
+        fill_ts = w.cal[ev.fill_idx]
+        real = any(sig_ts <= ts < fill_ts for ts in crossings.get(tr["ticker"], ()))
+        if not real or ev.fill_idx != ev.sig_idx + 1:
+            wrong_session += 1
         if pd.Timestamp(tr["exit"]) > inp.panel.last_quote[tr["ticker"]]:
             stale += 1
     n_delist = res.exits.get("delist", 0)
-    ok = same_bar == 0 and late_fill == 0 and stale == 0
-    print(f"  trades: {len(res.trades)}; entered on/before their signal bar: {same_bar}; "
-          f"filled later than the next session: {late_fill}; exited after the ticker's "
-          f"final print: {stale}; forced exits at a final print: {n_delist}")
+    ok = no_event == 0 and same_bar == 0 and wrong_session == 0 and stale == 0
+    print(f"  trades: {len(res.trades)}; without a matching scheduled event at their entry "
+          f"session: {no_event}; filled on/before their own signal bar: {same_bar}; fill not "
+          f"the session right after a real crossing: {wrong_session}; exited after the "
+          f"ticker's final print: {stale}; forced exits at a final print: {n_delist}")
     print(f"  VERDICT: {'CLEAN' if ok else 'LEAK!'}")
     return ok
 

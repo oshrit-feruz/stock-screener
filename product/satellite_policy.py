@@ -106,12 +106,24 @@ def market_regime(prices, as_of: date, warmup_start: str) -> Optional[dict]:
     return regime_from_series(ohlcv["Close"], as_of)
 
 
+def fill_date(signal_date: date) -> date:
+    """The first weekday strictly after the signal bar — the earliest session a
+    signal computed on that bar's close can actually be filled (the validated
+    strategy fills at the next session, never on the signal bar)."""
+    # roll="backward": a weekend signal date is first pulled back to Friday, so
+    # +1 lands on Monday (strictly after); a weekday simply advances one day.
+    out = np.busday_offset(np.datetime64(signal_date.isoformat()), 1, roll="backward")
+    return pd.Timestamp(out).date()
+
+
 def target_exit_date(entry: date, hold_days: int = HOLD_TRADING_DAYS) -> date:
-    """Entry + `hold_days` weekdays.
+    """Entry (fill) date + `hold_days` weekdays.
 
     Deliberately the same weekday arithmetic (no holiday calendar) that
     exit_tracker._count_trading_days uses, so the date the screener publishes
-    is the date the tracker will actually fire on.
+    is the date the tracker will actually fire on. Callers must pass the FILL
+    date (`fill_date(signal_date)`), which is what the tracker records as the
+    position's entry date.
     """
     out = np.busday_offset(np.datetime64(entry.isoformat()), hold_days, roll="forward")
     return pd.Timestamp(out).date()

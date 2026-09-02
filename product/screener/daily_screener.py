@@ -54,6 +54,7 @@ from core.signals.recovery_score import (  # noqa: E402
 )
 from data.sec_8k_veto import is_vetoed  # noqa: E402
 from product.satellite_policy import (  # noqa: E402
+    fill_date,
     is_active,
     market_regime,
     policy_dict,
@@ -304,7 +305,9 @@ def run_screener(
                     as_of_date, regime["spy_dd_from_high"] * 100,
                     "DISLOCATION (sleeves active)" if regime["in_dislocation"]
                     else "calm (satellite parked in core)")
-    exit_target = target_exit_date(as_of_date).isoformat()
+    # A BUY seen at as_of's close fills at the NEXT session; the tracker counts
+    # the hold from that fill, so the published target starts there too.
+    exit_target = target_exit_date(fill_date(as_of_date)).isoformat()
 
     rows: List[ScreenerRow] = []
 

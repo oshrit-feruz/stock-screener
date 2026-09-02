@@ -173,20 +173,46 @@ def _safe_ticker(ticker: str) -> str:
     return "".join(c for c in ticker if c.isalnum() or c in "-_")
 
 
+def _raw_start_date(path: Path, ticker: str) -> str:
+    """The start date encoded in a raw-cache filename (`<name>_<start>[_<end>].pkl`),
+    or "" when it cannot be parsed (sorts first, i.e. treated as deepest)."""
+    for prefix in (_safe_ticker(ticker), ticker):
+        if path.stem.startswith(prefix + "_"):
+            token = path.stem[len(prefix) + 1:].split("_")[0]
+            try:
+                _date.fromisoformat(token)
+                return token
+            except ValueError:
+                return ""
+    return ""
+
+
+def _raw_candidates(ticker: str, raw_dir: Path | None = None) -> list[Path]:
+    """Every raw-cache file for a ticker under EITHER naming contract, deepest
+    history first (`raw_dir` defaults to the runtime raw-price cache).
+
+    Two writers name these files differently: the clean-universe fetch uses a
+    filesystem-safe name (BRK.B -> BRKB_*), the monthly universe builder the raw
+    ticker (BRK.B_*). Both are accepted and ranked by their PARSED start date,
+    never by lexical path order, so a deep safe-name file always beats a shallow
+    legacy one regardless of spelling.
+    """
+    raw_dir = _RAW_PRICE_DIR if raw_dir is None else Path(raw_dir)
+    found = set(raw_dir.glob(f"{_safe_ticker(ticker)}_*.pkl"))
+    found |= set(raw_dir.glob(f"{ticker}_*.pkl"))
+    return sorted(found, key=lambda p: (_raw_start_date(p, ticker), p.name))
+
+
 def _raw_frame(ticker: str):
     """Memoised raw (unadjusted) OHLCV frame for a ticker, or None.
 
-    Prefers the EARLIEST-start raw file so it covers the most history (e.g. a
-    1998-start file is needed for 2010-2017 dates; a 2016-start one is not).
+    Reads the deepest-history candidate (see `_raw_candidates`), e.g. a
+    1998-start file is needed for 2010-2017 dates; a 2016-start one is not.
     """
     import pickle
 
     if ticker not in _raw_frames:
-        # Two writers name these files differently: the clean-universe fetch
-        # uses a filesystem-safe name (BRK.B -> BRKB_*), the monthly universe
-        # builder the raw ticker (BRK.B_*). Accept either.
-        matches = sorted(set(_RAW_PRICE_DIR.glob(f"{_safe_ticker(ticker)}_*.pkl"))
-                         | set(_RAW_PRICE_DIR.glob(f"{ticker}_*.pkl")))
+        matches = _raw_candidates(ticker)
         frame = None
         if matches:
             try:

@@ -120,12 +120,18 @@ def test_is_active_matrix():
 
 def test_target_exit_date_matches_exit_tracker_counting():
     """The published target must be the day the tracker fires: same weekday
-    arithmetic, HOLD_TRADING_DAYS apart."""
-    entry = date(2024, 3, 1)
+    arithmetic, HOLD_TRADING_DAYS apart from the FILL date."""
+    entry = sp.fill_date(date(2024, 3, 1))     # Friday signal -> Monday fill
     target = sp.target_exit_date(entry)
     assert target > entry
     counted = exit_tracker.ExitTracker._count_trading_days(None, entry, target)
     assert counted == sp.HOLD_TRADING_DAYS == 504
+
+
+def test_fill_date_is_next_weekday_strictly_after_signal():
+    assert sp.fill_date(date(2024, 3, 1)) == date(2024, 3, 4)   # Fri -> Mon
+    assert sp.fill_date(date(2024, 3, 4)) == date(2024, 3, 5)   # Mon -> Tue
+    assert sp.fill_date(date(2024, 3, 2)) == date(2024, 3, 4)   # Sat -> Mon
 
 
 def test_exit_tracker_shares_the_policy_hold():
@@ -175,7 +181,12 @@ def test_screener_publishes_regime_policy_active_and_target(screener):
     for row in res.buy_signals:
         assert row.signal == "BUY"
         assert row.active is True
-        assert row.target_exit_date == sp.target_exit_date(date(2024, 3, 1)).isoformat()
+        # Target counts from the FILL (next session after the Friday signal),
+        # which is where the exit tracker's clock starts.
+        fill = sp.fill_date(date(2024, 3, 1))
+        assert fill == date(2024, 3, 4)
+        assert row.target_exit_date == sp.target_exit_date(fill).isoformat()
+        assert row.target_exit_date > sp.target_exit_date(date(2024, 3, 1)).isoformat()
 
 
 def test_screener_calm_market_keeps_signal_but_inactive(screener):
