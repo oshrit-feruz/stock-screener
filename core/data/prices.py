@@ -135,6 +135,8 @@ class PriceData:
         return df
 
     def _load_prices(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """The exact-key cache, then any covering cache file, then a live
+        fetch — with the stale cache as the fallback when the fetch fails."""
         path     = self._cache_path(ticker, start)
         start_ts = pd.Timestamp(start)
         end_ts   = pd.Timestamp(end)

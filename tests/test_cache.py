@@ -91,6 +91,7 @@ def test_fundamentals_cache_file_is_created(tmp_path):
 
 
 def _boom():
+    """Stand in for a pandas-3 frame reconstructing under pandas 2."""
     raise TypeError("StringDtype.__init__() takes from 1 to 2 positional arguments "
                     "but 3 were given")
 
@@ -100,6 +101,7 @@ class _Unloadable:
     newer pandas and read by an older one."""
 
     def __reduce__(self):
+        """Serialise as a call to ``_boom``, so unpickling raises."""
         return (_boom, ())
 
 
