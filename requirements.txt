@@ -1,8 +1,13 @@
 fastapi
 uvicorn[standard]
 httpx
-pandas
-numpy
+# Pinned to the major the prebuilt Simulator cache (GitHub release cache-v1)
+# was pickled with. A cached deploy environment that still carries pandas 2
+# satisfies a bare "pandas" and never upgrades, and pandas 2 cannot
+# reconstruct pandas-3 pickles — every cached price then fails to load and the
+# Simulator reports "No price data" on a fully seeded cache.
+pandas>=3.0
+numpy>=2.0
 yfinance
 requests
 pandas_market_calendars
