@@ -24,7 +24,11 @@ _CACHE_LOAD_ERRORS = (Exception,)
 
 
 def _safe_ticker(ticker: str) -> str:
-    """Strip path separators and dots to prevent cache path traversal."""
+    """Sanitize a ticker symbol for use in cache paths.
+    
+    Returns:
+        str: The ticker containing only alphanumeric characters, hyphens, and underscores.
+    """
     return "".join(c for c in ticker if c.isalnum() or c in "-_")
 
 
@@ -51,22 +55,17 @@ class PriceData:
 
     def _find_covering_cache(self, ticker: str, start_ts: pd.Timestamp,
                               end_ts: pd.Timestamp) -> pd.DataFrame | None:
-        """Fall back to ANY cached file for this ticker that covers
-        [start_ts, end_ts), not just the one keyed by this exact call's
-        `start` string.
-
-        Prices for a ticker+date don't depend on which `start` a previous
-        call used when it fetched and cached them — but `_cache_path`'s exact
-        string match treats them as unrelated files. A prebuilt cache seeded
-        at deploy time is written with one `start` (e.g. a build script's
-        warmup floor for its whole window); a live request computes its own
-        `start` per its own start_date (e.g. product/backtest/engine.py's
-        per-request warmup formula). Those two strings only coincide for the
-        exact date that produced the prebuilt cache's warmup — any other
-        request silently misses the entire prebuilt cache and re-fetches the
-        whole universe live. This mirrors the glob-based lookup already used
-        for raw prices/EDGAR facts elsewhere in this codebase.
         """
+                              Find cached price data for a ticker that covers the requested interval.
+                              
+                              Parameters:
+                                  ticker (str): Ticker symbol whose cached data is searched.
+                                  start_ts (pd.Timestamp): Inclusive start of the requested interval.
+                                  end_ts (pd.Timestamp): Exclusive end of the requested interval.
+                              
+                              Returns:
+                                  pd.DataFrame | None: The earliest suitable cached dataset, or `None` if no covering cache is available.
+                              """
         best = None
         for p in sorted(self.cache_dir.glob(f"{_safe_ticker(ticker)}_*.pkl")):
             try:
@@ -106,17 +105,20 @@ class PriceData:
 
     def get_prices(self, ticker: str, start: str, end: str,
                    max_stale_tdays: int | None = None) -> pd.DataFrame:
-        """OHLCV for [start, end). Cached; falls back to a stale cache when a
-        fetch fails rather than losing data.
-
-        max_stale_tdays: freshness contract for CURRENT-price contexts. When
-        set, a result whose last bar is more than this many trading days before
-        `end` is refused (WARNING + empty frame) instead of silently served —
-        the caller's honest answer is then "unavailable", mirroring
-        /api/screener's 503 pattern. When None (historical windows, backtests,
-        the simulator), behavior is unchanged: the silent cache fallback is
-        the right call there, since old data IS the request.
         """
+                   Load OHLCV price data for the half-open interval [start, end).
+                   
+                   Parameters:
+                       ticker (str): Instrument identifier.
+                       start (str): Inclusive start date.
+                       end (str): Exclusive end date.
+                       max_stale_tdays (int | None): Maximum permitted trading-day age of the
+                           latest price bar. If exceeded, no data is returned.
+                   
+                   Returns:
+                       pd.DataFrame: Price data for the requested interval, or an empty DataFrame
+                           when data is unavailable or exceeds the permitted staleness.
+                   """
         df = self._load_prices(ticker, start, end)
         if max_stale_tdays is None or df.empty:
             return df
@@ -135,8 +137,21 @@ class PriceData:
         return df
 
     def _load_prices(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        """The exact-key cache, then any covering cache file, then a live
-        fetch — with the stale cache as the fallback when the fetch fails."""
+        """
+        Load price data for a ticker over the requested date range.
+        
+        Cached data is reused when available; otherwise, covering cached data or a
+        live fetch is used. If fetching fails, available cached data is returned.
+        
+        Parameters:
+            ticker (str): Ticker symbol.
+            start (str): Inclusive start date.
+            end (str): Exclusive end date.
+        
+        Returns:
+            pd.DataFrame: Price data before the exclusive end date, or an empty
+                DataFrame when no data is available.
+        """
         path     = self._cache_path(ticker, start)
         start_ts = pd.Timestamp(start)
         end_ts   = pd.Timestamp(end)

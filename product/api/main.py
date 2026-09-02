@@ -168,11 +168,11 @@ _BUILD_MARKER = "perf-v3"  # includes PR #35 (cache-key fix) + #36 (O(log n) eng
 
 
 def _startup_cache_report() -> None:
-    """Log, at WARNING, what the cache looks like after seeding — so a cold Render
-    boot is fully diagnosable from stdout: build marker, whether the committed
-    seed tree is on the runtime filesystem, and the resulting grid/price coverage.
-    "months seeded" is the number of distinct PIT market-cap months on disk after
-    seeding — 0 here is the direct cause of the "0 members / fallback-50" bug."""
+    """
+    Log startup cache diagnostics, including seed availability, price coverage, and market-cap month coverage.
+    
+    A zero-month market-cap cache indicates that ranking data is unavailable and the simulator will use its fallback universe.
+    """
     root = Path(__file__).resolve().parent.parent.parent
     seed_dir = root / "data" / "seed_cache"
     cache = root / "data" / "cache"
@@ -197,14 +197,11 @@ def _startup_cache_report() -> None:
 
 
 def _report_cache_readable(prices_dir: Path) -> None:
-    """Prove the seeded price pickles can actually be LOADED, not just counted.
-
-    A count of 230 files read healthy while every one of them failed to
-    unpickle: the release cache is pickled by pandas 3, and a deploy
-    environment still carrying pandas 2 cannot reconstruct those frames. The
-    Simulator then reported "No price data" on a fully seeded cache, with
-    nothing in the startup report to say why. One real load of one file, with
-    the pandas/numpy versions beside it, is the line that tells the two apart.
+    """
+    Probe a seeded price pickle and log whether it can be loaded in the current environment.
+    
+    Parameters:
+        prices_dir (Path): Directory containing cached price pickle files.
     """
     import numpy as np
     import pandas as pd
