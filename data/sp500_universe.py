@@ -488,14 +488,18 @@ def get_universe_top_n_by_market_cap(date: str, n: int) -> list[str]:
     return [t for t, _ in capped[:n]]
 
 
-def get_universe_top_n(date: str, n: int) -> list[str]:
+def get_universe_top_n(date: str, n: int, exclude: set[str] | None = None) -> list[str]:
     """The `n` largest S&P 500 members on `date`, ranked by POINT-IN-TIME
     dollar-volume (survivorship-free; see the note above).
 
     Members whose dollar-volume cannot be computed (no raw price data or < 63
-    observations as of the date) are excluded silently.
+    observations as of the date) are excluded silently. `exclude` drops members
+    BEFORE ranking — the monthly builder passes the names the price provider
+    has confirmed stopped trading since the membership snapshot, which would
+    otherwise still rank on the trailing window before their final print and
+    take a slot from a live name.
     """
-    members = get_universe(date)
+    members = [t for t in get_universe(date) if t not in (exclude or set())]
     ranked = [(t, pit_dollar_volume(t, date)) for t in members]
     ranked = [(t, dv) for t, dv in ranked if dv is not None and dv > 0]
     ranked.sort(key=lambda x: -x[1])

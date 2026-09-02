@@ -24,8 +24,11 @@ import pytest
 
 import scripts.build_universe_list as bul
 from scripts.build_universe_list import (
+    _DELIST_GRACE_DAYS,
     _atomic_write_pickle,
+    _classify_stale,
     _covers,
+    _ensure_raw_prices,
     _frame_reaches,
     _refresh_start,
     _ticker_is_current,
@@ -176,6 +179,92 @@ def test_refresh_start_with_no_existing_files(tmp_path):
 def test_refresh_start_ignores_unparsable_filenames(tmp_path):
     (tmp_path / "AAPL_notadate.pkl").write_bytes(b"x")
     assert _refresh_start(tmp_path, "AAPL", "2025-09-01") == "2025-09-01"
+
+
+# ── a member that stopped trading is excluded, a provider hiccup still aborts ──
+
+def _ended(last_day: str) -> pd.DataFrame:
+    """Two-bar raw frame whose final print is ``last_day``."""
+    idx = pd.DatetimeIndex(pd.to_datetime(["2026-06-01", last_day]))
+    return pd.DataFrame({"Close": [100.0, 90.0], "Volume": [1, 1]}, index=idx)
+
+
+def test_frame_reaching_as_of_is_current_without_probing():
+    """A frame that already covers the as-of date never touches the provider."""
+    calls = []
+    probe = lambda *a: calls.append(a)  # noqa: E731
+    assert _classify_stale("AAPL", _frame("2026-09-01"), _AS_OF, probe=probe) == "current"
+    assert calls == []
+
+
+def test_final_print_weeks_ago_plus_provider_confirmation_is_delisted():
+    """EA / AVB / EQR on 2026-09-01: last bar mid-August, membership snapshot
+    from June still lists them, provider answers 200-empty for the tail."""
+    probed = []
+
+    def probe(t, start, end):
+        probed.append((t, start, end))
+        return False
+
+    assert _classify_stale("EA", _ended("2026-08-10"), _AS_OF, probe=probe) == "delisted"
+    assert probed == [("EA", "2026-08-11", "2026-09-01")]
+
+
+def test_recent_last_bar_is_a_failure_not_a_delisting():
+    """A gap shorter than the grace period is provider lag — never treated as
+    the name having stopped trading, even if the provider says no bars yet."""
+    recent = (_AS_OF - pd.Timedelta(days=_DELIST_GRACE_DAYS - 1)).isoformat()
+    assert _classify_stale("AAPL", _ended(recent), _AS_OF, probe=lambda *a: False) == "failed"
+
+
+def test_provider_error_on_the_tail_is_a_failure():
+    """A probe that cannot get an answer (None) proves nothing; the build must
+    not shrink the pool on a timeout."""
+    assert _classify_stale("EA", _ended("2026-08-10"), _AS_OF, probe=lambda *a: None) == "failed"
+
+
+def test_bars_found_in_the_tail_is_a_failure_to_investigate():
+    """The frame stopped early but the provider has later bars: partial
+    response, not a delisting."""
+    assert _classify_stale("EA", _ended("2026-08-10"), _AS_OF, probe=lambda *a: True) == "failed"
+
+
+def test_empty_frame_is_a_failure():
+    """No bars at all (or no frame) is a fetch failure, never a delisting."""
+    empty = pd.DataFrame({"Close": []}, index=pd.DatetimeIndex([]))
+    assert _classify_stale("EA", empty, _AS_OF, probe=lambda *a: False) == "failed"
+    assert _classify_stale("EA", None, _AS_OF, probe=lambda *a: False) == "failed"
+
+
+def test_ensure_raw_prices_separates_delisted_from_failed(tmp_path, monkeypatch):
+    """The refresh loop reports current, delisted and failed names apart."""
+    frames = {
+        "AAPL": _frame("2026-09-01"),                    # current after refresh
+        "EA": _ended("2026-08-10"),                      # stopped trading
+        "XYZ": pd.DataFrame({"Close": []}, index=pd.DatetimeIndex([])),  # provider failure
+    }
+    monkeypatch.setattr(bul, "_RAW", tmp_path)
+    monkeypatch.setattr(bul, "fetch_eod", lambda t, s, e, adjust: frames[t])
+    monkeypatch.setattr(bul, "probe_bars", lambda t, s, e: False)
+    monkeypatch.setattr(bul.time, "sleep", lambda *_: None)
+    got, failed, delisted = _ensure_raw_prices(["AAPL", "EA", "XYZ"], _AS_OF)
+    assert got == 1
+    assert delisted == ["EA"]
+    assert failed == ["XYZ"]
+    assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is True
+    assert list(tmp_path.glob("EA_*.pkl")) == []       # nothing written for a dead name
+
+
+def test_ranking_drops_delisted_names_before_ranking(monkeypatch):
+    """A dead name with a cached pre-delisting raw file still has a trailing
+    dollar-volume, so filtering the fetch pool alone is not enough: the ranking
+    re-reads the membership and must be told what to leave out, or the dead
+    name takes a slot from a live one."""
+    monkeypatch.setattr(bul.u, "get_universe", lambda d: ["EA", "AAPL", "MSFT"])
+    dv = {"EA": 9e9, "AAPL": 5e9, "MSFT": 4e9}
+    monkeypatch.setattr(bul.u, "pit_dollar_volume", lambda t, d: dv[t])
+    assert bul.u.get_universe_top_n("2026-09-01", 2) == ["EA", "AAPL"]
+    assert bul.u.get_universe_top_n("2026-09-01", 2, exclude={"EA"}) == ["AAPL", "MSFT"]
 
 
 # ── fetched frames must be validated before they are trusted or stored ────────
