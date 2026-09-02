@@ -53,7 +53,11 @@ from data.sp500_universe import get_universe  # noqa: E402
 # ── Config ────────────────────────────────────────────────────────────────────
 _FETCH_START = "1998-06-01"
 _FETCH_END = "2024-12-31"
-_SIM_START = pd.Timestamp("2000-01-03")
+# Simulation start is configurable (argv[1], YYYY-MM-DD; default 2000-01-03).
+# 2004+ is the "hermetic" window where ranking coverage is >=85%; 2000 includes
+# the dot-com crash but with only ~77% early coverage.
+_START_ARG = sys.argv[1] if len(sys.argv) > 1 else "2000-01-03"
+_SIM_START = pd.Timestamp(_START_ARG)
 _SIM_END = pd.Timestamp("2024-12-31")
 _TOP_N = 100
 _DV_WINDOW = 63           # trailing trading days for median dollar-volume
@@ -66,8 +70,11 @@ _HOLDS = [252, 378, 504]
 _ADJ_DIR = ROOT / "data" / "cache" / "prices"
 _RAW_DIR = ROOT / "data" / "cache" / "prices_raw"
 _OUT_DIR = ROOT / "validation"
-_PNG = _OUT_DIR / "clean_pit_portfolio.png"
-_MD = _OUT_DIR / "clean_pit_backtest.md"
+_SUFFIX = f"_{_SIM_START.year}"
+_PNG = _OUT_DIR / f"clean_pit_portfolio{_SUFFIX}.png"
+_MD = _OUT_DIR / f"clean_pit_backtest{_SUFFIX}.md"
+# Intermediate (crossings + dollar-volume) is window-independent — it stores all
+# crossings from 2000 on and every rebalance, so it is shared across start dates.
 _INTERMED = ROOT / "data" / "cache" / "clean_pit_intermediate.pkl"
 
 
@@ -147,7 +154,9 @@ def build_intermediate() -> dict:
                 inbuy = bool(c >= BUY_THRESHOLD)
                 if inbuy and not prev:
                     ts = scored.index[j]
-                    if _SIM_START <= ts <= _SIM_END:
+                    # Fixed 2000 floor so the intermediate is window-independent
+                    # (the sim itself windows events to _SIM_START).
+                    if pd.Timestamp("2000-01-01") <= ts <= _SIM_END:
                         cross.append((ts, float(c), float(close_s.iloc[j])))
                 prev = inbuy
             if cross:
@@ -352,7 +361,8 @@ def spy_metrics(cal: pd.DatetimeIndex) -> dict:
 
 def report(results, mets, stats, spy_m, cal) -> str:
     n_years = mets[0]["n_years"]
-    L = ["# Clean point-in-time backtest — S&P 500, 2000-2024\n",
+    y0, y1 = cal[0].year, cal[-1].year
+    L = [f"# Clean point-in-time backtest — S&P 500, {y0}-{y1}\n",
          f"Window **{cal[0].date()}..{cal[-1].date()}** "
          f"({len(cal)} trading days, ~{n_years:.1f}y). Start ${_INITIAL_CAP:,.0f}.\n",
          "**Universe (clean):** PIT S&P 500 membership (incl. delisted), ranked each "
@@ -388,26 +398,34 @@ def report(results, mets, stats, spy_m, cal) -> str:
     L.append("\n![portfolio](" + _PNG.name + ")\n")
 
     s252, s378, s504 = stats
-    L.append("## Interpretation (bias-free, 25 years)\n")
-    L.append("**The holding-period effect is real and now robust.** Every metric improves "
+    h252_beats = mets[0]["cagr"] > spy_m["cagr"]
+    crash_txt = "2002 and 2008-09" if y0 <= 2002 else "2008-09"
+    L.append(f"## Interpretation (bias-free, ~{n_years:.0f} years)\n")
+    L.append("**The holding-period effect is real and robust.** Every metric improves "
              f"monotonically with hold length — CAGR {mets[0]['cagr']:+.1%} -> "
              f"{mets[1]['cagr']:+.1%} -> {mets[2]['cagr']:+.1%}, win rate "
              f"{s252['win']:.0%} -> {s378['win']:.0%} -> {s504['win']:.0%}, and the fat "
              f"right tail (>100% trades) {s252['buckets']['>100%']/s252['n']:.0%} -> "
              f"{s378['buckets']['>100%']/s378['n']:.0%} -> "
-             f"{s504['buckets']['>100%']/s504['n']:.0%}. On 217/154/114 trades over 25 "
-             "years (vs 31/23/21 in the biased 2018-2024 study), the 'let recoveries run "
-             "past a year' thesis holds up.\n")
-    L.append("**But the edge over SPY is far smaller than the biased test implied.** The "
-             f"1-year hold (H252, {mets[0]['cagr']:+.1%} CAGR) actually **loses to SPY** "
-             f"({spy_m['cagr']:+.1%}); only the longer holds beat it (H378 "
-             f"{mets[1]['cagr']:+.1%}, H504 {mets[2]['cagr']:+.1%}). The earlier "
-             "50-stock 2018-2024 test showed every variant crushing SPY — that was the "
-             "survivorship/selection bias talking.\n")
+             f"{s504['buckets']['>100%']/s504['n']:.0%}. On "
+             f"{s252['n']}/{s378['n']}/{s504['n']} trades over ~{n_years:.0f} years "
+             "(vs 31/23/21 in the biased 2018-2024 study), the 'let recoveries run past a "
+             "year' thesis holds up.\n")
+    if h252_beats:
+        edge = (f"The 1-year hold (H252, {mets[0]['cagr']:+.1%} CAGR) edges SPY "
+                f"({spy_m['cagr']:+.1%}) only slightly; the longer holds win clearly "
+                f"(H378 {mets[1]['cagr']:+.1%}, H504 {mets[2]['cagr']:+.1%}).")
+    else:
+        edge = (f"The 1-year hold (H252, {mets[0]['cagr']:+.1%} CAGR) actually **loses to "
+                f"SPY** ({spy_m['cagr']:+.1%}); only the longer holds beat it (H378 "
+                f"{mets[1]['cagr']:+.1%}, H504 {mets[2]['cagr']:+.1%}).")
+    L.append("**But the edge over SPY is far smaller than the biased test implied.** "
+             + edge + " The earlier 50-stock 2018-2024 test showed every variant crushing "
+             "SPY — that was the survivorship/selection bias talking.\n")
     L.append("**Tail risk is severe.** Max drawdowns of "
              f"{mets[0]['max_dd']:.0%}..{mets[2]['max_dd']:.0%} (vs SPY "
              f"{spy_m['max_dd']:.0%}) — a concentrated, no-stop, dip-buying book got "
-             "destroyed in 2002 and 2008-09 (visible in the chart). The 2018-2024 window "
+             f"destroyed in {crash_txt} (visible in the chart). The 2018-2024 window "
              "never contained a 2008, so it reported ~-32% and hid this.\n")
     L.append("### Data caveats\n"
              "- **Size proxy:** ranked by dollar-volume, not exact market cap (unavailable "
@@ -432,7 +450,8 @@ def make_plot(results, spy_m, cal):
             linewidth=1.3, label=f"SPY (final ${spy_m['final']:,.0f})")
     ax.axhline(_INITIAL_CAP, color="black", linewidth=0.6, alpha=0.4)
     ax.set_yscale("log")
-    ax.set_title("Clean PIT top-100 (dollar-volume) — holding periods vs SPY, 2000-2024")
+    ax.set_title("Clean PIT top-100 (dollar-volume) — holding periods vs SPY, "
+                 f"{cal[0].year}-{cal[-1].year}")
     ax.set_ylabel("Portfolio value ($, log)")
     ax.legend(loc="upper left", fontsize=9)
     ax.grid(True, alpha=0.25, which="both")

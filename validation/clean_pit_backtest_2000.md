@@ -32,11 +32,11 @@ Window **2000-01-03..2024-12-31** (6289 trading days, ~25.0y). Start $100,000.
 | 50..100% | 13% | 16% | 14% |
 | >100% | 2% | 14% | 15% |
 
-![portfolio](clean_pit_portfolio.png)
+![portfolio](clean_pit_portfolio_2000.png)
 
-## Interpretation (bias-free, 25 years)
+## Interpretation (bias-free, ~25 years)
 
-**The holding-period effect is real and now robust.** Every metric improves monotonically with hold length — CAGR +6.6% -> +11.1% -> +12.3%, win rate 57% -> 63% -> 65%, and the fat right tail (>100% trades) 2% -> 14% -> 15%. On 217/154/114 trades over 25 years (vs 31/23/21 in the biased 2018-2024 study), the 'let recoveries run past a year' thesis holds up.
+**The holding-period effect is real and robust.** Every metric improves monotonically with hold length — CAGR +6.6% -> +11.1% -> +12.3%, win rate 57% -> 63% -> 65%, and the fat right tail (>100% trades) 2% -> 14% -> 15%. On 217/154/114 trades over ~25 years (vs 31/23/21 in the biased 2018-2024 study), the 'let recoveries run past a year' thesis holds up.
 
 **But the edge over SPY is far smaller than the biased test implied.** The 1-year hold (H252, +6.6% CAGR) actually **loses to SPY** (+7.7%); only the longer holds beat it (H378 +11.1%, H504 +12.3%). The earlier 50-stock 2018-2024 test showed every variant crushing SPY — that was the survivorship/selection bias talking.
 
