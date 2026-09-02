@@ -184,11 +184,13 @@ def test_refresh_start_ignores_unparsable_filenames(tmp_path):
 # ── a member that stopped trading is excluded, a provider hiccup still aborts ──
 
 def _ended(last_day: str) -> pd.DataFrame:
+    """Two-bar raw frame whose final print is ``last_day``."""
     idx = pd.DatetimeIndex(pd.to_datetime(["2026-06-01", last_day]))
     return pd.DataFrame({"Close": [100.0, 90.0], "Volume": [1, 1]}, index=idx)
 
 
 def test_frame_reaching_as_of_is_current_without_probing():
+    """A frame that already covers the as-of date never touches the provider."""
     calls = []
     probe = lambda *a: calls.append(a)  # noqa: E731
     assert _classify_stale("AAPL", _frame("2026-09-01"), _AS_OF, probe=probe) == "current"
@@ -228,12 +230,14 @@ def test_bars_found_in_the_tail_is_a_failure_to_investigate():
 
 
 def test_empty_frame_is_a_failure():
+    """No bars at all (or no frame) is a fetch failure, never a delisting."""
     empty = pd.DataFrame({"Close": []}, index=pd.DatetimeIndex([]))
     assert _classify_stale("EA", empty, _AS_OF, probe=lambda *a: False) == "failed"
     assert _classify_stale("EA", None, _AS_OF, probe=lambda *a: False) == "failed"
 
 
 def test_ensure_raw_prices_separates_delisted_from_failed(tmp_path, monkeypatch):
+    """The refresh loop reports current, delisted and failed names apart."""
     frames = {
         "AAPL": _frame("2026-09-01"),                    # current after refresh
         "EA": _ended("2026-08-10"),                      # stopped trading
