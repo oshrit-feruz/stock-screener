@@ -233,7 +233,10 @@ class AlertEngine:
                 cur_price = screener_row.current_price
             else:
                 try:
-                    ohlcv = prices.get_prices(ticker, lookback_str, today_str)
+                    # Current-price context: an alert computed from a stale
+                    # close mis-states today's P&L — skip instead.
+                    ohlcv = prices.get_prices(ticker, lookback_str, today_str,
+                                              max_stale_tdays=PriceData.CURRENT_MAX_STALE_TDAYS)
                     if ohlcv is not None and not ohlcv.empty:
                         cur_price = float(ohlcv["Close"].iloc[-1])
                 except Exception:

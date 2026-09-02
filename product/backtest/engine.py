@@ -20,13 +20,45 @@ import pandas as pd
 
 from config.tickers import VALIDATION_UNIVERSE
 from core.data.edgar import EdgarFundamentals
+from core.data.eodhd import get_thread_fetch_count
 from core.data.eodhd_fundamentals import EODHDFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import compute_recovery_signals, passes_quality_gate
-from data.sp500_universe import get_universe, get_universe_top_n, prefetch_pit_dollar_volumes
+from data.sp500_universe import (
+    get_universe,
+    get_universe_top_n,
+    prefetch_pit_dollar_volumes,
+    release_pit_cache,
+)
 from scripts.run_combined_validation import load_fedfunds
 
 logger = logging.getLogger(__name__)
+
+
+def _rss_mb() -> float:
+    """Resident set size in MB, from /proc/self/status (Linux; Render runs
+    Linux). Returns -1.0 where unavailable rather than raising — these probes
+    must never be able to fail a backtest."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return -1.0
+
+
+def _log_rss(stage: str) -> None:
+    """One WARNING line per stage so Render logs show WHERE memory grows.
+
+    Measurement before mitigation: the 512MB instance dies mid-simulation with
+    no stdout trace (the OOM kill is only visible as a silent process restart),
+    so without these lines the three candidate consumers — the scored frames,
+    the parsed PIT grid, EDGAR facts accumulated by the quality gate — are
+    indistinguishable. WARNING level so uvicorn's default config surfaces it.
+    """
+    logger.warning("MEMRSS %s: %.0f MB", stage, _rss_mb())
 
 _WARMUP_START    = "2016-01-01"
 _INITIAL_CAPITAL = 100_000.0
@@ -68,6 +100,11 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
 
     Expensive step done once for batch runs — amortizes across all simulations.
     """
+    _log_rss("backtest start (baseline)")
+    # Baseline for this run's fetch count, taken before ANY fetch this function
+    # can trigger (including SPY below) — thread-local so a concurrent screener
+    # warm-up or a second backtest thread can't skew the delta.
+    fetches_before = get_thread_fetch_count()
     prices       = PriceData()
     # EDGAR primary; EODHD (requests, not yfinance) as the fallback so the quality
     # gate never hangs on yfinance's TLS failure on Render. See eodhd_fundamentals.
@@ -145,6 +182,16 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     # logs in real time (free-tier 0.5 vCPU makes this phase minutes-long even
     # when every ticker cache-hits; without these lines a slow-but-healthy load
     # is indistinguishable from a hang).
+    # Month membership is now built; the parsed PIT grid has served its
+    # purpose for this run. Holding it costs ~168MB measured on the 512MB
+    # instance — release it (it reloads from disk if a later caller needs it).
+    try:
+        release_pit_cache()
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    _log_rss("after universe/PIT-grid membership build (grid released)")
     t_load = time.time()
     scored_data: dict[str, pd.DataFrame] = {}
     for i, ticker in enumerate(universe):
@@ -165,8 +212,11 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
             scored_data[ticker] = _downcast(scored)
         except Exception:
             continue
-    logger.warning("Backtest data loaded: %d/%d tickers scored in %.0fs; entering simulation.",
-                   len(scored_data), len(universe), time.time() - t_load)
+    logger.warning("Backtest data loaded: %d/%d tickers scored in %.0fs "
+                   "(EODHD fetches this run: %d); entering simulation.",
+                   len(scored_data), len(universe), time.time() - t_load,
+                   get_thread_fetch_count() - fetches_before)
+    _log_rss("after data load (%d scored frames held)" % len(scored_data))
 
     # ── Idle-cash yield: real historical Fed Funds Rate (FRED FEDFUNDS). Reuses
     #    load_fedfunds from the research money-market study — not reimplemented. ─
@@ -354,7 +404,10 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             return None
         return _safe_float(cols[0][pos])
 
+    _log_rss("simulation start (%d trading days)" % len(trading_dates))
     for di, today in enumerate(trading_dates):
+        if di > 0 and di % 63 == 0:   # ~quarterly: catch growth DURING the loop
+            _log_rss("simulation day %d/%d (%s)" % (di, len(trading_dates), today))
         today_ts = pd.Timestamp(today)
 
         # ── Accrue idle-cash yield since the previous bar ──────────────────
@@ -526,17 +579,23 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                     "position_value": desired_alloc,
                 }
 
-    # ── Realized-only value: open positions returned at cost (no unrealized P&L) ─
-    final_value_realized = cash + sum(pos["shares"] * pos["entry_price"] for pos in positions.values())
-
     # ── Force-close remaining open positions at end_date ──────────────────────
+    # Also captures the still-open cohort's mark-to-market P&L/cost basis for
+    # the summary (n_open_at_end / unrealized_pnl_usd / unrealized_pnl_pct) —
+    # display-only bookkeeping alongside the existing force-close; it does not
+    # change cash, trades, or any entry/exit decision.
     last_date = trading_dates[-1]
     last_ts   = pd.Timestamp(last_date)
+    open_at_end_pnl_usd    = 0.0
+    open_at_end_cost_basis = 0.0
     for tkr, pos in list(positions.items()):
         cp = _cur_price(tkr, last_ts) or pos["entry_price"]
         hold = int(np.busday_count(pos["entry_date"].isoformat(), last_date.isoformat()))
         ret  = cp / pos["entry_price"] - 1
+        pnl  = (cp - pos["entry_price"]) * pos["shares"]
         cash += pos["shares"] * cp
+        open_at_end_pnl_usd    += pnl
+        open_at_end_cost_basis += pos["shares"] * pos["entry_price"]
         trades.append({
             "ticker":      tkr,
             "entry_date":  pos["entry_date"].isoformat(),
@@ -545,10 +604,18 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "exit_price":  round(cp, 2),
             "hold_days":   hold,
             "return_pct":  round(ret * 100, 2),
-            "pnl_usd":     round((cp - pos["entry_price"]) * pos["shares"], 2),
+            "pnl_usd":     round(pnl, 2),
             "exit_reason": "open_at_end",
         })
+    n_open_at_end = sum(1 for t in trades if t["exit_reason"] == "open_at_end")
+    unrealized_pnl_pct = (open_at_end_pnl_usd / open_at_end_cost_basis * 100
+                          if open_at_end_cost_basis > 0 else None)
     positions.clear()
+
+    # ── Realized-only value: open positions counted at cost (no unrealized P&L) ─
+    # NOT the headline — see total_return_pct below, which marks the same open
+    # positions to market. Kept for the UI's secondary "closed trades only" line.
+    final_value_realized = cash - open_at_end_pnl_usd
 
     # ── Summary metrics ────────────────────────────────────────────────────────
     final_value      = cash
@@ -663,6 +730,11 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             "spy_cagr":                    round(spy_cagr_val, 1) if spy_cagr_val is not None else None,
             "beat_spy":                    bool(final_value > spy_final)          if spy_final is not None else None,
             "beat_spy_realized":           bool(final_value_realized > spy_final) if spy_final is not None else None,
+            # Still-open-at-end cohort, marked to market — the immature-position
+            # drag that final_portfolio_realized hides by valuing these at cost.
+            "n_open_at_end":               n_open_at_end,
+            "unrealized_pnl_usd":          int(round(open_at_end_pnl_usd)),
+            "unrealized_pnl_pct":          round(unrealized_pnl_pct, 1) if unrealized_pnl_pct is not None else None,
             "sharpe":                 round(sharpe, 2),
             "max_drawdown_pct":       round(max_dd, 1),
             "best_year":              best_year,
@@ -723,6 +795,7 @@ def run_backtest(params: dict) -> dict:
     preloaded = _load_backtest_data(end_date, start_year, end_year, start_date)
     t_sim = time.time()
     result = _simulate(preloaded, params)
+    _log_rss("simulation complete")
     logger.warning("Backtest simulation finished in %.0fs (%s..%s).",
                    time.time() - t_sim, start_date_str, end_date_str)
     return result

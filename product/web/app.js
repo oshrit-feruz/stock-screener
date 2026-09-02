@@ -9,6 +9,29 @@ var _userMode  = null;
 var _portfolio = []; // [{ticker, entry_price, alert_up_pct, alert_down_pct}]
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
+
+// Parse a fetch Response as JSON, tolerating the server being mid-restart.
+// A Render redeploy (every merge to main) or an OOM restart answers in-flight
+// requests with an empty or non-JSON body; a bare r.json() then throws
+// "Unexpected end of JSON input" at the user. Read the body as text first so
+// an empty/garbage body becomes a friendly, retryable error instead. A non-ok
+// status with a JSON {detail} still surfaces that detail.
+function parseJson(r) {
+  return r.text().then(function (text) {
+    var data = null;
+    if (text) {
+      try { data = JSON.parse(text); } catch (e) { data = null; }
+    }
+    if (!r.ok) {
+      throw new Error((data && data.detail) ||
+        'Server returned ' + r.status + ' — it may be restarting. Try again in a moment.');
+    }
+    if (data === null) {
+      throw new Error('The server is restarting — try again in a moment.');
+    }
+    return data;
+  });
+}
 function showToast(msg, ms) {
   ms = ms || 2500;
   var el = document.getElementById('toast');
@@ -182,7 +205,7 @@ function loadSignals() {
   }
   ctr.innerHTML = '<div class="loading">Scanning the Top-100 universe&hellip; (may take up to 60 s on first visit)</div>';
   fetch('/api/screener')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) {
       if (data.warming) {
         // Server still warming up — retry in 15 seconds
@@ -192,7 +215,6 @@ function loadSignals() {
       }
       _sigCache   = data;
       _sigCacheTs = Date.now();
-      document.getElementById('last-updated').textContent = 'Last updated: ' + data.as_of;
       renderSignals(data);
     })
     .catch(function () {
@@ -202,7 +224,15 @@ function loadSignals() {
 
 function renderSignals(data) {
   var ctr = document.getElementById('signals-container');
-  document.getElementById('last-updated').textContent = 'Last updated: ' + data.as_of;
+  // Provenance, not decoration: the server may legitimately serve the newest
+  // PUBLISHED scan (weekends, holidays, pre-run mornings — bounded at 4 days),
+  // and the reader of a signal list must see which day it was computed on.
+  var label = 'Last updated: ' + data.as_of;
+  var today = new Date().toISOString().slice(0, 10);
+  if (data.computed_on && data.computed_on !== today) {
+    label = 'Signals computed on ' + data.computed_on + ' (latest available; today is ' + today + ')';
+  }
+  document.getElementById('last-updated').textContent = label;
 
   if (!data.buy_signals || data.buy_signals.length === 0) {
     ctr.innerHTML = [
@@ -370,7 +400,7 @@ function trackPosition(ticker) {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ ticker: ticker, entry_price: price, entry_date: today })
   })
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (res) {
       if (res.success) {
         showToast(ticker + ' added to positions');
@@ -387,7 +417,7 @@ function loadPositions() {
   var ctr = document.getElementById('positions-container');
   ctr.innerHTML = '<div class="loading">Loading positions&hellip;</div>';
   fetch('/api/positions')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) { renderPositions(data.positions || []); })
     .catch(function () {
       ctr.innerHTML = '<div class="err-box">Failed to load positions.</div>';
@@ -447,7 +477,7 @@ function closePosition(ticker) {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ ticker: ticker })
   })
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (res) {
       if (res.success) {
         var retStr = res.final_return_pct !== null
@@ -468,8 +498,7 @@ function loadBeta() {
   ctr.innerHTML = '<div class="loading">Loading beta tracking&hellip;</div>';
   fetch('/api/beta/dashboard')
     .then(function (r) {
-      if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Failed to load beta tracking'); });
-      return r.json();
+      return parseJson(r);
     })
     .then(function (data) { renderBeta(data); })
     .catch(function () {
@@ -596,7 +625,7 @@ function loadPortfolio() {
   var ctr = document.getElementById('portfolio-container');
   if (ctr) ctr.innerHTML = '<div class="loading">Loading&hellip;</div>';
   fetch('/api/portfolio')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) {
       _portfolio = (data.holdings || []).map(function (h) {
         return {
@@ -692,7 +721,7 @@ function savePortfolio() {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ holdings: _portfolio }),
   })
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function () { loadPortfolio(); showToast('Portfolio saved'); })
     .catch(function () { showToast('Failed to save portfolio'); });
 }
@@ -703,7 +732,7 @@ function savePortfolioQuiet() {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ holdings: _portfolio }),
   })
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function () { loadPortfolio(); })
     .catch(function () { showToast('Failed to save portfolio'); });
 }
@@ -713,7 +742,7 @@ function loadPortfolioAlerts() {
   var ctr = document.getElementById('alerts-container');
   if (ctr) ctr.innerHTML = '<div class="loading">Checking alerts&hellip;</div>';
   fetch('/api/portfolio/alerts')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) { renderPortfolioAlerts(data.alerts || []); })
     .catch(function () {
       if (ctr) ctr.innerHTML = '<div class="err-box">Failed to load alerts.</div>';
@@ -903,8 +932,7 @@ function _pollBacktestJob(jobId, scenario, params, btn, rContainer, elapsedSec) 
       // that distinctly from a real backtest failure so the user understands
       // it's a transient server hiccup, not a bad simulation.
       if (r.status === 404) throw new Error('SERVER_RESTARTED');
-      if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Simulation failed'); });
-      return r.json();
+      return parseJson(r);
     })
     .then(function (data) {
       if (data.status === 'running') {
@@ -974,10 +1002,7 @@ function runSimulation(scenario) {
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(params),
   })
-  .then(function (r) {
-    if (!r.ok) return r.json().then(function (e) { throw new Error(e.detail || 'Simulation failed'); });
-    return r.json();
-  })
+  .then(parseJson)
   .then(function (data) {
     // The backend runs the backtest in a background job and returns immediately
     // (202) with a job_id — the run can take minutes on a large date range,
@@ -1021,27 +1046,23 @@ function renderSimResults(data, scenario) {
     exitLabel += ' · TS −' + fmt(params.trailing_stop_pct, 0) + '% from peak';
   }
 
-  var hasOpen   = s.final_portfolio !== s.final_portfolio_realized;
-  var beatLabel = hasOpen
-    ? (s.beat_spy === true  ? '&#9989; Beat S&P 500 (incl. open)'  :
-       s.beat_spy === false ? '&#10060; Underperformed S&P 500 (incl. open)' : '')
-    : (s.beat_spy === true  ? '&#9989; Beat S&P 500'  :
-       s.beat_spy === false ? '&#10060; Underperformed S&P 500' : '');
-  var realizedBeatHtml = (hasOpen && s.beat_spy_realized !== undefined && s.beat_spy_realized !== s.beat_spy)
-    ? (s.beat_spy_realized === true
-        ? ' &nbsp;<span class="beat-badge beat-yes" style="font-size:11px;">&#9989; Realized also beats</span>'
-        : ' &nbsp;<span class="beat-badge beat-no"  style="font-size:11px;">&#10060; Realized does not beat</span>')
-    : '';
+  // Headline is ALWAYS mark-to-market (total_return_pct / final_portfolio:
+  // open positions valued at today's price, computed by engine.py's
+  // force-close-at-end-date step). SPY comparison (beat_spy) is against this
+  // same mark-to-market number, over the identical period — never against
+  // the realized-at-cost figure, which is shown below only as a labeled
+  // secondary line so it can't be mistaken for the headline.
+  var hasOpen   = s.n_open_at_end > 0;
+  var beatLabel = s.beat_spy === true  ? '&#9989; Beat S&P 500'  :
+                  s.beat_spy === false ? '&#10060; Underperformed S&P 500' : '';
   var beatHtml = beatLabel
-    ? '<span class="beat-badge ' + (s.beat_spy ? 'beat-yes' : 'beat-no') + '">' + beatLabel + '</span>' + realizedBeatHtml
+    ? '<span class="beat-badge ' + (s.beat_spy ? 'beat-yes' : 'beat-no') + '">' + beatLabel + '</span>'
     : '';
 
   var cmpGrid = '';
   if (data.spy_comparison.final_spy) {
-    var hasOpen    = s.final_portfolio !== s.final_portfolio_realized;
     var spyCls     = s.spy_total_return_pct >= 0 ? 'ret-pos' : 'ret-neg';
     var botRetCls  = s.total_return_pct    >= 0 ? 'ret-pos' : 'ret-neg';
-    var realRetCls = (s.total_return_realized_pct >= 0) ? 'ret-pos' : 'ret-neg';
 
     // Tax column
     var taxColHtml = '';
@@ -1058,24 +1079,16 @@ function renderSimResults(data, scenario) {
       ].join('\n');
     }
 
-    var numCols = (hasOpen ? 3 : 2) + (_taxMode === 'israel_25' ? 1 : 0);
+    var numCols = 2 + (_taxMode === 'israel_25' ? 1 : 0);
     var gridClass = numCols >= 4 ? 'sim-cmp-4col' : numCols === 3 ? 'sim-cmp-3col' : '';
     cmpGrid = [
       '<div class="sim-cmp-grid ' + gridClass + '" style="margin-top:12px;">',
       '  <div class="cmp-card">',
-      '    <div class="cmp-label">Bot (incl. open)</div>',
+      '    <div class="cmp-label">Portfolio (mark-to-market)</div>',
       '    <div class="cmp-val">$' + fmtK(s.final_portfolio) + '</div>',
       '    <div class="cmp-sub ' + botRetCls + '">' + (s.total_return_pct >= 0 ? '+' : '') + fmt(s.total_return_pct, 1) + '%</div>',
       '    <div class="cmp-sub">' + fmt(s.cagr, 1) + '% / yr</div>',
       '  </div>',
-      (hasOpen ? [
-        '  <div class="cmp-card">',
-        '    <div class="cmp-label">Bot (realized)</div>',
-        '    <div class="cmp-val">$' + fmtK(s.final_portfolio_realized) + '</div>',
-        '    <div class="cmp-sub ' + realRetCls + '">' + (s.total_return_realized_pct >= 0 ? '+' : '') + fmt(s.total_return_realized_pct, 1) + '%</div>',
-        '    <div class="cmp-sub">' + fmt(s.cagr_realized, 1) + '% / yr</div>',
-        '  </div>',
-      ].join('\n') : ''),
       taxColHtml,
       '  <div class="cmp-card">',
       '    <div class="cmp-label">S&P 500 (SPY)</div>',
@@ -1083,6 +1096,30 @@ function renderSimResults(data, scenario) {
       '    <div class="cmp-sub ' + spyCls + '">' + (s.spy_total_return_pct >= 0 ? '+' : '') + fmt(s.spy_total_return_pct, 1) + '%</div>',
       '    <div class="cmp-sub">' + fmt(s.spy_cagr, 1) + '% / yr</div>',
       '  </div>',
+      '</div>',
+    ].join('\n');
+  }
+
+  // Secondary, visually subordinate lines — never adjacent to the headline
+  // card as an equal. "Realized" values every still-open position at cost
+  // (hides unrealized gains AND losses), so it's labeled explicitly rather
+  // than left as an unqualified "Return". The open-cohort line makes that
+  // hidden drag/gain visible instead of silently assuming breakeven.
+  var secondaryMetricsHtml = '';
+  if (hasOpen) {
+    var realCls = s.total_return_realized_pct >= 0 ? 'ret-pos' : 'ret-neg';
+    var unrCls  = (s.unrealized_pnl_usd || 0) >= 0 ? 'ret-pos' : 'ret-neg';
+    secondaryMetricsHtml = [
+      '<div class="disclaimer" style="margin-top:6px;">',
+      '  Realized (closed trades only; ' + s.n_open_at_end + ' open position' + (s.n_open_at_end === 1 ? '' : 's') +
+          ' held at cost): $' + fmtK(s.final_portfolio_realized) +
+          ' (<span class="' + realCls + '">' + (s.total_return_realized_pct >= 0 ? '+' : '') + fmt(s.total_return_realized_pct, 1) + '%</span>)',
+      '  <br>Open positions at simulation end (final trading date), marked to market: ' +
+          '<span class="' + unrCls + '">$' + fmtK(Math.abs(s.unrealized_pnl_usd)) +
+          (s.unrealized_pnl_usd < 0 ? ' loss' : ' gain') +
+          (s.unrealized_pnl_pct !== null && s.unrealized_pnl_pct !== undefined
+            ? ' (' + (s.unrealized_pnl_pct >= 0 ? '+' : '') + fmt(s.unrealized_pnl_pct, 1) + '% on cost)' : '') +
+          '</span> — not yet realized.',
       '</div>',
     ].join('\n');
   }
@@ -1117,7 +1154,10 @@ function renderSimResults(data, scenario) {
       '<div class="section-title">Currently Open Positions (' + openTrades.length + ')</div>',
       '<div class="card">',
       openTrades.map(function (t) { return tradeRowHTML(t, true); }).join('\n'),
-      '<div class="disclaimer" style="margin-top:8px;">Unrealized returns as of ' + escHtml(params.end_date) + '. Not closed yet.</div>',
+      // Open positions were force-closed on the LAST PRICE BAR the simulation
+      // loaded (their exit_date), not on the requested end_date — echoing the
+      // request here labeled month-old closes as current in production.
+      '<div class="disclaimer" style="margin-top:8px;">Unrealized returns as of ' + escHtml((openTrades[0].exit_date || '').substring(0, 10)) + ' (end of simulation window). Not closed yet.</div>',
       '</div>',
     ].join('\n');
   } else if (openTrades.length > 0) {
@@ -1178,6 +1218,7 @@ function renderSimResults(data, scenario) {
 
     cmpGrid,
     '<div style="margin:8px 0;">' + beatHtml + '</div>',
+    secondaryMetricsHtml,
 
     '<div class="card">',
     '  <div class="subsection" style="margin-top:0;">Details</div>',
@@ -1270,7 +1311,13 @@ function tradeRowHTML(t, isOpen) {
 
   var entryPx = '$' + fmt(t.entry_price, 2);
   var exitPx  = '$' + fmt(t.exit_price,  2);
-  var pricesStr = entryPx + ' &rarr; ' + exitPx + (isOpen ? ' <span style="color:var(--muted);">(now)</span>' : '');
+  // Never label a simulated price "(now)": t.exit_date is the last price bar
+  // the simulation actually used (the engine stamps trading_dates[-1] on
+  // force-closed positions), and it can be well before the requested end_date
+  // when the data window ends earlier. Simulator output is historical by design.
+  var lastBar = (t.exit_date || '').substring(0, 10);
+  var pricesStr = entryPx + ' &rarr; ' + exitPx +
+    (isOpen ? ' <span style="color:var(--muted);">(as of ' + escHtml(lastBar) + ', end of simulation window)</span>' : '');
 
   var entryMo = (t.entry_date || '').substring(0, 10);
   var exitMo  = (t.exit_date  || '').substring(0, 10);
@@ -1373,7 +1420,7 @@ function loadSettingsPortfolio() {
   var ctr = document.getElementById('settings-portfolio-list');
   if (!ctr) return;
   fetch('/api/portfolio')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) {
       var holdings = data.holdings || [];
       if (!holdings.length) {
@@ -1401,7 +1448,7 @@ function settingsRemoveHolding(ticker) {
   _portfolio = _portfolio.filter(function (h) { return h.ticker !== ticker; });
   // If _portfolio is empty (not loaded yet), fetch first then remove
   fetch('/api/portfolio')
-    .then(function (r) { return r.json(); })
+    .then(parseJson)
     .then(function (data) {
       var remaining = (data.holdings || []).filter(function (h) { return h.ticker !== ticker; });
       return fetch('/api/portfolio', {

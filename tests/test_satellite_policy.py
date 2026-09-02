@@ -19,6 +19,7 @@ import pytest
 import product.satellite_policy as sp
 from product.exit import exit_tracker
 from product.screener import daily_screener as ds
+from product.screener.universe_list import UniverseList
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -145,7 +146,12 @@ def test_policy_dict_is_the_frozen_config():
 @pytest.fixture
 def screener(tmp_path, monkeypatch):
     monkeypatch.setattr(ds, "_CACHE_DIR", tmp_path)
-    monkeypatch.setattr(ds, "get_universe_top_n", lambda d, n: ["AAA", "BBB"])
+    # The screener reads the monthly universe list (docs/ARCHITECTURE.md);
+    # stub that seam rather than the ranking.
+    monkeypatch.setattr(
+        ds, "load_universe_list",
+        lambda **_k: UniverseList(tickers=["AAA", "BBB"], as_of=date(2024, 3, 1),
+                                  age_days=0, is_late=False))
     monkeypatch.setattr(ds, "compute_recovery_signals", lambda ohlcv: _buy_scored())
     monkeypatch.setattr(ds, "passes_quality_gate", lambda snap: True)
     monkeypatch.setattr(ds, "is_vetoed", lambda t, d, **k: (False, ""))
@@ -200,9 +206,12 @@ def test_disk_cache_round_trips_overlay_fields(screener):
 
 def test_old_format_cache_file_still_loads(screener, tmp_path):
     """A cache written before the overlay existed has no regime/policy and no
-    per-row active/target — it must load, with the gaps honestly None."""
+    per-row active/target — it must load, with the gaps honestly None. (It does
+    carry the universe fingerprint, which predates the overlay; without a
+    matching fingerprint the cache is rightly discarded and recomputed.)"""
     old = {
         "as_of_date": "2024-03-01",
+        "universe_fingerprint": ds._universe_fingerprint(ds.load_universe_list()),
         "buy_signals": [{"ticker": "OLD", "current_price": 1.0, "high_52w": 2.0,
                          "drawdown_pct": 0.5, "dip_score": 1.0, "momentum_score": 1.0,
                          "volume_score": 1.0, "composite_score": 0.9, "gate": True,

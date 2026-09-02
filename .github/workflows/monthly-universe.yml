@@ -1,0 +1,134 @@
+name: Monthly universe
+
+# Ranks the Top-100 large-cap universe once a month and commits the resulting
+# list to main. See docs/ARCHITECTURE.md: GitHub Actions computes, Render reads.
+#
+# This is the ONE workflow that intentionally pushes to main. The daily screener
+# workflow deliberately avoids main (it uses the automation/daily-state branch)
+# because a daily redeploy would be wasteful churn. A monthly universe change is
+# different: it must reach the Render web service, which only ever reads
+# data/universe/current.json and never ranks anything itself. Committing here is
+# what triggers that redeploy, and once a month is the right cadence for it.
+#
+# Cadence is MONTHLY to match product/backtest/engine.py's universe rebuild
+# ("rebuilt monthly"). Do not change it without re-running backtest validation —
+# live must run the strategy whose statistics were actually measured.
+on:
+  schedule:
+    # 06:00 UTC on the 1st-5th. The script targets the month's FIRST TRADING DAY
+    # and is idempotent: it exits without writing once the committed list already
+    # matches, so the extra days are free retries if one run fails, not repeat
+    # commits. Days 1-2 may fall on a weekend, which the script skips cleanly.
+    - cron: "0 6 1-5 * *"
+  workflow_dispatch: {}
+
+# Needed to push the regenerated list to main.
+permissions:
+  contents: write
+
+concurrency:
+  group: monthly-universe
+  cancel-in-progress: false
+
+jobs:
+  build-universe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Do not leave the token in .git/config. This job installs and runs
+          # third-party code (pip deps, EODHD/SEC clients) while holding
+          # contents:write on a workflow that pushes to main — a persisted
+          # credential would be readable by any of it. The push step below
+          # supplies the token explicitly instead.
+          persist-credentials: false
+
+      - name: Compute weekly cache key
+        id: cachekey
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      # Carries data/cache/prices_raw between runs so the monthly rebuild only
+      # fetches series it does not already have.
+      - name: Restore API caches (prices, raw prices, EDGAR, universe)
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/cache
+            data/universe_cache
+          key: universe-cache-${{ runner.os }}-${{ steps.cachekey.outputs.week }}
+          restore-keys: |
+            universe-cache-${{ runner.os }}-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rank the monthly universe
+        env:
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT || 'recovery-detector-monthly (github actions; contact via repo owner)' }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        # Exits non-zero on a partial ranking, so a degraded universe fails the
+        # workflow visibly instead of being published.
+        run: python scripts/build_universe_list.py
+
+      - name: Commit the list to main if it changed
+        env:
+          # Supplied only to this step (checkout used persist-credentials:false).
+          # Actions masks the value in logs.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # A missing file here means the ranking step produced nothing. Never
+          # stage that: once current.json is tracked, `git add` on a deleted
+          # path stages the DELETION, and this job would cheerfully commit the
+          # universe's removal to main and take the live screener down.
+          if [ ! -f data/universe/current.json ]; then
+            echo "No universe list on disk — nothing to commit."
+            exit 0
+          fi
+
+          # Stage FIRST, then diff the index. `git diff` compares tracked paths
+          # only, so on the very first successful build — when current.json is
+          # still untracked — it reports no difference, and this guard would
+          # skip the commit and exit 0. The job goes green having published
+          # nothing, which is exactly how the first real ranking was lost.
+          # `git add` is idempotent and `--cached` compares index against HEAD,
+          # so a new file registers as a change while an unchanged one still
+          # short-circuits, preserving the idempotence the 1st-5th cron retries
+          # rely on.
+          git add data/universe/current.json
+          if git diff --cached --quiet -- data/universe/current.json; then
+            echo "No universe change to commit."
+            exit 0
+          fi
+
+          AS_OF=$(python -c "import json;print(json.load(open('data/universe/current.json'))['as_of'])")
+          N=$(python -c "import json;print(len(json.load(open('data/universe/current.json'))['tickers']))")
+
+          git commit -m "chore: monthly Top-${N} universe as of ${AS_OF}"
+
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          # Rebase+retry in case main moved while this job ran.
+          for attempt in 1 2 3; do
+            if git push "$REMOTE" HEAD:main; then
+              echo "Universe list for ${AS_OF} pushed to main."
+              exit 0
+            fi
+            echo "Push failed (attempt ${attempt}/3); reconciling and retrying..."
+            git pull --rebase --autostash "$REMOTE" main || true
+            sleep $((attempt * 5))
+          done
+
+          echo "ERROR: could not push the universe list to main after 3 attempts." >&2
+          exit 1

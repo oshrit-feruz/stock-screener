@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re as _re
 import sys
 import threading
 import time
@@ -42,7 +43,13 @@ from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
 from product.satellite_policy import SCHEMA_VERSION  # noqa: E402
-from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
+from product.screener.daily_screener import (  # noqa: E402
+    ScreenerRow,
+    _load_disk_cache,
+    _universe_fingerprint,
+    run_screener,
+)
+from product.screener.universe_list import UniverseListError, load_universe_list  # noqa: E402
 from scripts.fetch_release_cache import fetch_and_extract as _fetch_release_cache  # noqa: E402
 from scripts.seed_cache import seed as _seed_cache  # noqa: E402
 
@@ -82,11 +89,54 @@ def _make_backtest_yield_fn():
     return _yield
 
 
+def _warm_today_is_cheap() -> bool:
+    """True when the startup screener warm can run without a point-in-time
+    market-cap recomputation: either today's screener result is already on
+    disk (run_screener returns it instantly), or today's date appears in the
+    prebuilt PIT grid.
+
+    Today is virtually never a grid date (the grid holds first-trading-day-of-
+    month keys), so on a typical deploy the warm's get_universe_top_n(today)
+    recomputes market caps for ALL ~503 members. Measured cost of that path:
+    +188MB RSS (grid churn + EDGAR facts accumulation) at boot, concurrent
+    with any user backtest — the direct cause of the 512MB OOM restarts.
+    Skipping leaves the served screener output UNCHANGED: /api/screener's
+    on-demand path still computes for today exactly as before, just on first
+    request instead of automatically at boot alongside a backtest.
+
+    The grid check is a substring scan of the JSON file, NOT a parse — the
+    parsed grid dict costs 51MB of RSS and must not be loaded just for this.
+    """
+    today = date.today()
+    if (_ROOT / "data" / "screener_cache" / f"{today.isoformat()}.json").exists():
+        return True
+    grid = _ROOT / "data" / "cache" / "pit_market_cap" / "pit_market_caps.json"
+    try:
+        return f"|{today.isoformat()}\"" in grid.read_text()
+    except Exception as exc:  # noqa: BLE001
+        # Intentional fail-open: skip warm-up, never crash startup on a grid-read error.
+        logger.debug("STARTUP %s: pit grid check failed — %s", _BUILD_MARKER, exc)
+        return False
+
+
 def _warm_screener_cache() -> None:
     """Run screener in background at startup; populate memory + disk cache."""
-    global _sc_data, _sc_ts, _sc_warming
+    global _sc_data, _sc_ts, _sc_warming, _sc_universe_fp, _sc_warm_started
+    if not _warm_today_is_cheap():
+        logger.warning(
+            "STARTUP %s: screener warm-up SKIPPED — today is not covered by the "
+            "prebuilt PIT grid, so warming would recompute market caps for the "
+            "full membership at boot (measured ~+190MB RSS, concurrent with any "
+            "backtest — the 512MB OOM cause). The screener will compute on the "
+            "first /api/screener request instead; served results are unchanged.",
+            _BUILD_MARKER,
+        )
+        return
     with _sc_lock:
         _sc_warming = True
+        # Stamp it here too, so a warm thread killed mid-scan cannot wedge the
+        # flag for the life of the process.
+        _sc_warm_started = time.time()
     logger.warning("STARTUP %s: screener warm-up started (yields CPU to backtests between tickers)",
                    _BUILD_MARKER)
     t0 = time.time()
@@ -94,10 +144,14 @@ def _warm_screener_cache() -> None:
         _yield_fn = _make_backtest_yield_fn()
         _yield_fn()  # a backtest already running at boot delays the warm entirely
         result = run_screener(yield_fn=_yield_fn)
-        data = _screener_payload(result)
+        data = _screener_payload(result, computed_on=date.today())
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
+            # Stamp the universe this warm ran under, so the first request can
+            # actually reuse it. Without this the fingerprint would be None and
+            # every warm result would be discarded on the next request.
+            _sc_universe_fp = _universe_fingerprint(load_universe_list())
         logger.warning("STARTUP %s: screener warm-up finished in %.0fs (incl. any yield pauses)",
                        _BUILD_MARKER, time.time() - t0)
     except Exception:
@@ -136,6 +190,36 @@ def _startup_cache_report() -> None:
         _BUILD_MARKER, seed_dir.is_dir(), seed_files, prices, months,
         " -- WARNING: 0 months means the ranking cache is empty; Simulator "
         "will fall back to a 50-ticker static universe" if months == 0 else "",
+    )
+    _report_universe_list()
+
+
+def _report_universe_list() -> None:
+    """Log the monthly universe list's state at boot.
+
+    This is the screener's ONLY input on this service (docs/ARCHITECTURE.md:
+    Actions computes, Render reads), so it is the thing worth monitoring. The
+    previous report counted data/cache/prices and the PIT grid — both of which
+    read healthy for 7.5 weeks while the screener returned zero tickers every
+    day, because neither was the dependency that was actually missing. A health
+    check that watches the wrong directory is worse than none: it produces
+    confident green lights over a broken system.
+    """
+    try:
+        ul = load_universe_list()
+    except UniverseListError as exc:
+        logger.warning(
+            "STARTUP %s: universe list UNUSABLE — %s "
+            "/api/screener will return 503 until the monthly-universe workflow "
+            "commits a valid data/universe/current.json to main.",
+            _BUILD_MARKER, exc,
+        )
+        return
+    logger.warning(
+        "STARTUP %s: universe list OK — %d tickers, as_of %s (%d days old)%s",
+        _BUILD_MARKER, len(ul.tickers), ul.as_of, ul.age_days,
+        " -- WARNING: LATE, the monthly rebuild has not run for the current month"
+        if ul.is_late else "",
     )
 
 
@@ -192,6 +276,28 @@ _sc_lock = threading.Lock()  # guards _sc_data / _sc_ts / _sc_warming
 _sc_data: dict | None = None
 _sc_ts: float = 0.0
 _sc_warming = False          # True while background scan is running
+_sc_universe_fp: str | None = None   # universe fingerprint _sc_data was computed under
+_sc_warm_started: float = 0.0        # when the in-flight scan began (0 = none)
+
+# How long an in-flight scan may hold the single-flight flag before another
+# request may take over. _sc_warming is cleared in a `finally`, which does NOT
+# run when the thread holding it dies without unwinding — a worker timeout, or
+# the OOM killer taking the process mid-scan. When that happens the flag wedges
+# True forever and EVERY later request answers {"warming": true} while nothing
+# is actually computing. That is not a hypothetical: it is the observed
+# production symptom.
+_SC_WARM_TIMEOUT = 900.0
+
+# Whether this process may run the full 100-ticker scan inside a request.
+# Default OFF. docs/ARCHITECTURE.md: GitHub Actions computes, Render reads. A
+# scan in the request path on the 512MB tier is what the OOM kills came from,
+# and it is precisely the "(re)compute expensive things itself" the split
+# forbids. Set SCREENER_ONDEMAND_SCAN=1 to restore the old behaviour.
+_ALLOW_ONDEMAND_SCAN = os.environ.get("SCREENER_ONDEMAND_SCAN", "").strip().lower() in {"1", "true", "yes"}
+
+
+class ScreenerStateUnavailable(RuntimeError):
+    """No precomputed screener state, and this process may not compute one."""
 
 # Backtest job store — the backtest can run for minutes (large universe / cold
 # cache), well past any HTTP proxy timeout, so /api/backtest kicks it off in a
@@ -239,8 +345,10 @@ class BacktestParams(BaseModel):
     position_size_pct: float = 10.0
     max_positions:    int   = 10
     start_date:       str   = "2018-01-01"
-    # Default to today so the backtest end does not silently freeze in time.
-    end_date:         str   = Field(default_factory=lambda: date.today().isoformat())
+    # Default to today, capped at _SIM_MAX_END — otherwise every request that
+    # omits end_date would hit the cap check below and get a 400 once today
+    # passes the simulator's data boundary.
+    end_date:         str   = Field(default_factory=lambda: min(date.today(), _SIM_MAX_END).isoformat())
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -264,19 +372,21 @@ def _row_to_dict(r: ScreenerRow) -> dict:
     }
 
 
-def _screener_payload(result) -> dict:
-    """The /api/screener body. One builder for both the startup warm and the
-    request path, so the two can never publish different shapes.
+def _screener_payload(result, computed_on: Optional[date] = None) -> dict:
+    """The /api/screener body. One builder for the startup warm, the request
+    path and the published daily-state result, so they can never publish
+    different shapes.
 
-    Additive on purpose: `as_of`, `buy_signals` and `full_ranking` keep their
-    exact meaning and position; everything new sits beside them. `computed_on`
-    duplicates `as_of` because downstream readers prefer that key.
+    Additive on purpose: `as_of`, `computed_on`, `buy_signals` and
+    `full_ranking` keep their exact meaning and position; everything new sits
+    beside them. `computed_on` is the day the result was produced (defaults to
+    `as_of` when the caller has no better provenance).
     """
     as_of = result.as_of_date.isoformat()
     return {
         "schema_version":   SCHEMA_VERSION,
         "as_of":            as_of,
-        "computed_on":      as_of,
+        "computed_on":      (computed_on or result.as_of_date).isoformat(),
         "market_regime":    result.market_regime,      # null when SPY was unavailable
         "satellite_policy": result.satellite_policy,
         "buy_signals":      [_row_to_dict(r) for r in result.buy_signals],
@@ -287,7 +397,10 @@ def _screener_payload(result) -> dict:
 def _current_price(ticker: str, prices: PriceData) -> Optional[float]:
     today = date.today()
     try:
-        ohlcv = prices.get_prices(ticker, str(today - timedelta(days=10)), today.isoformat())
+        # Current-price context: a stale close here is displayed as the price
+        # NOW, so bound it (the empty-frame refusal falls through to None).
+        ohlcv = prices.get_prices(ticker, str(today - timedelta(days=10)), today.isoformat(),
+                                  max_stale_tdays=PriceData.CURRENT_MAX_STALE_TDAYS)
         if ohlcv is not None and not ohlcv.empty:
             return float(ohlcv["Close"].iloc[-1])
     except Exception:
@@ -378,24 +491,168 @@ def _fetch_news(ticker: str, api_key: str) -> Optional[dict]:
 
 # ── Screener cache helper ──────────────────────────────────────────────────────
 
+# Where the daily screener workflow publishes its output. The workflow pushes
+# data/screener_cache/<date>.json to the automation/daily-state branch (never
+# main, so no redeploy per day); this service pulls the one file it needs over
+# raw.githubusercontent.com. Overridable for tests and for a future move.
+#
+# Two operational caveats, deliberately documented here rather than discovered:
+#   * raw.githubusercontent.com caches responses for ~5 minutes, so a freshly
+#     pushed result can take a few minutes to become visible. At a daily
+#     cadence that is noise.
+#   * raw fetch on a PRIVATE repo returns 404 — indistinguishable from a
+#     missing file. If this repo ever goes private, every fetch will miss and
+#     the endpoint will 503; the 503 text and the log line below both name
+#     this failure mode so it is diagnosed in one read instead of re-derived.
+_DAILY_STATE_RAW_BASE = os.environ.get(
+    "DAILY_STATE_RAW_BASE",
+    "https://raw.githubusercontent.com/oshrit-feruz/stock-screener/automation/daily-state",
+)
+
+# How far back a published daily result may be and still be served. The daily
+# run fires weekdays at 11:30 UTC, so "today's file" does not exist on
+# weekends, holidays, or any weekday morning before ~11:35 UTC. 4 calendar
+# days covers a long weekend plus the Monday-morning gap. This is BOUNDED
+# staleness with provenance — the response carries computed_on so a client
+# showing Friday's scan on Sunday says so — not a silent fallback.
+_DAILY_STATE_LOOKBACK_DAYS = 4
+
+
+def _fetch_published_daily_result(as_of: date) -> bool:
+    """Fetch <as_of>.json from the daily-state branch into the local
+    data/screener_cache/, atomically. Returns True if a file was written.
+    Every failure mode logs and returns False — the caller falls through to
+    the honest 503, never to a scan."""
+    url = f"{_DAILY_STATE_RAW_BASE}/data/screener_cache/{as_of.isoformat()}.json"
+    try:
+        resp = requests.get(url, timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("screener: daily-state fetch failed for %s: %s", url, str(exc)[:200])
+        return False
+    if resp.status_code == 404:
+        # Expected for weekends/holidays/not-yet-run mornings. Also what a
+        # private repo returns for EVERY file — see _DAILY_STATE_RAW_BASE.
+        logger.info("screener: no published daily result at %s (404)", url)
+        return False
+    if resp.status_code != 200:
+        logger.warning("screener: daily-state fetch HTTP %s for %s", resp.status_code, url)
+        return False
+    try:
+        payload = resp.json()   # reject non-JSON before it can poison the cache
+        _sc_cache_dir = _screener_cache_dir()
+        _sc_cache_dir.mkdir(parents=True, exist_ok=True)
+        target = _sc_cache_dir / f"{as_of.isoformat()}.json"
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, target)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("screener: failed to store fetched daily result from %s", url)
+        return False
+
+
+def _screener_cache_dir():
+    from product.screener.daily_screener import _CACHE_DIR
+    return _CACHE_DIR
+
+
+def _load_recent_published_result(universe_fp: str):
+    """Newest usable result within the lookback window: (result, computed_on),
+    or (None, None). Local disk first, then one fetch from the daily-state
+    branch per missing date. Fingerprint mismatches are discarded by
+    _load_disk_cache — a result computed under a superseded universe is not
+    'slightly stale', it is wrong."""
+    for delta in range(_DAILY_STATE_LOOKBACK_DAYS + 1):
+        d = date.today() - timedelta(days=delta)
+        try:
+            cached = _load_disk_cache(d, universe_fp)
+        except Exception:
+            logger.exception("screener: disk-cache read failed for %s", d)
+            cached = None
+        if cached is None and _fetch_published_daily_result(d):
+            try:
+                cached = _load_disk_cache(d, universe_fp)
+            except Exception:
+                logger.exception("screener: fetched daily result unreadable for %s", d)
+                cached = None
+        if cached is not None:
+            return cached, d
+    return None, None
+
+
 def _get_screener_data() -> dict:
-    global _sc_data, _sc_ts, _sc_warming
+    global _sc_data, _sc_ts, _sc_warming, _sc_universe_fp
+    # Validate the universe BEFORE any cache short-circuit, and bind the cache
+    # to it. Two distinct failures are covered:
+    #   * list becomes unusable -> raises -> the route answers 503 instead of
+    #     serving an hour-old 200 with no indication;
+    #   * list is replaced (month boundary) -> fingerprint mismatch -> recompute,
+    #     rather than serving results for a superseded universe.
+    # Validity alone is not enough: a usable list does not prove _sc_data was
+    # computed from THAT list.
+    ulist = load_universe_list()
+    universe_fp = _universe_fingerprint(ulist)
+    global _sc_warm_started
     with _sc_lock:
-        # Return memory cache if fresh
-        if _sc_data and time.time() - _sc_ts < 3600:
+        # Return memory cache if fresh AND from the same universe
+        if _sc_data and time.time() - _sc_ts < 3600 and _sc_universe_fp == universe_fp:
             return _sc_data
-        # Background warming still running — return immediately, client retries
-        if _sc_warming:
+        # Background warming still running — return immediately, client retries.
+        # Unless the flag has wedged: see _SC_WARM_TIMEOUT. Without this, a scan
+        # killed mid-flight (worker timeout, OOM) leaves the flag True with no
+        # computation behind it and the endpoint answers "warming" forever.
+        if _sc_warming and (time.time() - _sc_warm_started) < _SC_WARM_TIMEOUT:
             return {"warming": True, "message": "Screener is warming up, please wait…"}
+        if _sc_warming:
+            logger.warning(
+                "screener: in-flight scan flag has been set for %.0fs with no result "
+                "(> %.0fs timeout) — assuming the worker died mid-scan and reclaiming it.",
+                time.time() - _sc_warm_started, _SC_WARM_TIMEOUT,
+            )
         # Mark refresh as in-flight before releasing lock
         _sc_warming = True
-    # No cache and not warming — run synchronously (should be fast from disk cache)
-    try:
-        result = run_screener()
-        data = _screener_payload(result)
+        _sc_warm_started = time.time()
+
+    # Prefer precomputed state. Local disk first, then the daily-state branch —
+    # a JSON load / one small HTTP GET, fingerprint compare, no scan — safe on
+    # the 512MB tier and the path the producer/consumer split intends.
+    cached, computed_on = _load_recent_published_result(universe_fp)
+    if cached is not None:
+        if computed_on != date.today():
+            logger.info("screener: serving result computed on %s (today is %s)",
+                        computed_on, date.today())
+        # Provenance, not decoration: the newest available result may be days
+        # old (weekend, holiday, pre-run morning). The client shows computed_on.
+        data = _screener_payload(cached, computed_on=computed_on)
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
+            _sc_universe_fp = universe_fp
+            _sc_warming = False
+        return data
+
+    if not _ALLOW_ONDEMAND_SCAN:
+        with _sc_lock:
+            _sc_warming = False
+        raise ScreenerStateUnavailable(
+            f"No published screener result within the last "
+            f"{_DAILY_STATE_LOOKBACK_DAYS} days, and this service does not scan "
+            "on demand. Results are produced by the daily screener workflow in "
+            "GitHub Actions and published to the automation/daily-state branch; "
+            "check that the workflow is running and pushing data/screener_cache. "
+            "(If the repository is private, the raw-file fetch returns 404 for "
+            "everything — that failure mode looks exactly like this.) "
+            "See docs/ARCHITECTURE.md. Set SCREENER_ONDEMAND_SCAN=1 to "
+            "re-enable in-process scanning."
+        )
+
+    try:
+        result = run_screener()
+        data = _screener_payload(result, computed_on=date.today())
+        with _sc_lock:
+            _sc_data = data
+            _sc_ts = time.time()
+            _sc_universe_fp = universe_fp
             _sc_warming = False
         return data
     except Exception:
@@ -406,6 +663,66 @@ def _get_screener_data() -> dict:
 
 # ── API routes ─────────────────────────────────────────────────────────────────
 
+# One process-wide EDGAR client for the fundamentals report. Same integration
+# the screener/backtest already use (shares outstanding, quality gate) — no new
+# data dependency. Its facts memo holds PRUNED slices (a few KB per ticker,
+# LRU-capped), so this stays far inside the 512MB budget: one small HTTP GET
+# on a cold ticker, dict lookups after.
+_edgar_report_client = None
+_edgar_report_lock = threading.Lock()
+
+
+def _get_edgar_report_client():
+    global _edgar_report_client
+    with _edgar_report_lock:
+        if _edgar_report_client is None:
+            from core.data.edgar import EdgarFundamentals
+            _edgar_report_client = EdgarFundamentals()
+        return _edgar_report_client
+
+
+_TICKER_RE = _re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+
+@app.get("/api/stock/{ticker}/fundamentals")
+def stock_fundamentals(ticker: str) -> dict:
+    """Fundamental highlights for one ticker, straight from SEC EDGAR.
+
+    Honest-status contract: "ok" carries real filed figures with their filing
+    date and form; anything missing or unparsable is "unavailable" with a
+    reason — never an estimated or fabricated number. Display-only and NOT
+    point-in-time (newest filing on record, no 90-day lag) — see
+    EdgarFundamentals.get_revenue_report; signals must keep using the PIT path.
+    """
+    t = ticker.upper().strip()
+    if not _TICKER_RE.match(t):
+        return {"ticker": ticker, "status": "unavailable",
+                "reason": "Invalid ticker symbol."}
+    try:
+        report = _get_edgar_report_client().get_revenue_report(t)
+    except Exception:
+        logger.exception("fundamentals report failed for %s", t)
+        report = None
+    if report is None:
+        return {"ticker": t, "status": "unavailable",
+                "reason": "No usable EDGAR filing data for this ticker (not SEC-listed, "
+                          "no annual revenue on file, or EDGAR unreachable)."}
+    return {
+        "ticker": t,
+        "status": "ok",
+        "revenue": {
+            "value":      report["revenue"],
+            "period_end": report["period_end"],
+            "yoy_pct":    report["yoy_pct"],
+        },
+        "filing": {
+            "filed": report["filed"],
+            "form":  report["form"],
+        },
+        "source": "SEC EDGAR companyfacts",
+    }
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "as_of": date.today().isoformat()}
@@ -413,7 +730,19 @@ def health() -> dict:
 
 @app.get("/api/screener")
 def screener() -> dict:
-    return _get_screener_data()
+    try:
+        return _get_screener_data()
+    except ScreenerStateUnavailable as exc:
+        # Same honesty rule as below: no state is a 503 with the reason, never a
+        # 200 carrying an empty ranking.
+        raise HTTPException(status_code=503, detail=str(exc))
+    except UniverseListError as exc:
+        # Loud by design. The universe list is produced by GitHub Actions and
+        # committed to main; if it is missing or stale this service has nothing
+        # legitimate to screen. Returning 503 with the reason is the honest
+        # answer — serving an empty ranking as a 200 is what hid this exact
+        # failure for 7.5 weeks.
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.get("/api/alerts")
@@ -681,6 +1010,15 @@ def portfolio_alerts() -> dict:
 # immediately (202); the client polls GET .../{job_id} for the result.
 
 _SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
+# Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and
+# the UI date-picker's max in product/web/index.html). Requests past this have no
+# cached prices for the tail, so every universe ticker would live-refetch its
+# entire history — the exact slow "still running for minutes" path the cache
+# exists to avoid. The UI already caps the picker here; this server-side guard
+# makes the boundary real for stale clients / direct API callers, returning a
+# clean 400 instead of a silent slow refetch. Bump this (and the UI max, and the
+# cache) together whenever the prebuilt cache is extended.
+_SIM_MAX_END = date(2026, 6, 30)
 
 
 def _prune_old_jobs(now: float) -> None:
@@ -742,6 +1080,12 @@ def backtest(body: BacktestParams) -> dict:
             status_code=400,
             detail="Simulator covers 2010 onward — EDGAR lacks pre-2009 shares "
                    "data for Top-100 ranking",
+        )
+    if end > _SIM_MAX_END:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Simulator data currently runs through {_SIM_MAX_END.isoformat()}. "
+                   f"Pick an end date on or before {_SIM_MAX_END.isoformat()}.",
         )
 
     params = {

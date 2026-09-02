@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
+from collections import OrderedDict
 from datetime import date, timedelta
 from pathlib import Path
 
 import requests
 
 from core.data.fundamentals import FundamentalSnapshot, PointInTimeFundamentals, _safe_ticker
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_EDGAR_CACHE = Path(__file__).parent.parent.parent / "data" / "cache" / "edgar"
 _PUBLICATION_LAG_DAYS = 90
@@ -21,6 +25,21 @@ _FACTS_URL   = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 _USER_AGENT  = os.environ.get(
     "EDGAR_USER_AGENT", "RecoveryDetector contact@example.com"
 )
+_UA_FROM_ENV = "EDGAR_USER_AGENT" in os.environ
+
+# One-time runtime diagnostics, mirroring core/data/eodhd.py. Logged at WARNING
+# so they surface under uvicorn's and GitHub Actions' default log config.
+#
+# These exist because EDGAR was the one dependency with NO observability: the
+# monthly universe build fetched 503 tickers, every market cap came back None,
+# and the logs said nothing at all about why — while EODHD's equivalent
+# diagnostics made its own health obvious. A dependency you cannot see the
+# status of is the one that will fail silently.
+#
+# The User-Agent VALUE is deliberately not logged (it can carry a real contact
+# email); only whether it was overridden and whether it carries a contact.
+_diag_ua_logged = False
+_diag_status_logged = False
 
 _REVENUE_CONCEPTS = [
     "Revenues",
@@ -41,18 +60,89 @@ _EQUITY_CONCEPTS = [
 ]
 _LT_DEBT_CONCEPTS = ["LongTermDebt", "LongTermDebtNoncurrent"]
 
+# Every (taxonomy, concept) this module ever reads out of a companyfacts JSON.
+# Used to prune the parsed document before memoizing it: the full JSON is
+# several MB per ticker (thousands of concepts), while these slices are a few
+# KB — and the in-memory LRU of 32 full documents measured as ~+175MB RSS
+# during a backtest, the second half of the 512MB OOM. The DISK cache keeps
+# the full JSON (new concepts can be adopted without refetching); only the
+# in-memory copy is pruned.
+_NEEDED_FACTS: list[tuple[str, str]] = (
+    [("us-gaap", c) for c in (
+        _REVENUE_CONCEPTS + _NET_INCOME_CONCEPTS + _EQUITY_CONCEPTS + _LT_DEBT_CONCEPTS
+    )]
+    + _SHARES_OUTSTANDING_CONCEPTS
+)
+
+
+def _prune_facts(data: dict | None) -> dict | None:
+    """Slice a parsed companyfacts document down to the concepts this module
+    reads, preserving the original nesting so every consumer indexes it
+    unchanged. Anything unexpected returns the input untouched — pruning is an
+    optimization and must never turn a readable document into an error."""
+    try:
+        facts = data["facts"]
+    except Exception:
+        return data
+    pruned: dict = {}
+    for tax, concept in _NEEDED_FACTS:
+        try:
+            entry = facts[tax][concept]
+        except Exception:
+            continue
+        pruned.setdefault(tax, {})[concept] = entry
+    return {"facts": pruned}
+
 
 def _cache_fresh(path: Path) -> bool:
     return path.exists() and (time.time() - path.stat().st_mtime) < _CACHE_TTL_SECONDS
 
 
+def _log_ua_once() -> None:
+    global _diag_ua_logged
+    if _diag_ua_logged:
+        return
+    _diag_ua_logged = True
+    # SEC's access policy requires a User-Agent identifying the requester with a
+    # contact address, and serves 403 to requests it considers unidentified. The
+    # "@" check is a cheap proxy for "carries a contact" — the value itself is
+    # not logged.
+    log.warning(
+        "EDGAR diagnostic: User-Agent overridden from environment: %s; carries a "
+        "contact address: %s (SEC returns 403 for unidentified User-Agents)",
+        _UA_FROM_ENV, "@" in _USER_AGENT,
+    )
+
+
 def _fetch_json(url: str) -> dict | None:
+    """GET a SEC JSON endpoint. Returns None on any failure — but now says why.
+
+    Every failure mode is logged. Previously all of them returned None silently,
+    which is how a total EDGAR outage presented as "0 tickers ranked" with no
+    indication that SEC was the cause.
+    """
+    global _diag_status_logged
     time.sleep(0.12)
+    _log_ua_once()
     try:
         resp = requests.get(url, headers={"User-Agent": _USER_AGENT}, timeout=30)
-        resp.raise_for_status()
+    except Exception as exc:  # network / TLS / timeout
+        log.warning("EDGAR: request failed for %s: %s", url, str(exc)[:200])
+        return None
+
+    if not _diag_status_logged:
+        _diag_status_logged = True
+        log.warning("EDGAR diagnostic: first fetch %s -> HTTP %s", url, resp.status_code)
+
+    if resp.status_code != 200:
+        # 403 => UA rejected / blocked; 429 => rate limited; 5xx => SEC-side.
+        log.warning("EDGAR: HTTP %s for %s: %s", resp.status_code, url, resp.text[:120])
+        return None
+
+    try:
         return resp.json()
-    except Exception:
+    except Exception as exc:
+        log.warning("EDGAR: bad JSON for %s: %r", url, exc)
         return None
 
 
@@ -127,7 +217,14 @@ class EdgarFundamentals:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._fallback = fallback
-        self._facts_mem: dict[str, dict | None] = {}  # in-memory parsed companyfacts
+        # In-memory parsed companyfacts, LRU-bounded. Full companyfacts JSONs
+        # are several MB each; an unbounded dict scanning a ~500-member
+        # universe accumulates hundreds of MB — and on the module-singleton
+        # instance (data.sp500_universe._edgar) it persists for the process
+        # lifetime, a direct contributor to the 512MB free-tier OOM. Evicted
+        # entries reload from the on-disk cache (identical values, small
+        # re-parse cost); the cap comfortably covers a scan's working set.
+        self._facts_mem: OrderedDict[str, tuple[float, dict | None]] = OrderedDict()
 
     # ── CIK lookup ────────────────────────────────────────────────────────
 
@@ -163,38 +260,57 @@ class EdgarFundamentals:
     def _facts_cache_path(self, ticker: str) -> Path:
         return self.cache_dir / f"{_safe_ticker(ticker)}.json"
 
+    _FACTS_MEM_MAX = 32  # LRU cap; see __init__ — bounds RSS, not correctness
+
+    def _facts_memo_put(self, ticker: str, data: dict | None) -> None:
+        # Stamped with load time so a long-lived client (the API's process-wide
+        # fundamentals report client, in particular) can't serve a memory hit
+        # past the disk TTL forever. Without this, a ticker touched often stays
+        # at the LRU's head indefinitely — a newly filed annual report would
+        # never become visible on that process until it happened to restart.
+        self._facts_mem[ticker] = (time.time(), data)
+        self._facts_mem.move_to_end(ticker)
+        while len(self._facts_mem) > self._FACTS_MEM_MAX:
+            self._facts_mem.popitem(last=False)
+
     def _get_facts(self, ticker: str) -> dict | None:
         # In-memory memo: companyfacts JSON can be several MB; repeated point-in-
         # time lookups across many dates would otherwise re-parse it every call.
         if ticker in self._facts_mem:
-            return self._facts_mem[ticker]
+            loaded_at, cached = self._facts_mem[ticker]
+            if time.time() - loaded_at < _CACHE_TTL_SECONDS:
+                self._facts_mem.move_to_end(ticker)   # LRU touch
+                return cached
+            del self._facts_mem[ticker]               # expired — fall through and refetch
 
         path = self._facts_cache_path(ticker)
         if _cache_fresh(path):
             try:
                 with open(path) as f:
                     data = json.load(f)
-                self._facts_mem[ticker] = data
+                data = _prune_facts(data)
+                self._facts_memo_put(ticker, data)
                 return data
             except Exception:
                 pass
 
         cik = self._get_cik(ticker)
         if cik is None:
-            self._facts_mem[ticker] = None
+            self._facts_memo_put(ticker, None)
             return None
 
         data = _fetch_json(_FACTS_URL.format(cik=int(cik)))
         if data is None:
-            self._facts_mem[ticker] = None
+            self._facts_memo_put(ticker, None)
             return None
 
         try:
             with open(path, "w") as f:
-                json.dump(data, f)
+                json.dump(data, f)   # disk keeps the FULL document
         except Exception:
             pass
-        self._facts_mem[ticker] = data
+        data = _prune_facts(data)
+        self._facts_memo_put(ticker, data)
         return data
 
     # ── public interface ──────────────────────────────────────────────────
@@ -278,6 +394,57 @@ class EdgarFundamentals:
             s for year in years
             if (s := self.get_snapshot(ticker, date(year, 12, 31))) is not None
         ]
+
+    def get_revenue_report(self, ticker: str) -> dict | None:
+        """Latest ANNUAL revenue on record, for the /api/stock/{t}/fundamentals
+        report. Returns {"revenue", "period_end", "filed", "form", "yoy_pct"}
+        or None when EDGAR has nothing usable for this ticker.
+
+        Display-only and deliberately NOT point-in-time: cutoff is today with
+        NO publication lag, because a report should show the newest filing on
+        record, while the backtest/screener paths must not see a filing before
+        (filed + 90d). Never feed this into signal computation — get_snapshot
+        is the PIT interface. yoy_pct is derived only when a prior-year annual
+        entry exists in a 280-420 day window (53-week fiscal years included);
+        otherwise it is None, never estimated.
+        """
+        try:
+            facts = self._get_facts(ticker)
+            if not facts:
+                return None
+            today = date.today()
+            rev_concept, rev_entry = _first_concept(facts, _REVENUE_CONCEPTS, today)
+            if rev_entry is None:
+                return None
+            yoy_pct = None
+            all_rev = _annual_entries(facts, rev_concept, cutoff=today)
+            current_end = date.fromisoformat(rev_entry["end"])
+            prior = next(
+                (e for e in all_rev
+                 if 280 <= (current_end - date.fromisoformat(e["end"])).days <= 420),
+                None,
+            )
+            if prior is not None:
+                try:
+                    prior_val = float(prior["val"])
+                    # A non-positive prior denominator makes the ratio meaningless
+                    # (e.g. revenue 100 vs prior -100 -> -200%, not a real "-200%
+                    # decline"). Treat it the same as no comparable prior: None,
+                    # not a fabricated-looking number.
+                    if prior_val > 0:
+                        yoy_pct = round((float(rev_entry["val"]) / prior_val - 1) * 100, 1)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    yoy_pct = None
+            return {
+                "revenue":    float(rev_entry["val"]),
+                "period_end": rev_entry["end"],
+                "filed":      rev_entry["filed"],
+                "form":       rev_entry.get("form", "10-K"),
+                "yoy_pct":    yoy_pct,
+            }
+        except Exception:
+            log.warning("EDGAR: revenue report failed for %s", ticker, exc_info=True)
+            return None
 
     def get_shares_outstanding(self, ticker: str, as_of_date: date | str) -> float | None:
         """Common shares outstanding known as of `as_of_date`, point-in-time.

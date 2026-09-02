@@ -15,7 +15,7 @@ import product.beta.beta_tracker as bt
 
 class _FakePrices:
     """Deterministic prices: each ticker has a constant close; SPY ramps +10%."""
-    def get_prices(self, ticker, start, end):
+    def get_prices(self, ticker, start, end, max_stale_tdays=None):
         idx = pd.bdate_range(start, end)
         if len(idx) == 0:
             idx = pd.DatetimeIndex([pd.Timestamp(end)])

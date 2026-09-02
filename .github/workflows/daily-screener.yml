@@ -32,7 +32,12 @@ env:
   STATE_BRANCH: automation/daily-state
   # The small state that must persist run-to-run (all git-tracked, not ignored):
   # positions, screener state, daily alerts, and the beta-tracking report.
-  STATE_PATHS: data/positions data/screener_state data/alerts data/beta_tracking
+  # data/screener_cache is also PUBLISHED here: the Render web service fetches
+  # data/screener_cache/<date>.json from this branch over raw.githubusercontent
+  # and serves it — it never runs the 100-ticker scan itself (512MB tier; see
+  # docs/ARCHITECTURE.md "Actions computes, Render reads"). Removing it from
+  # this list silently takes /api/screener back to permanent 503.
+  STATE_PATHS: data/positions data/screener_state data/alerts data/beta_tracking data/screener_cache
 
 jobs:
   run-daily:
@@ -130,7 +135,13 @@ jobs:
 
           cd "$WT"
           for p in $STATE_PATHS; do
-            git add -A "$p" 2>/dev/null || true
+            # -f: data/screener_cache/*.json is in .gitignore (correct for main,
+            # where run outputs are transient), but on THIS branch it is the
+            # published artifact the web service serves. Without -f, git add
+            # skips ignored files silently, the empty-commit guard passes, and
+            # the workflow goes green having published nothing — the same
+            # silent-skip failure the monthly workflow had (PR #49).
+            git add -A -f "$p" 2>/dev/null || true
           done
 
           # Guard against empty commits: nothing changed → nothing to push.
