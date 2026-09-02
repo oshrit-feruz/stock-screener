@@ -41,6 +41,7 @@ from product.alerts.alert_templates import (  # noqa: E402
 from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
+from product.satellite_policy import SCHEMA_VERSION  # noqa: E402
 from product.screener.daily_screener import ScreenerRow, run_screener  # noqa: E402
 from scripts.fetch_release_cache import fetch_and_extract as _fetch_release_cache  # noqa: E402
 from scripts.seed_cache import seed as _seed_cache  # noqa: E402
@@ -93,11 +94,7 @@ def _warm_screener_cache() -> None:
         _yield_fn = _make_backtest_yield_fn()
         _yield_fn()  # a backtest already running at boot delays the warm entirely
         result = run_screener(yield_fn=_yield_fn)
-        data = {
-            "as_of":        result.as_of_date.isoformat(),
-            "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
-            "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
-        }
+        data = _screener_payload(result)
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
@@ -261,6 +258,29 @@ def _row_to_dict(r: ScreenerRow) -> dict:
         "gate":            r.gate,
         "signal":          r.signal,
         "veto_reason":     r.veto_reason,
+        # Overlay fields (additive; consumers that pick known keys are unaffected).
+        "active":           r.active,
+        "target_exit_date": r.target_exit_date,
+    }
+
+
+def _screener_payload(result) -> dict:
+    """The /api/screener body. One builder for both the startup warm and the
+    request path, so the two can never publish different shapes.
+
+    Additive on purpose: `as_of`, `buy_signals` and `full_ranking` keep their
+    exact meaning and position; everything new sits beside them. `computed_on`
+    duplicates `as_of` because downstream readers prefer that key.
+    """
+    as_of = result.as_of_date.isoformat()
+    return {
+        "schema_version":   SCHEMA_VERSION,
+        "as_of":            as_of,
+        "computed_on":      as_of,
+        "market_regime":    result.market_regime,      # null when SPY was unavailable
+        "satellite_policy": result.satellite_policy,
+        "buy_signals":      [_row_to_dict(r) for r in result.buy_signals],
+        "full_ranking":     [_row_to_dict(r) for r in result.full_ranking],
     }
 
 
@@ -372,11 +392,7 @@ def _get_screener_data() -> dict:
     # No cache and not warming — run synchronously (should be fast from disk cache)
     try:
         result = run_screener()
-        data = {
-            "as_of":        result.as_of_date.isoformat(),
-            "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
-            "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
-        }
+        data = _screener_payload(result)
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
