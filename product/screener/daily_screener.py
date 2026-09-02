@@ -1,13 +1,16 @@
 """Daily screener: scan the point-in-time Top-100 universe as of today and
 return BUY signals.
 
-The universe is the 100 largest S&P 500 members by point-in-time market cap,
-ranked MONTHLY by scripts/build_universe_list.py in GitHub Actions and read
-here from data/universe/current.json (see docs/ARCHITECTURE.md). This process
-never ranks and never substitutes a fallback universe. Monthly matches the
-rebuild cadence of the validated backtest (product/backtest/engine.py's
-_UNIVERSE_N, "rebuilt monthly") — live and backtest must stay in lockstep or
-the live results are no longer attributable to the backtested strategy.
+The universe is the 100 largest S&P 500 members by point-in-time
+dollar-volume (data.sp500_universe.get_universe_top_n — survivorship-free: it
+needs only prices, so delisted members rank too, unlike a market-cap ranking
+via EDGAR shares), ranked MONTHLY by scripts/build_universe_list.py in GitHub
+Actions and read here from data/universe/current.json (see
+docs/ARCHITECTURE.md). This process never ranks and never substitutes a
+fallback universe. Monthly matches the rebuild cadence of the validated
+backtest (product/backtest/engine.py's _UNIVERSE_N, "rebuilt monthly") — live
+and backtest must stay in lockstep or the live results are no longer
+attributable to the backtested strategy.
 
 Reuses existing signal logic from core.signals.recovery_score and
 core.data.edgar — no signal logic is reimplemented here.
@@ -15,8 +18,15 @@ core.data.edgar — no signal logic is reimplemented here.
 Signal parameters (FROZEN — do not modify):
   Weights:       dip=50%  momentum=30%  volume=20%
   BUY threshold: 0.60
-  Gate:          fail-closed (gate=None treated as False)
-  Exit rule:     Hold 252 trading days. No stop-loss. (enforced by exit_tracker)
+  Gate:          fail-open (only an explicit gate=False demotes to SKIP; gate=None
+                 passes on the signal alone, so the gate adds no survivorship bias)
+  Exit rule:     Hold HOLD_TRADING_DAYS (504, ~2y). No stop-loss, no take-profit.
+                 (product/satellite_policy.py; enforced by exit_tracker)
+  Overlay:       every payload carries `market_regime` (SPY drawdown from its
+                 trailing 252-day high, gate 10%) and `satellite_policy`; each
+                 row carries `active` (BUY && in_dislocation) and
+                 `target_exit_date`. Signals are never suppressed by the regime —
+                 `active` says whether NOW is the time to deploy a sleeve.
 """
 from __future__ import annotations
 
@@ -43,10 +53,17 @@ from core.signals.recovery_score import (  # noqa: E402
     passes_quality_gate,
 )
 from data.sec_8k_veto import is_vetoed  # noqa: E402
+from product.satellite_policy import (  # noqa: E402
+    fill_date,
+    is_active,
+    market_regime,
+    policy_dict,
+    target_exit_date,
+)
 from product.screener.universe_list import load_universe_list  # noqa: E402
 
-# Point-in-time universe size: the 100 largest S&P 500 members by market cap as
-# of each run date (matches the research harness). Rebuilt once per run.
+# Point-in-time universe size: the 100 largest S&P 500 members by dollar-volume
+# as of the monthly list's as-of date (matches the research harness).
 _UNIVERSE_N = 100
 
 # 252 trading days are required because dip_score uses close.rolling(252).max();
@@ -102,6 +119,10 @@ def _load_disk_cache(as_of: date, universe_fp: str) -> "ScreenerResult | None":
             buy_signals  = [_row(r) for r in data["buy_signals"]],
             full_ranking = full_ranking,
             vetoed       = [r for r in full_ranking if r.signal == "VETO"],
+            # Cache files written before the overlay fields existed still load:
+            # a missing regime is honestly None, the policy is the current one.
+            market_regime    = data.get("market_regime"),
+            satellite_policy = data.get("satellite_policy") or policy_dict(),
         )
     except Exception as exc:
         logger.warning("screener disk cache load failed: %s", exc)
@@ -114,10 +135,12 @@ def _save_disk_cache(result: "ScreenerResult", universe_fp: str) -> None:
         path = _cache_path(result.as_of_date)
         with open(path, "w") as f:
             json.dump({
-                "as_of_date":  result.as_of_date.isoformat(),
+                "as_of_date":           result.as_of_date.isoformat(),
                 "universe_fingerprint": universe_fp,
-                "buy_signals": [asdict(r) for r in result.buy_signals],
-                "full_ranking": [asdict(r) for r in result.full_ranking],
+                "buy_signals":          [asdict(r) for r in result.buy_signals],
+                "full_ranking":         [asdict(r) for r in result.full_ranking],
+                "market_regime":        result.market_regime,
+                "satellite_policy":     result.satellite_policy,
             }, f)
     except Exception as exc:
         logger.warning("screener disk cache save failed: %s", exc)
@@ -135,9 +158,12 @@ class ScreenerRow:
     momentum_score: Optional[float]
     volume_score: Optional[float]
     composite_score: Optional[float]
-    gate: Optional[bool]       # True=pass, False=fail, None=unknown→treated as False
+    gate: Optional[bool]       # True=pass, False=fail, None=unknown→passes (fail-open)
     signal: str                # "BUY" | "WATCH" | "SKIP" | "INSUFFICIENT_DATA" | "VETO"
     veto_reason: Optional[str] = None  # set when signal == "VETO" (8-K veto)
+    # Overlay fields (additive; None when the market regime is unknown).
+    active: Optional[bool] = None            # BUY && market in dislocation → deploy a sleeve now
+    target_exit_date: Optional[str] = None   # ISO date = as_of + HOLD_TRADING_DAYS weekdays
 
 
 @dataclass
@@ -148,18 +174,23 @@ class ScreenerResult:
     buy_signals: List[ScreenerRow]    # signal == "BUY", sorted by composite desc
     full_ranking: List[ScreenerRow]   # all tickers, sorted by composite desc
     vetoed: List[ScreenerRow] = field(default_factory=list)  # signal == "VETO"
+    # Overlay context published with every result (additive).
+    market_regime: Optional[dict] = None                     # None when SPY was unavailable
+    satellite_policy: dict = field(default_factory=policy_dict)
 
 
 def _classify(composite: Optional[float], gate: Optional[bool]) -> str:
     """Map (composite, gate) to signal string using frozen thresholds.
 
-    Gate=None is treated as False (fail-closed): we won't recommend a buy
-    without confirmed fundamental data.
+    Fail-OPEN on the quality gate: only an explicit fundamental FAIL (gate is
+    False) demotes a candidate to SKIP. Gate=None (no confirmed fundamentals —
+    e.g. a delisted name with no EDGAR CIK) passes through on the price signal
+    alone, so the gate does not re-introduce survivorship bias into the
+    dollar-volume universe. Quality still filters names where data exists.
     """
     if composite is None:
         return "INSUFFICIENT_DATA"
-    effective_gate = gate if gate is not None else False
-    if effective_gate is False:
+    if gate is False:
         return "SKIP"
     if composite >= BUY_THRESHOLD:
         return "BUY"
@@ -214,7 +245,8 @@ def run_screener(
 
     Error handling:
         - Ticker with < 252 rows of price history → skipped, warning logged.
-        - Ticker with no EDGAR / fundamentals data → gate = False (fail-closed).
+        - Ticker with no EDGAR / fundamentals data → gate = None → passes on the
+          signal alone (fail-open); only an explicit gate = False demotes to SKIP.
         - Any unexpected exception per ticker → skipped, warning logged.
     """
     if as_of_date is None:
@@ -260,6 +292,22 @@ def run_screener(
         )
     logger.info("Daily screener starting — %s, scanning %d tickers (universe as_of %s)",
                 as_of_date, len(universe), ulist.as_of)
+
+    # Market regime once per run: SPY drawdown from its trailing 252-day high.
+    # None (SPY unavailable) is published as null, never invented; per-row
+    # `active` is then None too, while the signal itself is unaffected.
+    regime = market_regime(prices, as_of_date, _WARMUP_START)
+    if regime is None:
+        logger.warning("screener: market regime unknown for %s (no SPY data) — "
+                       "publishing market_regime=null, active=null", as_of_date)
+    else:
+        logger.info("Market regime %s: SPY %.1f%% below trailing high — %s",
+                    as_of_date, regime["spy_dd_from_high"] * 100,
+                    "DISLOCATION (sleeves active)" if regime["in_dislocation"]
+                    else "calm (satellite parked in core)")
+    # A BUY seen at as_of's close fills at the NEXT session; the tracker counts
+    # the hold from that fill, so the published target starts there too.
+    exit_target = target_exit_date(fill_date(as_of_date)).isoformat()
 
     rows: List[ScreenerRow] = []
 
@@ -322,6 +370,8 @@ def run_screener(
                 gate           = gate,
                 signal         = signal,
                 veto_reason    = veto_reason,
+                active         = is_active(signal, regime),
+                target_exit_date = exit_target if signal == "BUY" else None,
             ))
 
         except Exception as exc:
@@ -340,10 +390,12 @@ def run_screener(
                 len(buy_signals), 0, len(vetoed))
 
     result = ScreenerResult(
-        as_of_date   = as_of_date,
-        buy_signals  = buy_signals,
-        full_ranking = rows,
-        vetoed       = vetoed,
+        as_of_date       = as_of_date,
+        buy_signals      = buy_signals,
+        full_ranking     = rows,
+        vetoed           = vetoed,
+        market_regime    = regime,
+        satellite_policy = policy_dict(),
     )
     _save_disk_cache(result, universe_fp)
     return result

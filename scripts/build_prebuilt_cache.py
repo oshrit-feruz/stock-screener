@@ -102,7 +102,8 @@ def _dir_mb(path: Path) -> float:
 def main() -> None:
     if _SEED.exists():
         shutil.rmtree(_SEED)
-    for sub in ("pit_market_cap", "prices", "edgar", "sp500_universe", "fred"):
+    for sub in ("pit_dollar_volume", "pit_market_cap", "prices", "edgar",
+                "sp500_universe", "fred"):
         (_SEED / sub).mkdir(parents=True, exist_ok=True)
 
     fdates = _monthly_rebuild_dates()
@@ -111,10 +112,15 @@ def main() -> None:
                          "cannot build monthly rebuild calendar.")
     print(f"Rebuild dates: {len(fdates)} months ({fdates[0]} .. {fdates[-1]})")
 
-    # 1) Full market-cap grid for the ranking pool, then the Top-100 union.
+    # 1) Full dollar-volume grid for the ranking pool, then the Top-100 union.
+    #    Ranking is by point-in-time dollar-volume (survivorship-free — see
+    #    data/sp500_universe). The market-cap grid is still built + shipped for
+    #    reference/comparison, but get_universe_top_n now ranks by dollar-volume.
     full_union = sorted({t for d in fdates for t in u.get_universe(d)})
-    print(f"S&P membership union: {len(full_union)} tickers — computing PIT market caps…")
-    u.prefetch_pit_market_caps(full_union, fdates)  # warms data/cache/pit_market_cap
+    print(f"S&P membership union: {len(full_union)} tickers — computing PIT dollar-volumes…")
+    u.prefetch_pit_dollar_volumes(full_union, fdates)  # warms data/cache/pit_dollar_volume
+    print("  …and PIT market caps (reference only)…")
+    u.prefetch_pit_market_caps(full_union, fdates)     # warms data/cache/pit_market_cap
 
     top_union: set[str] = set()
     for d in fdates:
@@ -123,9 +129,11 @@ def main() -> None:
     print(f"Top-{TOP_N} PIT union: {len(top_union)} tickers")
     if len(top_union) < 50:
         raise SystemExit(f"Top-N union suspiciously small ({len(top_union)}); "
-                         "is the local raw-price / EDGAR cache warm?")
+                         "is the local raw-price cache warm?")
 
-    # Copy the market-cap grid verbatim (immutable historical entries).
+    # Copy the ranking grid (dollar-volume) + the reference market-cap grid.
+    shutil.copy2(_CACHE / "pit_dollar_volume" / "pit_dollar_volumes.json",
+                 _SEED / "pit_dollar_volume" / "pit_dollar_volumes.json")
     shutil.copy2(_CACHE / "pit_market_cap" / "pit_market_caps.json",
                  _SEED / "pit_market_cap" / "pit_market_caps.json")
 

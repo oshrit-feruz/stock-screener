@@ -8,10 +8,10 @@ further out of date every month with no error.
 Two behaviours are pinned here:
   1. a cached frame that does not reach the as-of date is treated as stale;
   2. a refresh REPLACES the ticker's file rather than adding a second one —
-     load-bearing, because _raw_close() resolves a ticker with
-     `sorted(glob(f"{ticker}_*.pkl"))[0]`, the EARLIEST start date, so an
-     accumulated old file would keep winning and the refresh would silently
-     have no effect.
+     load-bearing, because data.sp500_universe._raw_frame() reads the
+     deepest-START candidate (under either the safe `BRKB_*` or legacy
+     `BRK.B_*` spelling), so an accumulated old file would keep winning and
+     the refresh would silently have no effect.
 """
 from __future__ import annotations
 
@@ -127,6 +127,19 @@ def test_ticker_with_stale_AND_fresh_file_is_not_current(tmp_path):
 def test_other_tickers_do_not_leak_into_the_decision(tmp_path):
     _pickle(tmp_path, "MSFT_2025-09-01.pkl", _frame("2026-09-01"))
     assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is False
+
+
+def test_dotted_ticker_deep_safe_file_beats_shallow_legacy_file(tmp_path):
+    """Both naming contracts coexist for a dotted ticker (BRKB_* from the
+    clean-universe fetch, BRK.B_* from this builder). The chosen file must be
+    the deepest-START one regardless of spelling — never lexical path order,
+    which would let a shallow legacy file shadow a deep safe-name one."""
+    _pickle(tmp_path, "BRK.B_2025-09-01.pkl", _frame("2026-09-01"))     # shallow, fresh
+    _pickle(tmp_path, "BRKB_1998-06-01_2024-12-31.pkl", _frame("2026-08-03"))  # deep, stale
+    chosen = bul.u._raw_candidates("BRK.B", tmp_path)[0]
+    assert chosen.name == "BRKB_1998-06-01_2024-12-31.pkl"
+    assert _ticker_is_current(tmp_path, "BRK.B", _AS_OF) is False   # judged on the chosen file
+    assert _refresh_start(tmp_path, "BRK.B", "2025-09-01") == "1998-06-01"
 
 
 def test_accumulating_would_have_regressed(tmp_path):

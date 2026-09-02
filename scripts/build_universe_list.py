@@ -2,7 +2,10 @@
 """Rank the monthly Top-N large-cap universe and write data/universe/current.json.
 
 ARCHITECTURE (docs/ARCHITECTURE.md): **GitHub Actions computes, Render reads.**
-This is the only place the expensive point-in-time market-cap ranking runs. It
+This is the only place the point-in-time ranking runs. The rank is by trailing
+median DOLLAR-VOLUME (raw close x raw volume; data.sp500_universe.get_universe_top_n),
+which is survivorship-free — it needs only prices, so it never depends on SEC's
+active-tickers list the way the former market-cap ranking did. It
 executes once a month on a GitHub Actions runner (~16GB RAM, no time pressure),
 and its output — a plain JSON list of tickers — is committed to main. Render's
 web service never ranks; product/screener/universe_list.py only reads this file.
@@ -143,17 +146,18 @@ def _covers(path: Path, as_of: date) -> bool:
 
 
 def _ticker_is_current(raw_dir: Path, ticker: str, as_of: date) -> bool:
-    """True if the raw file `_raw_close()` will actually read reaches `as_of`.
+    """True if the raw file `_raw_frame()` will actually read reaches `as_of`.
 
-    Freshness must be judged on the CHOSEN file — data.sp500_universe._raw_close
-    resolves a ticker with `sorted(glob(f"{ticker}_*.pkl"))[0]`, the earliest
-    start date — not on "some file for this ticker is fresh". With an old file
-    and a fresh one side by side the latter is true while the ranking still
-    reads the stale one, so an `any()` test silently passes a ticker whose price
-    is months out of date. Judging the chosen file collapses that case into
-    "stale"; the refresh then unlinks the duplicates.
+    Freshness must be judged on the CHOSEN file — data.sp500_universe picks the
+    deepest-history candidate under either naming contract (safe `BRKB_*` or
+    legacy `BRK.B_*`, see `_raw_candidates`) — not on "some file for this
+    ticker is fresh". With an old file and a fresh one side by side the latter
+    is true while the ranking still reads the stale one, so an `any()` test
+    silently passes a ticker whose price is months out of date. Judging the
+    chosen file collapses that case into "stale"; the refresh then unlinks the
+    duplicates under both spellings.
     """
-    existing = sorted(raw_dir.glob(f"{ticker}_*.pkl"))
+    existing = u._raw_candidates(ticker, raw_dir)
     if not existing:
         return False
     return _covers(existing[0], as_of)
@@ -163,33 +167,28 @@ def _refresh_start(raw_dir: Path, ticker: str, default_start: str) -> str:
     """Earliest start to refetch from: never later than history already held.
 
     Returns the earliest start date encoded in this ticker's existing filenames
-    if it predates `default_start`, else `default_start`. Keeps a refresh from
-    truncating the deep history build_full_cache.py relies on.
+    (either naming contract) if it predates `default_start`, else
+    `default_start`. Keeps a refresh from truncating the deep history
+    build_full_cache.py relies on.
     """
-    starts = []
-    for p in raw_dir.glob(f"{ticker}_*.pkl"):
-        stem = p.stem.rsplit("_", 1)
-        if len(stem) == 2:
-            try:
-                date.fromisoformat(stem[1])
-                starts.append(stem[1])
-            except ValueError:
-                continue
-    return min(starts + [default_start])
+    starts = [u._raw_start_date(p, ticker) for p in u._raw_candidates(ticker, raw_dir)]
+    return min([s for s in starts if s] + [default_start])
 
 
 def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
     """Fetch raw (unadjusted) price series that are missing OR stale for `as_of`.
 
-    Raw prices are required because market cap must be raw_close x raw shares —
-    split-adjusted prices would deflate every future-splitter and corrupt the
-    cross-sectional ranking.
+    Raw prices are required because dollar-volume must be raw_close x raw volume —
+    split-adjusted prices and volumes would distort every future-splitter and
+    corrupt the cross-sectional ranking.
 
-    Writes exactly ONE file per ticker, replacing any earlier one. This is
-    load-bearing, not tidiness: data.sp500_universe._raw_close() resolves a
-    ticker with `sorted(glob(f"{ticker}_*.pkl"))[0]` — the EARLIEST start date.
-    Leaving last month's file alongside a fresh one would mean the ranking keeps
-    reading the stale file and the refresh silently has no effect.
+    Writes exactly ONE file per ticker (canonical filesystem-safe name, the same
+    contract as the clean-universe fetch), replacing any earlier one under
+    either spelling. This is load-bearing, not tidiness:
+    data.sp500_universe._raw_frame() reads the deepest-history candidate across
+    BOTH naming contracts. Leaving last month's file alongside a fresh one would
+    mean the ranking keeps reading the stale file and the refresh silently has
+    no effect.
     """
     _RAW.mkdir(parents=True, exist_ok=True)
     default_start = (pd.Timestamp(as_of) - pd.Timedelta(days=_RAW_LOOKBACK_DAYS)).date().isoformat()
@@ -225,9 +224,9 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
             #      _ticker_is_current()/_raw_close() depend on there being
             #      exactly one — an atomic replace alone would leave an older
             #      earliest-start duplicate winning the sort.
-            target = _RAW / f"{t}_{start}.pkl"
+            target = _RAW / f"{u._safe_ticker(t)}_{start}.pkl"
             _atomic_write_pickle(target, df)
-            for old in _RAW.glob(f"{t}_*.pkl"):
+            for old in u._raw_candidates(t, _RAW):  # both spellings
                 if old != target:
                     old.unlink(missing_ok=True)
             got += 1
@@ -241,28 +240,28 @@ def _ensure_raw_prices(pool: list[str], as_of: date) -> tuple[int, list[str]]:
 
 
 def _diagnose_empty_ranking(pool: list[str], as_of: date, sample: int = 5) -> str:
-    """Explain WHICH market-cap input is missing, for the abort message.
+    """Explain WHICH dollar-volume input is missing, for the abort message.
 
-    "ranking produced 0/100" on its own is not actionable — market cap is
-    raw_close x EDGAR shares, and the two fail for completely different reasons
-    (price provider vs SEC). Naming the failing side turns a debugging session
-    into a glance at the log.
+    "ranking produced 0/100" on its own is not actionable — the trailing median
+    dollar-volume needs a raw close AND at least `_DV_WINDOW` sessions of raw
+    volume on/before the as-of date. Naming the failing side turns a debugging
+    session into a glance at the log.
     """
-    no_price, no_shares, ok = [], [], []
+    no_price, no_dv, ok = [], [], []
     for t in pool[:sample]:
         px = u._raw_close(t, as_of.isoformat())
         if not px or px <= 0:
             no_price.append(t)
             continue
-        sh = u._shares(t, as_of.isoformat())
-        (ok if (sh and sh > 0) else no_shares).append(t)
+        dv = u.pit_dollar_volume(t, as_of.isoformat())
+        (ok if (dv and dv > 0) else no_dv).append(t)
     parts = [f"sampled {len(pool[:sample])} pool tickers"]
     if no_price:
         parts.append(f"{len(no_price)} missing raw close ({', '.join(no_price)})")
-    if no_shares:
+    if no_dv:
         parts.append(
-            f"{len(no_shares)} missing EDGAR shares ({', '.join(no_shares)}) — "
-            f"check the 'EDGAR diagnostic:' lines above for the SEC HTTP status"
+            f"{len(no_dv)} missing trailing dollar-volume ({', '.join(no_dv)}) — "
+            f"fewer than {u._DV_WINDOW} raw sessions with volume on/before {as_of}"
         )
     if ok:
         parts.append(f"{len(ok)} had both")
@@ -325,14 +324,14 @@ def main() -> int:
     tickers = u.get_universe_top_n(as_of.isoformat(), args.top_n)
     print(f"Ranked Top-{args.top_n}: {len(tickers)} tickers")
 
-    # Refuse to publish a degraded list. A short list means market caps could not
-    # be computed for much of the pool — writing it would quietly narrow the
+    # Refuse to publish a degraded list. A short list means dollar-volumes could
+    # not be computed for much of the pool — writing it would quietly narrow the
     # strategy's opportunity set, which is exactly the silent-degradation class
     # this whole design is meant to prevent.
     if len(tickers) < args.top_n:
         print(
             f"ERROR: ranking produced {len(tickers)}/{args.top_n} tickers — the pool's "
-            f"market caps are incomplete (missing raw prices or EDGAR shares). "
+            f"dollar-volumes are incomplete (missing raw prices / volume history). "
             f"Refusing to publish a partial universe. "
             f"Diagnostic: {_diagnose_empty_ranking(pool, as_of)}",
             file=sys.stderr,

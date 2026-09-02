@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re as _re
 import sys
 import threading
 import time
@@ -18,7 +19,6 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
-import re as _re
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -42,6 +42,7 @@ from product.alerts.alert_templates import (  # noqa: E402
 from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
+from product.satellite_policy import SCHEMA_VERSION  # noqa: E402
 from product.screener.daily_screener import (  # noqa: E402
     ScreenerRow,
     _load_disk_cache,
@@ -143,12 +144,7 @@ def _warm_screener_cache() -> None:
         _yield_fn = _make_backtest_yield_fn()
         _yield_fn()  # a backtest already running at boot delays the warm entirely
         result = run_screener(yield_fn=_yield_fn)
-        data = {
-            "as_of":        result.as_of_date.isoformat(),
-            "computed_on":  date.today().isoformat(),
-            "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
-            "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
-        }
+        data = _screener_payload(result, computed_on=date.today())
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
@@ -370,6 +366,31 @@ def _row_to_dict(r: ScreenerRow) -> dict:
         "gate":            r.gate,
         "signal":          r.signal,
         "veto_reason":     r.veto_reason,
+        # Overlay fields (additive; consumers that pick known keys are unaffected).
+        "active":           r.active,
+        "target_exit_date": r.target_exit_date,
+    }
+
+
+def _screener_payload(result, computed_on: Optional[date] = None) -> dict:
+    """The /api/screener body. One builder for the startup warm, the request
+    path and the published daily-state result, so they can never publish
+    different shapes.
+
+    Additive on purpose: `as_of`, `computed_on`, `buy_signals` and
+    `full_ranking` keep their exact meaning and position; everything new sits
+    beside them. `computed_on` is the day the result was produced (defaults to
+    `as_of` when the caller has no better provenance).
+    """
+    as_of = result.as_of_date.isoformat()
+    return {
+        "schema_version":   SCHEMA_VERSION,
+        "as_of":            as_of,
+        "computed_on":      (computed_on or result.as_of_date).isoformat(),
+        "market_regime":    result.market_regime,      # null when SPY was unavailable
+        "satellite_policy": result.satellite_policy,
+        "buy_signals":      [_row_to_dict(r) for r in result.buy_signals],
+        "full_ranking":     [_row_to_dict(r) for r in result.full_ranking],
     }
 
 
@@ -600,14 +621,9 @@ def _get_screener_data() -> dict:
         if computed_on != date.today():
             logger.info("screener: serving result computed on %s (today is %s)",
                         computed_on, date.today())
-        data = {
-            "as_of":        cached.as_of_date.isoformat(),
-            # Provenance, not decoration: the newest available result may be
-            # days old (weekend, holiday, pre-run morning). The client shows it.
-            "computed_on":  computed_on.isoformat(),
-            "buy_signals":  [_row_to_dict(r) for r in cached.buy_signals],
-            "full_ranking": [_row_to_dict(r) for r in cached.full_ranking],
-        }
+        # Provenance, not decoration: the newest available result may be days
+        # old (weekend, holiday, pre-run morning). The client shows computed_on.
+        data = _screener_payload(cached, computed_on=computed_on)
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
@@ -632,12 +648,7 @@ def _get_screener_data() -> dict:
 
     try:
         result = run_screener()
-        data = {
-            "as_of":        result.as_of_date.isoformat(),
-            "computed_on":  date.today().isoformat(),
-            "buy_signals":  [_row_to_dict(r) for r in result.buy_signals],
-            "full_ranking": [_row_to_dict(r) for r in result.full_ranking],
-        }
+        data = _screener_payload(result, computed_on=date.today())
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()

@@ -1,12 +1,16 @@
-"""Exit tracker: manage open positions and fire the 252-day exit alert.
+"""Exit tracker: manage open positions and fire the hold-period exit alert.
 
 Tracks the entry date and price for each open position. On each daily run,
-checks whether any position has reached 252 trading days and generates an
+checks whether any position has reached the policy hold (HOLD_TRADING_DAYS in
+product/satellite_policy.py — 504 trading days, ~2 years) and generates an
 exit alert. Does not execute trades -- only produces ExitAlert objects.
 
-Exit rule (FROZEN -- do not modify):
-  Hold 252 trading days (~12 months). No stop-loss. No profit target.
-  Exit alert fires at day 252. User has 5 trading days to confirm or defer.
+Exit rule (FROZEN together with product/satellite_policy.py -- change only
+with research sign-off):
+  Hold HOLD_TRADING_DAYS trading days. No stop-loss. No profit target.
+  Exit alert fires on the hold day. User has 5 trading days to confirm or
+  defer. The screener publishes the same constant as `satellite_policy`, so
+  what a client is told and what this tracker enforces cannot drift apart.
 """
 from __future__ import annotations
 
@@ -28,14 +32,16 @@ from product.alerts.alert_templates import (  # noqa: E402
     format_exit_alert,
     format_position_update,
 )
+from product.satellite_policy import HOLD_TRADING_DAYS  # noqa: E402
 
-_EXIT_HOLD_DAYS  = 252
+# Single source of truth shared with the screener's published satellite_policy.
+_EXIT_HOLD_DAYS  = HOLD_TRADING_DAYS
 _EXIT_GRACE_DAYS = 5
 _REMINDER_DAYS   = 30  # advance-notice window before exit
 # Fire the reminder once on the first run at/after this trading-day count.
 # A range + a persisted "reminder_sent" flag makes it robust to skipped runs
 # (weekends/holidays) instead of an exact == match that can be missed.
-_REMINDER_WINDOW_START = _EXIT_HOLD_DAYS - _REMINDER_DAYS  # 222
+_REMINDER_WINDOW_START = _EXIT_HOLD_DAYS - _REMINDER_DAYS  # hold - 30
 
 _POSITIONS_DIR = Path(__file__).parent.parent.parent / "data" / "positions"
 _OPEN_FILE     = _POSITIONS_DIR / "open_positions.json"
@@ -309,6 +315,8 @@ class ExitTracker:
         """Count trading days between start (exclusive) and end (inclusive).
 
         Uses numpy.busday_count with the default US weekday schedule.
-        Does not account for market holidays (sufficient for 252d approximation).
+        Does not account for market holidays (sufficient for the hold-period
+        approximation). product.satellite_policy.target_exit_date uses the same
+        weekday arithmetic, so the published target date is the fire date.
         """
         return int(np.busday_count(start.isoformat(), end.isoformat()))

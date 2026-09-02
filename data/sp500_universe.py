@@ -18,6 +18,7 @@ import bisect
 import csv
 import io
 import json
+import math
 import time
 from datetime import date as _date
 from pathlib import Path
@@ -167,25 +168,65 @@ def _get_edgar():
     return _edgar
 
 
-def _raw_close(ticker: str, date: str) -> float | None:
-    """Unadjusted closing price on or before `date` from the raw price cache."""
+def _safe_ticker(ticker: str) -> str:
+    """Filesystem-safe ticker, as the cache writers name files (BRK.B -> BRKB)."""
+    return "".join(c for c in ticker if c.isalnum() or c in "-_")
+
+
+def _raw_start_date(path: Path, ticker: str) -> str:
+    """The start date encoded in a raw-cache filename (`<name>_<start>[_<end>].pkl`),
+    or "" when it cannot be parsed (sorts first, i.e. treated as deepest)."""
+    for prefix in (_safe_ticker(ticker), ticker):
+        if path.stem.startswith(prefix + "_"):
+            token = path.stem[len(prefix) + 1:].split("_")[0]
+            try:
+                _date.fromisoformat(token)
+                return token
+            except ValueError:
+                return ""
+    return ""
+
+
+def _raw_candidates(ticker: str, raw_dir: Path | None = None) -> list[Path]:
+    """Every raw-cache file for a ticker under EITHER naming contract, deepest
+    history first (`raw_dir` defaults to the runtime raw-price cache).
+
+    Two writers name these files differently: the clean-universe fetch uses a
+    filesystem-safe name (BRK.B -> BRKB_*), the monthly universe builder the raw
+    ticker (BRK.B_*). Both are accepted and ranked by their PARSED start date,
+    never by lexical path order, so a deep safe-name file always beats a shallow
+    legacy one regardless of spelling.
+    """
+    raw_dir = _RAW_PRICE_DIR if raw_dir is None else Path(raw_dir)
+    found = set(raw_dir.glob(f"{_safe_ticker(ticker)}_*.pkl"))
+    found |= set(raw_dir.glob(f"{ticker}_*.pkl"))
+    return sorted(found, key=lambda p: (_raw_start_date(p, ticker), p.name))
+
+
+def _raw_frame(ticker: str):
+    """Memoised raw (unadjusted) OHLCV frame for a ticker, or None.
+
+    Reads the deepest-history candidate (see `_raw_candidates`), e.g. a
+    1998-start file is needed for 2010-2017 dates; a 2016-start one is not.
+    """
     import pickle
 
     if ticker not in _raw_frames:
-        # Prefer the EARLIEST-start raw file so it covers the most history (e.g. a
-        # 2008-start file is needed for 2010-2017 dates; a 2016-start one is not).
-        matches = sorted(_RAW_PRICE_DIR.glob(f"{ticker}_*.pkl"))
-        path = matches[0] if matches else None
+        matches = _raw_candidates(ticker)
         frame = None
-        if path is not None and path.exists():
+        if matches:
             try:
-                with open(path, "rb") as f:
+                with open(matches[0], "rb") as f:
                     frame = pickle.load(f)
             except Exception:
                 frame = None
         _raw_frames[ticker] = frame
+    return _raw_frames[ticker]
 
-    frame = _raw_frames[ticker]
+
+def _raw_close(ticker: str, date: str) -> float | None:
+    """Unadjusted closing price on or before `date` from the raw price cache."""
+    frame = _raw_frame(ticker)
     if frame is None or getattr(frame, "empty", True):
         return None
     import pandas as pd
@@ -258,10 +299,12 @@ def release_pit_cache() -> None:
     from disk. Callers that finish a ranking pass (e.g. the backtest, once
     month membership is built) should release rather than hold it for the rest
     of a long process."""
-    global _pit_cache
+    global _pit_cache, _pit_dv_cache
     _flush_pit_cache()
     _pit_cache = None
+    _pit_dv_cache = None
     _shares_memo.clear()
+    _raw_frames.clear()
 
 
 # A point-in-time market cap for a date more than this many days in the past is
@@ -335,12 +378,107 @@ def prefetch_pit_market_caps(tickers: list[str], dates: list[str]) -> None:
         _save_pit_cache()
 
 
-def get_universe_top_n(date: str, n: int) -> list[str]:
-    """The `n` largest S&P 500 members on `date` by POINT-IN-TIME market cap
-    (raw close × EDGAR shares outstanding, 90-day filing lag).
+# ── Point-in-time dollar-volume size proxy (survivorship-free) ───────────
+#
+# The market-cap ranking above needs EDGAR shares outstanding, and SEC's
+# company_tickers.json only lists CURRENTLY-active tickers: every delisted /
+# acquired member fails the CIK lookup, gets no shares, and is silently dropped
+# from the ranking. That is a survivorship bias in the ranking step even though
+# the membership itself is point-in-time correct. Shares are also sparse before
+# ~2010 (XBRL mandate), so early-year coverage is only ~60-77%.
+#
+# Dollar volume (raw close × volume, trailing median) needs ONLY prices, which
+# exist for delisted names too and go back decades, so it ranks the full
+# point-in-time membership with no survivorship bias and no EDGAR dependency.
+# It is a LIQUIDITY proxy for size, not exact market cap — highly correlated for
+# mega-caps, but tilted toward high-turnover names (tech/semis). Validated
+# look-ahead-free in scripts/audit_clean_pit.py.
+_DV_WINDOW = 63  # trailing trading days for the median dollar-volume
+_PIT_DV_DIR = Path(__file__).parent / "cache" / "pit_dollar_volume"
+_PIT_DV_FILE = _PIT_DV_DIR / "pit_dollar_volumes.json"
+_pit_dv_cache: dict[str, dict] | None = None
 
-    Members whose point-in-time market cap cannot be computed (no price or no
-    EDGAR filing in range) are excluded silently. No current-market-cap fallback.
+
+def _load_pit_dv_cache() -> dict[str, dict]:
+    global _pit_dv_cache
+    if _pit_dv_cache is None:
+        _PIT_DV_DIR.mkdir(parents=True, exist_ok=True)
+        if _PIT_DV_FILE.exists():
+            try:
+                _pit_dv_cache = json.loads(_PIT_DV_FILE.read_text())
+            except Exception:
+                _pit_dv_cache = {}
+        else:
+            _pit_dv_cache = {}
+    return _pit_dv_cache
+
+
+def _save_pit_dv_cache() -> None:
+    if _pit_dv_cache is not None:
+        _PIT_DV_DIR.mkdir(parents=True, exist_ok=True)
+        _PIT_DV_FILE.write_text(json.dumps(_pit_dv_cache))
+
+
+def _compute_pit_dollar_volume(ticker: str, date: str) -> float | None:
+    """Trailing `_DV_WINDOW`-day median of raw close × volume, as of `date`.
+
+    Uses only data on or before `date` (no look-ahead). Returns None if there is
+    no raw frame, no Volume column, or fewer than `_DV_WINDOW` observations.
+    """
+    frame = _raw_frame(ticker)
+    if frame is None or getattr(frame, "empty", True) or "Volume" not in frame.columns:
+        return None
+    import pandas as pd
+
+    sub = frame[frame.index <= pd.Timestamp(date)]
+    if len(sub) < _DV_WINDOW:
+        return None
+    dvol = (sub["Close"].astype(float) * sub["Volume"].astype(float))
+    med = float(dvol.rolling(_DV_WINDOW).median().iloc[-1])
+    return med if math.isfinite(med) and med > 0 else None
+
+
+def pit_dollar_volume(ticker: str, date: str) -> float | None:
+    """Point-in-time median dollar-volume, cached (30-day TTL; immutable for old
+    dates, see `_pit_entry_valid`)."""
+    cache = _load_pit_dv_cache()
+    ck = f"{ticker}|{date}"
+    entry = cache.get(ck)
+    if _pit_entry_valid(date, entry, time.time()):
+        v = entry.get("dv")
+        return float(v) if v is not None else None
+    v = _compute_pit_dollar_volume(ticker, date)
+    cache[ck] = {"dv": v, "ts": time.time()}
+    _save_pit_dv_cache()
+    return v
+
+
+def prefetch_pit_dollar_volumes(tickers: list[str], dates: list[str]) -> None:
+    """Warm the dollar-volume cache for the (ticker, date) grid, one save at end.
+
+    Ticker-outer so one raw frame is resident at a time: each ticker's frame is
+    evicted from the memo once its dates are done (a ~1000-ticker pool of
+    25-year raw frames would otherwise be hundreds of MB on a 512MB instance).
+    """
+    cache = _load_pit_dv_cache()
+    now = time.time()
+    changed = False
+    for t in tickers:
+        for date in dates:
+            ck = f"{t}|{date}"
+            if _pit_entry_valid(date, cache.get(ck), now):
+                continue
+            cache[ck] = {"dv": _compute_pit_dollar_volume(t, date), "ts": now}
+            changed = True
+        _raw_frames.pop(t, None)
+    if changed:
+        _save_pit_dv_cache()
+
+
+def get_universe_top_n_by_market_cap(date: str, n: int) -> list[str]:
+    """The `n` largest members on `date` by point-in-time market cap (raw close ×
+    EDGAR shares). Retained for reference/comparison; NOT survivorship-free —
+    delisted members have no CIK and are dropped. Prefer `get_universe_top_n`.
     """
     members = get_universe(date)
     capped = [(t, pit_market_cap(t, date)) for t in members]
@@ -348,6 +486,20 @@ def get_universe_top_n(date: str, n: int) -> list[str]:
     capped = [(t, mc) for t, mc in capped if mc is not None and mc > 0]
     capped.sort(key=lambda x: -x[1])
     return [t for t, _ in capped[:n]]
+
+
+def get_universe_top_n(date: str, n: int) -> list[str]:
+    """The `n` largest S&P 500 members on `date`, ranked by POINT-IN-TIME
+    dollar-volume (survivorship-free; see the note above).
+
+    Members whose dollar-volume cannot be computed (no raw price data or < 63
+    observations as of the date) are excluded silently.
+    """
+    members = get_universe(date)
+    ranked = [(t, pit_dollar_volume(t, date)) for t in members]
+    ranked = [(t, dv) for t, dv in ranked if dv is not None and dv > 0]
+    ranked.sort(key=lambda x: -x[1])
+    return [t for t, _ in ranked[:n]]
 
 
 

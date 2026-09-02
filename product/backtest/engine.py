@@ -24,8 +24,12 @@ from core.data.eodhd import get_thread_fetch_count
 from core.data.eodhd_fundamentals import EODHDFundamentals
 from core.data.prices import PriceData
 from core.signals.recovery_score import compute_recovery_signals, passes_quality_gate
-from data.sp500_universe import (get_universe, get_universe_top_n,
-                                 prefetch_pit_market_caps, release_pit_cache)
+from data.sp500_universe import (
+    get_universe,
+    get_universe_top_n,
+    prefetch_pit_dollar_volumes,
+    release_pit_cache,
+)
 from scripts.run_combined_validation import load_fedfunds
 
 logger = logging.getLogger(__name__)
@@ -59,7 +63,7 @@ def _log_rss(stage: str) -> None:
 _WARMUP_START    = "2016-01-01"
 _INITIAL_CAPITAL = 100_000.0
 _MIN_SIGNALS     = 5          # below this, results are not meaningful
-_UNIVERSE_N      = 100        # point-in-time Top-N by market cap, rebuilt monthly
+_UNIVERSE_N      = 100        # point-in-time Top-N by dollar-volume, rebuilt monthly
 
 
 def _safe_float(v) -> Optional[float]:
@@ -135,11 +139,11 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     month_members: dict[tuple, set] = {}
     if fmonths:
         fdates = [ts.date().isoformat() for ts in fmonths.values()]
-        # Prefetch point-in-time market caps for the full membership pool once,
+        # Prefetch point-in-time dollar-volumes for the full membership pool once,
         # so the per-month Top-N ranking is cheap (reuses sp500_universe helpers).
         try:
             union_full = sorted({t for d in fdates for t in get_universe(d)})
-            prefetch_pit_market_caps(union_full, fdates)
+            prefetch_pit_dollar_volumes(union_full, fdates)
         except Exception:
             pass
         for key, ts in fmonths.items():
@@ -151,7 +155,7 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     universe = sorted(set().union(*month_members.values())) if month_members else list(VALIDATION_UNIVERSE)
 
     # Cold-cache guard: the point-in-time Top-N ranking needs the raw-price cache
-    # (data/cache/prices_raw) to compute market caps. That cache is gitignored, so
+    # (data/cache/prices_raw) to compute dollar-volumes. That cache is gitignored, so
     # a fresh deploy (e.g. Render) has no raw prices → get_universe_top_n returns
     # [] for every month → month_members is a truthy dict of EMPTY sets → the union
     # above is empty and the `else VALIDATION_UNIVERSE` branch never fires. Fall
@@ -161,7 +165,7 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     if not universe:
         logger.warning(
             "Backtest universe empty (PIT Top-%d ranking produced 0 members over "
-            "%d months — cold market-cap cache?); falling back to VALIDATION_UNIVERSE "
+            "%d months — cold raw-price cache?); falling back to VALIDATION_UNIVERSE "
             "(%d tickers), ungated.",
             _UNIVERSE_N, len(month_members), len(VALIDATION_UNIVERSE),
         )
@@ -516,7 +520,12 @@ def _simulate(preloaded: dict, params: dict) -> dict:
             if comp is None or comp < entry_threshold:
                 continue
             gate = _gate_at(tkr, today)
-            if gate is not True:
+            # Fail-OPEN: only an explicit fundamental FAIL (gate is False) blocks
+            # entry. Missing fundamentals (gate is None — e.g. a delisted name
+            # with no EDGAR CIK) must NOT exclude the name, otherwise the quality
+            # gate re-introduces the survivorship bias the dollar-volume universe
+            # was chosen to remove. Quality still filters where data exists.
+            if gate is False:
                 continue
             cp = _safe_float(cols[0][pos])
             if cp is None or cp <= 0:

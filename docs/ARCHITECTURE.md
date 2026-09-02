@@ -16,9 +16,9 @@ as a health check that watches the wrong directory:
 
 | Work | Runs on Render? |
 |---|---|
-| Universe ranking (~500-member PIT market cap) | **No.** Actions only. Render reads `data/universe/current.json`. |
+| Universe ranking (~500-member PIT dollar-volume; survivorship-free, replaced the EDGAR market-cap rank) | **No.** Actions only. Render reads `data/universe/current.json`. |
 | Prebuilt PIT grid / price cache build | **No.** Manual `build_full_cache.py`, shipped as a Release asset. |
-| Daily signal scan of the 100 listed tickers | **Yes, still** — `main.py`'s `_get_screener_data()` calls `run_screener()` on a cache miss, and the startup warm can too. |
+| Daily signal scan of the 100 listed tickers | **Not by default.** `main.py`'s `_get_screener_data()` serves the newest published daily-state result and answers **503** on a cache miss; it calls `run_screener()` in-process only when `SCREENER_ONDEMAND_SCAN=1` is set (the startup warm, when it runs, can too). |
 
 So the rule is fully enforced for the expensive part (the ~500-ticker ranking,
 the +188MB path that caused the OOM restarts) and **not yet** for the 100-ticker
