@@ -70,6 +70,8 @@ Every refinement tried on top of it made things worse or was noise — which is 
 - Build pipeline warms/seeds a dollar-volume grid. **Deploy note:** rebuild the `cache-v1` release asset with the updated build scripts so production ships the grid (else it cold-falls-back to the fixed universe).
 
 ## Analysis artifacts (in `validation/`)
+- `CLAIMS.md` — **what may be said externally**: each claim with its evidence and file, the claims we do not make, and the mandatory caveats
+- `overlay_by_year.md` — calendar-year scorecard of the validated overlay vs SPY (12/21 years beat, 5 identical to SPY with no sleeve open)
 - `clean_pit_backtest_2000/2004.md/.png` — clean holding-period backtests
 - `scripts/audit_clean_pit.py` — look-ahead / survivorship / simulation audit (VERDICT: clean, 5 checks)
 - `edgar_coverage.md` — why market-cap ranking was biased pre-2018
