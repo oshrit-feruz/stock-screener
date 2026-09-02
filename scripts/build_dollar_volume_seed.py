@@ -92,12 +92,16 @@ def main() -> None:
         if raw is None or raw.empty or "Volume" not in raw.columns:
             continue
         dvol = (raw["Close"].astype(float) * raw["Volume"].astype(float))
-        med = dvol.rolling(_DV_WINDOW).median()
+        med = dvol.rolling(_DV_WINDOW).median().sort_index()
+        med_idx, med_vals = med.index, med.to_numpy(dtype=float)
         for s, ts in date_ts:
-            sub = med[med.index <= ts]
-            if sub.empty:
+            # Last observation on/before ts by position (O(log n)), NOT
+            # Series.asof: asof skips NaN and would return an earlier, valid
+            # median where the trailing window is actually incomplete.
+            pos = int(med_idx.searchsorted(ts, side="right")) - 1
+            if pos < 0:
                 continue
-            v = float(sub.iloc[-1])
+            v = float(med_vals[pos])
             if math.isfinite(v) and v > 0:
                 grid[f"{t}|{s}"] = {"dv": int(v)}
         done += 1

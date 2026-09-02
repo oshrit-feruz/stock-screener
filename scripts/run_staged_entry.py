@@ -133,18 +133,27 @@ class _StagedBook:
         else:
             self._schedule(di, t, key, alloc, self.n_tr, self.step)
 
+    def _signals_due(self, di: int) -> None:
+        """Gate today's scheduled events on the signal-day market regime."""
+        if self.mkt.dd is None:
+            return
+        for ev in self.w.events.get(di, ()):
+            if self.mkt.dd[ev.sig_idx] >= GATE:
+                self._signal(ev, di)
+
+    def _fills_due(self, di: int) -> None:
+        """Execute the tranches scheduled for this session."""
+        due = [q for q in self.pending if q["di"] == di]
+        self.pending = [q for q in self.pending if q["di"] != di]
+        for q in due:
+            self._fill(q, di)
+
     def run(self) -> tuple[pd.Series, dict]:
         daily = np.zeros(self.mkt.n)
         for di in range(self.mkt.n):
             self._exits(di)
-            if self.mkt.dd is not None:
-                for ev in self.w.events.get(di, ()):
-                    if self.mkt.dd[ev.sig_idx] >= GATE:
-                        self._signal(ev, di)
-            due = [q for q in self.pending if q["di"] == di]
-            self.pending = [q for q in self.pending if q["di"] != di]
-            for q in due:
-                self._fill(q, di)
+            self._signals_due(di)
+            self._fills_due(di)
             daily[di] = self.port.value(di)
         r = np.array([t["ret"] for t in self.port.trades])
         stats = {"n": len(r), "avg": float(r.mean()) if len(r) else 0.0,
