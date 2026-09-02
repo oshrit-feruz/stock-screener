@@ -22,9 +22,11 @@ on:
     - cron: "0 6 1-5 * *"
   workflow_dispatch: {}
 
-# Needed to push the regenerated list to main.
+# contents: push the regenerated list to main. actions: dispatch the daily
+# screener afterwards (see the last step).
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: monthly-universe
@@ -79,6 +81,7 @@ jobs:
         run: python scripts/build_universe_list.py
 
       - name: Commit the list to main if it changed
+        id: publish
         env:
           # Supplied only to this step (checkout used persist-credentials:false).
           # Actions masks the value in logs.
@@ -123,6 +126,7 @@ jobs:
           for attempt in 1 2 3; do
             if git push "$REMOTE" HEAD:main; then
               echo "Universe list for ${AS_OF} pushed to main."
+              echo "pushed=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "Push failed (attempt ${attempt}/3); reconciling and retrying..."
@@ -132,3 +136,25 @@ jobs:
 
           echo "ERROR: could not push the universe list to main after 3 attempts." >&2
           exit 1
+
+      # A new list invalidates every published daily result: each result is
+      # fingerprinted with the universe it was computed under, and the web
+      # service refuses one computed under a superseded list (a result for the
+      # wrong universe is wrong, not stale). Until the daily screener runs again
+      # /api/screener answers 503 — up to a full day after a scheduled monthly
+      # rebuild, longer over a weekend. So the moment the list lands, the daily
+      # screener is dispatched to publish a result under the new fingerprint.
+      #
+      # Only after an actual push: the 1st-5th retries that find the list
+      # unchanged do not re-run the screener. A workflow_dispatch fired with
+      # GITHUB_TOKEN does start a run (the "no workflows from GITHUB_TOKEN
+      # events" rule exempts explicit dispatches), and the daily workflow's own
+      # concurrency group keeps it from overlapping a scheduled run.
+      - name: Re-run the daily screener on the new universe
+        if: steps.publish.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run daily-screener.yml --ref main \
+            -f reason="universe list changed (monthly rebuild)"
+          echo "Daily screener dispatched on main."

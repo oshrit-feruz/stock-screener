@@ -16,7 +16,17 @@ on:
     #  product/run_daily.py skips it in-code via the NYSE calendar.)
     - cron: "30 11 * * 1-5"
   # Manual trigger so the workflow can be tested on demand from the Actions tab.
-  workflow_dispatch: {}
+  # Also how the monthly universe workflow re-runs the screener right after it
+  # commits a new list, so a result under the new universe fingerprint is
+  # published without waiting for the next scheduled run (see
+  # monthly-universe.yml, last step). Rerunning for a date that already has a
+  # result under the SAME universe is a disk-cache hit and publishes nothing.
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this run was started (informational; shown in the run log)"
+        required: false
+        default: "manual"
 
 # Write access is needed so the persist step can push state to automation/daily-state.
 permissions:
@@ -87,6 +97,12 @@ jobs:
           else
             echo "No $STATE_BRANCH branch yet — first run; starting from the repo's committed state."
           fi
+
+      - name: Log why this run started
+        # Scheduled runs carry no input; a dispatch says who asked and why, so
+        # a run that appears outside the 11:30 UTC slot is explained in one line.
+        run: |
+          echo "Run reason: ${{ github.event_name == 'schedule' && 'schedule' || inputs.reason }}"
 
       - name: Run daily screener
         env:
