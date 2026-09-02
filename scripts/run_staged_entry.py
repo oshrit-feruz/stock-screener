@@ -20,6 +20,7 @@ worst trade, share of trades below -30%) — the level staged entry should help.
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -107,7 +108,7 @@ class _StagedBook:
                 "delist" if self.mkt.delists_on(di, p["ticker"]) else None)
             if kind is None:
                 continue
-            self.port.close(di, pid, price if price == price else p["entry_price"], kind)
+            self.port.close(di, pid, p["entry_price"] if math.isnan(price) else price, kind)
             self.pending = [q for q in self.pending if q["key"] != p["key"]]
 
     def _signal(self, ev: cs.Event, di: int) -> None:

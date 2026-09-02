@@ -18,6 +18,7 @@ rule's exits split between the adaptive trigger, the hold backstop and delisting
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -46,7 +47,7 @@ def _hooks(rule: str, param, sma: np.ndarray, hi: np.ndarray):
     def on_open(p, di, mkt):
         p["peak"] = p["entry_price"]
         tgt = hi[di, mkt.col[p["ticker"]]]
-        p["target"] = tgt if (tgt == tgt and tgt > p["entry_price"]) else float("inf")
+        p["target"] = tgt if (not math.isnan(tgt) and tgt > p["entry_price"]) else float("inf")
 
     def trail(p, di, price, mkt):
         p["peak"] = max(p["peak"], price)
@@ -56,7 +57,7 @@ def _hooks(rule: str, param, sma: np.ndarray, hi: np.ndarray):
         if di - p["entry_idx"] < MIN_HOLD_SMA:
             return None
         s = sma[di, mkt.col[p["ticker"]]]
-        return "sma" if (s == s and price < s) else None
+        return "sma" if (not math.isnan(s) and price < s) else None
 
     def recover(p, di, price, mkt):
         return "recover" if price >= p["target"] else None

@@ -25,6 +25,7 @@ on the SIGNAL day, is at least the gate.
 """
 from __future__ import annotations
 
+import math
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -218,7 +219,7 @@ class Portfolio:
         v = self.idle(di)
         for p in self.pos.values():
             q = self.mkt.px(di, p["ticker"])
-            v += p["shares"] * (q if q == q else p["entry_price"])
+            v += p["shares"] * (p["entry_price"] if math.isnan(q) else q)
         return v
 
     # positions
@@ -280,7 +281,7 @@ class Portfolio:
                    rule: Optional[ExitRule]) -> Optional[str]:
         if di >= p["exit_idx"]:
             return "hold"
-        if price != price:
+        if math.isnan(price):
             return None
         if cfg.stop > 0 and price <= p["entry_price"] * (1 - cfg.stop):
             return "stop"
@@ -298,7 +299,7 @@ class Portfolio:
             if kind is None and self.mkt.delists_on(di, p["ticker"]):
                 kind = "delist"
             if kind is not None:
-                self.close(di, pid, price if price == price else p["entry_price"], kind)
+                self.close(di, pid, p["entry_price"] if math.isnan(price) else price, kind)
 
 
 # ── One simulation ────────────────────────────────────────────────────────────
