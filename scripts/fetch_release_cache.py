@@ -49,6 +49,7 @@ _SEED = REPO / "data" / "seed_cache"
 _DEFAULT_REPO = "oshrit-feruz/stock-screener"
 _DEFAULT_TAG = "cache-v1"
 _DEFAULT_ASSET = "seed_cache_2010_2026.tar.gz"
+_TGZ = ".tar.gz"
 _TIMEOUT = 300  # the archive can be a few hundred MB; allow a slow connection
 
 
@@ -60,10 +61,10 @@ def _auth_headers() -> dict:
 def _asset_candidates(asset_name: str) -> list[str]:
     """The names an asset may carry on the release: the configured one first,
     then GitHub's own renames of a duplicate upload (".1", ".2", ".3")."""
-    if not asset_name.endswith(".tar.gz"):
+    if not asset_name.endswith(_TGZ):
         return [asset_name]
-    stem = asset_name[: -len(".tar.gz")]
-    return [asset_name] + [f"{stem}.{n}.tar.gz" for n in (1, 2, 3)]
+    stem = asset_name[: -len(_TGZ)]
+    return [asset_name] + [f"{stem}.{n}{_TGZ}" for n in (1, 2, 3)]
 
 
 def _open_direct(repo: str, tag: str, asset_name: str, headers: dict):
@@ -103,9 +104,9 @@ def _find_asset(assets: list, asset_name: str):
     exact = next((a for a in assets if a.get("name") == asset_name), None)
     if exact is not None:
         return exact, False
-    stem = asset_name[: -len(".tar.gz")] if asset_name.endswith(".tar.gz") else asset_name
+    stem = asset_name[: -len(_TGZ)] if asset_name.endswith(_TGZ) else asset_name
     candidates = sorted(
-        (a for a in assets if a.get("name", "").startswith(stem) and a["name"].endswith(".tar.gz")),
+        (a for a in assets if a.get("name", "").startswith(stem) and a["name"].endswith(_TGZ)),
         key=lambda a: a["name"],
     )
     return (candidates[0], True) if candidates else (None, False)

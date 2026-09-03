@@ -165,6 +165,7 @@ def _warm_screener_cache() -> None:
 # Bumped on each diagnostic push so the deployed commit is identifiable in the
 # Render logs (if this marker is absent from startup, Render did not redeploy).
 _BUILD_MARKER = "perf-v3"  # includes PR #35 (cache-key fix) + #36 (O(log n) engine)
+_PKL_GLOB = "*.pkl"  # a cached price frame, as PriceData writes them
 
 
 def _startup_cache_report() -> None:
@@ -183,7 +184,7 @@ def _startup_cache_report() -> None:
             months = len({k.rsplit("|", 1)[1] for k in json.loads(grid.read_text())})
     except Exception:
         pass
-    prices = len(list((cache / "prices").glob("*.pkl"))) if (cache / "prices").is_dir() else 0
+    prices = len(list((cache / "prices").glob(_PKL_GLOB))) if (cache / "prices").is_dir() else 0
     seed_files = sum(1 for _ in seed_dir.rglob("*") if _.is_file()) if seed_dir.is_dir() else 0
     logger.warning(
         "STARTUP %s: seed_cache tree present=%s (%d files) | after seed: "
@@ -208,7 +209,7 @@ def _report_cache_readable(prices_dir: Path) -> None:
     """
     import numpy as np
     import pandas as pd
-    sample = next(iter(sorted(prices_dir.glob("*.pkl"))), None) if prices_dir.is_dir() else None
+    sample = next(iter(sorted(prices_dir.glob(_PKL_GLOB))), None) if prices_dir.is_dir() else None
     if sample is None:
         logger.warning("STARTUP %s: pandas %s / numpy %s; no price pickle to probe",
                        _BUILD_MARKER, pd.__version__, np.__version__)
@@ -1080,10 +1081,10 @@ def _ensure_seed_cache() -> None:
     """
     root = Path(__file__).resolve().parent.parent.parent
     prices = root / "data" / "cache" / "prices"
-    if prices.is_dir() and any(prices.glob("*.pkl")):
+    if prices.is_dir() and any(prices.glob(_PKL_GLOB)):
         return
     with _seed_lock:
-        if prices.is_dir() and any(prices.glob("*.pkl")):
+        if prices.is_dir() and any(prices.glob(_PKL_GLOB)):
             return
         logger.warning("BACKTEST %s: price cache is empty — retrying the release-cache "
                        "fetch before the run", _BUILD_MARKER)
