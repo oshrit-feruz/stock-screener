@@ -87,6 +87,14 @@ must reach the Render web service, and a Render redeploy once a month is the
 correct cost for a universe change. The daily workflow still avoids main on
 purpose — a daily redeploy would be pure churn.
 
+A new universe list also **invalidates every published daily result**: each
+result carries the fingerprint of the universe it was computed under, and
+`/api/screener` refuses one computed under a superseded list (wrong universe,
+not merely stale). So the monthly workflow, right after it pushes a changed
+list, dispatches `daily-screener.yml` to publish a result under the new
+fingerprint. Without that hand-off the screener answered 503 from the monthly
+commit until the next scheduled daily run — up to a day, longer over a weekend.
+
 ## Publish steps must positively verify what they published
 
 Every producer in the table above ends in a publish step — a commit, a push, a
