@@ -161,3 +161,31 @@ def test_archive_without_manifest_installs_nothing(seed_dir, monkeypatch):
     monkeypatch.setattr(frc.requests, "get", fake_get)
     assert frc.fetch_and_extract() is False
     assert not seed_dir.exists()
+
+
+def test_manifest_must_be_a_file_not_a_directory(seed_dir, monkeypatch):
+    """A directory named manifest.json is not a manifest: an archive carrying
+    one installs nothing, and a seed tree carrying one does not count as
+    present, so the fetch still runs."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("manifest.json")
+        info.type = tarfile.DIRTYPE
+        tar.addfile(info)
+    archive = buf.getvalue()
+
+    calls: list[str] = []
+
+    def fake_get(url, **kw):
+        calls.append(url)
+        return _Resp(200, archive) if "/releases/download/" in url else _Resp(403)
+
+    monkeypatch.setattr(frc.requests, "get", fake_get)
+    assert frc.fetch_and_extract() is False
+    assert not seed_dir.exists()
+
+    # And a pre-existing directory marker does not short-circuit the fetch.
+    (seed_dir / "manifest.json").mkdir(parents=True)
+    calls.clear()
+    assert frc.fetch_and_extract() is False
+    assert calls, "a directory named manifest.json must not read as a present seed"

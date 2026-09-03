@@ -128,7 +128,7 @@ def fetch_and_extract() -> bool:
     tag = os.environ.get("SEED_CACHE_RELEASE_TAG", _DEFAULT_TAG)
     asset_name = os.environ.get("SEED_CACHE_RELEASE_ASSET", _DEFAULT_ASSET)
 
-    if (_SEED / "manifest.json").exists():
+    if (_SEED / "manifest.json").is_file():
         log.warning("RELEASE_CACHE: %s already present, skipping download "
                     "(repo=%s tag=%s asset=%s)", _SEED, repo, tag, asset_name)
         return True
@@ -214,7 +214,7 @@ def _extract(dl_resp) -> bool:
                 tar.extract(member, staging)
                 if member.isfile():
                     n_extracted += 1
-        if not (staging / "manifest.json").exists():
+        if not (staging / "manifest.json").is_file():
             raise ValueError("archive carries no manifest.json")
         # Complete and validated: swap it in. rmtree of a stale seed is only
         # reached when no manifest was there (fetch_and_extract returns early
