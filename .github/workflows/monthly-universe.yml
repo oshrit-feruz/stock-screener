@@ -122,11 +122,22 @@ jobs:
 
           REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
+          # What main carried BEFORE this run pushed. The daily re-run below is
+          # keyed on whether this run changed the list on main — not on git
+          # push's exit status, which is also 0 for "Everything up-to-date"
+          # (a rebase on retry can find the identical commit already there).
+          git fetch --depth=1 "$REMOTE" main
+          BEFORE_MAIN=$(git rev-parse FETCH_HEAD)
+
           # Rebase+retry in case main moved while this job ran.
           for attempt in 1 2 3; do
             if git push "$REMOTE" HEAD:main; then
               echo "Universe list for ${AS_OF} pushed to main."
-              echo "pushed=true" >> "$GITHUB_OUTPUT"
+              if git diff --quiet "$BEFORE_MAIN" HEAD -- data/universe/current.json; then
+                echo "main already carried this list; no daily re-run needed."
+              else
+                echo "pushed=true" >> "$GITHUB_OUTPUT"
+              fi
               exit 0
             fi
             echo "Push failed (attempt ${attempt}/3); reconciling and retrying..."

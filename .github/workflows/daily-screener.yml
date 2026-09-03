@@ -101,8 +101,14 @@ jobs:
       - name: Log why this run started
         # Scheduled runs carry no input; a dispatch says who asked and why, so
         # a run that appears outside the 11:30 UTC slot is explained in one line.
+        # The input reaches the shell through env, never by expanding the
+        # expression into the script: anyone who can dispatch this workflow
+        # types the value, and inline it would be parsed as shell — in a job
+        # that goes on to run with EODHD_API_KEY. As an env var it is data.
+        env:
+          RUN_REASON: ${{ github.event_name == 'schedule' && 'schedule' || inputs.reason }}
         run: |
-          echo "Run reason: ${{ github.event_name == 'schedule' && 'schedule' || inputs.reason }}"
+          printf 'Run reason: %s\n' "$RUN_REASON"
 
       - name: Run daily screener
         env:
