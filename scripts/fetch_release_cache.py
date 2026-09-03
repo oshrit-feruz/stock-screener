@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 import tarfile
 from pathlib import Path
@@ -187,31 +188,47 @@ def fetch_and_extract() -> bool:
 
 
 def _extract(dl_resp) -> bool:
-    """Unpack a streamed tar.gz response into data/seed_cache/. True when the
-    manifest is present afterwards. Never raises."""
+    """Unpack a streamed tar.gz response into data/seed_cache/, atomically.
+
+    The archive is unpacked into a STAGING directory beside the seed and only
+    moved into place once it is complete and carries manifest.json. Unpacking
+    straight into data/seed_cache/ would let a download that died halfway —
+    after manifest.json, before the price pickles — leave a "present" seed
+    behind, and every later fetch would skip on that manifest while the cache
+    stayed empty. A failed or incomplete archive leaves nothing behind.
+    True when the seed is in place afterwards. Never raises.
+    """
+    staging = _SEED.parent / (_SEED.name + ".partial")
     try:
-        _SEED.mkdir(parents=True, exist_ok=True)
-        seed_resolved = _SEED.resolve()
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True, exist_ok=True)
+        staging_resolved = staging.resolve()
         n_extracted = 0
         with tarfile.open(fileobj=dl_resp.raw, mode="r|gz") as tar:
             # Guard against path traversal in a (trusted, but still validated)
-            # archive — refuse any member that would land outside data/seed_cache/.
+            # archive — refuse any member that would land outside the staging dir.
             for member in tar:
-                target = (_SEED / member.name).resolve()
-                # Use proper containment check: target must be seed_cache or a descendant
-                if seed_resolved not in target.parents and target != seed_resolved:
+                target = (staging / member.name).resolve()
+                if staging_resolved not in target.parents and target != staging_resolved:
                     raise ValueError(f"unsafe path in archive: {member.name}")
-                tar.extract(member, _SEED)
+                tar.extract(member, staging)
                 if member.isfile():
                     n_extracted += 1
+        if not (staging / "manifest.json").exists():
+            raise ValueError("archive carries no manifest.json")
+        # Complete and validated: swap it in. rmtree of a stale seed is only
+        # reached when no manifest was there (fetch_and_extract returns early
+        # otherwise), so nothing usable is ever discarded.
+        shutil.rmtree(_SEED, ignore_errors=True)
+        os.replace(staging, _SEED)
     except Exception as exc:
-        log.warning("RELEASE_CACHE: extraction FAILED — %r", exc)
+        log.warning("RELEASE_CACHE: extraction FAILED — %r; nothing was installed", exc)
+        shutil.rmtree(staging, ignore_errors=True)
         return False
 
-    ok = (_SEED / "manifest.json").exists()
-    log.warning("RELEASE_CACHE: extracted %d file(s) -> %s (manifest present: %s)",
-               n_extracted, _SEED, ok)
-    return ok
+    log.warning("RELEASE_CACHE: extracted %d file(s) -> %s (manifest present: True)",
+                n_extracted, _SEED)
+    return True
 
 
 if __name__ == "__main__":

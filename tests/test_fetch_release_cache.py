@@ -31,6 +31,8 @@ def _tarball() -> bytes:
 
 
 class _Resp:
+    """The slice of a requests.Response the fetcher touches."""
+
     def __init__(self, status: int, body: bytes = b"", payload=None):
         self.status_code = status
         self.raw = io.BytesIO(body)
@@ -38,24 +40,29 @@ class _Resp:
         self._payload = payload
 
     def json(self):
+        """The API payload, when this stands in for the release lookup."""
         return self._payload
 
     def close(self):
-        pass
+        """Nothing to release."""
 
     def raise_for_status(self):
+        """Mirror requests: raise on a 4xx/5xx."""
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
 
 
 @pytest.fixture
 def seed_dir(tmp_path, monkeypatch):
+    """Point the fetcher's seed directory at a temp path, with no token."""
     monkeypatch.setattr(frc, "_SEED", tmp_path / "seed_cache")
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     return tmp_path / "seed_cache"
 
 
 def test_candidates_try_githubs_duplicate_renames():
+    """The configured name first, then GitHub's .1/.2/.3 renames; other
+    suffixes get no variants."""
     assert frc._asset_candidates("seed.tar.gz") == [
         "seed.tar.gz", "seed.1.tar.gz", "seed.2.tar.gz", "seed.3.tar.gz",
     ]
@@ -112,6 +119,7 @@ def test_api_rate_limit_fails_open(seed_dir, monkeypatch):
 
 
 def test_present_seed_skips_every_request(seed_dir, monkeypatch):
+    """A seed with a manifest is final: the fetch makes no request at all."""
     seed_dir.mkdir(parents=True)
     (seed_dir / "manifest.json").write_text(json.dumps({}))
 
@@ -120,3 +128,36 @@ def test_present_seed_skips_every_request(seed_dir, monkeypatch):
 
     monkeypatch.setattr(frc.requests, "get", fake_get)
     assert frc.fetch_and_extract() is True
+
+
+def test_truncated_archive_installs_nothing(seed_dir, monkeypatch):
+    """A download that dies after manifest.json must not leave a "present"
+    seed behind — that manifest would make every later fetch skip while the
+    price cache stayed empty. Extraction stages, validates, then swaps."""
+    whole = _tarball()
+    truncated = whole[: len(whole) // 2]
+
+    def fake_get(url, **kw):
+        hit = url.endswith("/seed_cache_2010_2026.1.tar.gz")
+        return _Resp(200, truncated) if hit else _Resp(404)
+
+    monkeypatch.setattr(frc.requests, "get", fake_get)
+    assert frc.fetch_and_extract() is False
+    assert not (seed_dir / "manifest.json").exists()
+    assert not (seed_dir.parent / (seed_dir.name + ".partial")).exists()
+
+
+def test_archive_without_manifest_installs_nothing(seed_dir, monkeypatch):
+    """Complete but not a seed (no manifest.json): rejected, nothing installed."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("prices/AAPL_2009-01-01.pkl")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+
+    def fake_get(url, **kw):
+        return _Resp(200, buf.getvalue()) if "/releases/download/" in url else _Resp(403)
+
+    monkeypatch.setattr(frc.requests, "get", fake_get)
+    assert frc.fetch_and_extract() is False
+    assert not seed_dir.exists()
