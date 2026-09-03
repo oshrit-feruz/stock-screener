@@ -7,6 +7,13 @@ fetched at deploy time — BEFORE scripts/seed_cache.py copies data/seed_cache/ 
 data/cache/. That copy step is unchanged: this script's only job is to make sure
 data/seed_cache/ exists and is populated before it runs.
 
+The asset is fetched from the release's DIRECT download URL first
+(github.com/<repo>/releases/download/<tag>/<asset>, trying GitHub's ".1"/".2"
+renames of a duplicate upload as well); the api.github.com lookup is only the
+fallback, because that endpoint is rate-limited per source IP and a hosting
+provider's shared egress exhausts it — the live service booted cold on an
+HTTP 403 from it while the asset itself was perfectly downloadable.
+
 Configuration (env vars, all with defaults matching this repo):
     SEED_CACHE_RELEASE_REPO   "owner/repo"                  (default: oshrit-feruz/stock-screener)
     SEED_CACHE_RELEASE_TAG    release tag holding the asset  (default: cache-v1)
@@ -50,6 +57,41 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _asset_candidates(asset_name: str) -> list[str]:
+    """The names an asset may carry on the release: the configured one first,
+    then GitHub's own renames of a duplicate upload (".1", ".2", ".3")."""
+    if not asset_name.endswith(".tar.gz"):
+        return [asset_name]
+    stem = asset_name[: -len(".tar.gz")]
+    return [asset_name] + [f"{stem}.{n}.tar.gz" for n in (1, 2, 3)]
+
+
+def _open_direct(repo: str, tag: str, asset_name: str, headers: dict):
+    """Stream the asset from the release's direct download URL, trying each
+    candidate name in turn. Returns (response, name) on a 200, else None.
+
+    Direct first, the API second: the per-tag API lookup below is one
+    unauthenticated call to api.github.com, and that endpoint is rate-limited
+    PER SOURCE IP (60/hour) — an IP shared by every service on the same
+    hosting egress. The live service booted cold with "HTTP 403" on exactly
+    that call. The download URL goes through github.com and its CDN instead,
+    is not metered that way, and needs no token on a public repo.
+    """
+    for name in _asset_candidates(asset_name):
+        url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=_TIMEOUT, stream=True,
+                                allow_redirects=True)
+        except Exception as exc:
+            log.warning("RELEASE_CACHE: direct download of %s failed: %r", name, exc)
+            continue
+        if resp.status_code == 200:
+            return resp, name
+        log.warning("RELEASE_CACHE: no asset at %s (HTTP %s)", url, resp.status_code)
+        resp.close()
+    return None
+
+
 def _find_asset(assets: list, asset_name: str):
     """Match `asset_name` exactly first; if absent, tolerate GitHub's own
     disambiguation of a duplicate upload (re-uploading the same filename to a
@@ -85,13 +127,22 @@ def fetch_and_extract() -> bool:
     asset_name = os.environ.get("SEED_CACHE_RELEASE_ASSET", _DEFAULT_ASSET)
 
     if (_SEED / "manifest.json").exists():
-        log.warning("RELEASE_CACHE: %s already present, skipping download (repo=%s tag=%s asset=%s)",
-                    _SEED, repo, tag, asset_name)
+        log.warning("RELEASE_CACHE: %s already present, skipping download "
+                    "(repo=%s tag=%s asset=%s)", _SEED, repo, tag, asset_name)
         return True
 
     log.warning("RELEASE_CACHE: fetch attempted — repo=%s tag=%s asset=%s", repo, tag, asset_name)
     headers = {**_auth_headers(), "Accept": "application/vnd.github+json"}
 
+    direct = _open_direct(repo, tag, asset_name, _auth_headers())
+    if direct is not None:
+        dl_resp, name = direct
+        log.warning("RELEASE_CACHE: download OK (direct) — %s (%s bytes)",
+                    name, dl_resp.headers.get("Content-Length", "?"))
+        return _extract(dl_resp)
+
+    # Direct URL gave nothing: fall back to asking the API which assets exist.
+    log.warning("RELEASE_CACHE: direct download found no asset; asking the GitHub API")
     try:
         rel_resp = requests.get(
             f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
@@ -101,10 +152,12 @@ def fetch_and_extract() -> bool:
         log.warning("RELEASE_CACHE: download FAILED — could not reach GitHub API: %r", exc)
         return False
     if rel_resp.status_code != 200:
-        log.warning("RELEASE_CACHE: download FAILED — release %s/%s not found (HTTP %s); "
-                    "the seed cache has not been published yet, the app will run cold "
-                    "(fallback universe) until it is.",
-                    repo, tag, rel_resp.status_code)
+        hint = (" — a 403 here is usually the unauthenticated GitHub API rate limit "
+                "(60 requests/hour per source IP, shared across a hosting provider's "
+                "egress), not a missing release" if rel_resp.status_code == 403 else "")
+        log.warning("RELEASE_CACHE: download FAILED — release %s/%s not found (HTTP %s)%s; "
+                    "the app will run cold (fallback universe) until the seed lands.",
+                    repo, tag, rel_resp.status_code, hint)
         return False
 
     assets = rel_resp.json().get("assets", [])
@@ -129,7 +182,12 @@ def fetch_and_extract() -> bool:
         log.warning("RELEASE_CACHE: download FAILED — %s: %r", asset["name"], exc)
         return False
     log.warning("RELEASE_CACHE: download OK — %s (%s bytes)", asset["name"], asset.get("size", "?"))
+    return _extract(dl_resp)
 
+
+def _extract(dl_resp) -> bool:
+    """Unpack a streamed tar.gz response into data/seed_cache/. True when the
+    manifest is present afterwards. Never raises."""
     try:
         _SEED.mkdir(parents=True, exist_ok=True)
         seed_resolved = _SEED.resolve()

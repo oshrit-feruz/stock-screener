@@ -1065,12 +1065,44 @@ def _prune_old_jobs(now: float) -> None:
         del _bt_jobs[jid]
 
 
+_seed_lock = threading.Lock()
+
+
+def _ensure_seed_cache() -> None:
+    """Retry the release-cache fetch + seed if the price cache is still empty.
+
+    The startup fetch fails open on any transient error (the GitHub API's
+    per-IP rate limit answered 403 on one boot), and until now the only way
+    back to a warm cache was a redeploy. A backtest on an empty cache is the
+    moment that matters, so it retries once here — a no-op the instant the
+    seed is present (fetch_and_extract returns on the manifest), serialized so
+    two concurrent jobs do not both download. Fails open like startup does.
+    """
+    root = Path(__file__).resolve().parent.parent.parent
+    prices = root / "data" / "cache" / "prices"
+    if prices.is_dir() and any(prices.glob("*.pkl")):
+        return
+    with _seed_lock:
+        if prices.is_dir() and any(prices.glob("*.pkl")):
+            return
+        logger.warning("BACKTEST %s: price cache is empty — retrying the release-cache "
+                       "fetch before the run", _BUILD_MARKER)
+        try:
+            present = _fetch_release_cache()
+            n = _seed_cache() if present else 0
+            logger.warning("BACKTEST %s: release-cache retry present=%s, seeded %d file(s)",
+                           _BUILD_MARKER, present, n)
+        except Exception:
+            logger.exception("BACKTEST %s: release-cache retry raised", _BUILD_MARKER)
+
+
 def _run_backtest_job(job_id: str, params: dict) -> None:
     logger.warning("BACKTEST %s: job %s started (start=%s end=%s thr=%s)",
                    _BUILD_MARKER, job_id, params["start_date"], params["end_date"],
                    params["entry_threshold"])
     t0 = time.time()
     try:
+        _ensure_seed_cache()
         result = run_backtest(params)
         logger.warning("BACKTEST %s: job %s run_backtest returned in %.1fs (error=%s)",
                        _BUILD_MARKER, job_id, time.time() - t0, "error" in result)
