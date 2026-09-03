@@ -59,6 +59,13 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _is_regular_file(path: Path) -> bool:
+    """A real file at `path` — not a directory, and not a symlink to one.
+    is_file() follows links, so a manifest.json symlink would read as a
+    present seed and skip every fetch; a link is never a manifest."""
+    return not path.is_symlink() and path.is_file()
+
+
 def _asset_candidates(asset_name: str) -> list[str]:
     """The names an asset may carry on the release: the configured one first,
     then GitHub's own renames of a duplicate upload (".1", ".2", ".3")."""
@@ -128,7 +135,7 @@ def fetch_and_extract() -> bool:
     tag = os.environ.get("SEED_CACHE_RELEASE_TAG", _DEFAULT_TAG)
     asset_name = os.environ.get("SEED_CACHE_RELEASE_ASSET", _DEFAULT_ASSET)
 
-    if (_SEED / "manifest.json").is_file():
+    if _is_regular_file(_SEED / "manifest.json"):
         log.warning("RELEASE_CACHE: %s already present, skipping download "
                     "(repo=%s tag=%s asset=%s)", _SEED, repo, tag, asset_name)
         return True
@@ -208,13 +215,20 @@ def _extract(dl_resp) -> bool:
             # Guard against path traversal in a (trusted, but still validated)
             # archive — refuse any member that would land outside the staging dir.
             for member in tar:
+                # Links are never part of a seed. Python 3.11's default
+                # extraction follows them, so an archive could plant a
+                # manifest.json symlink pointing anywhere and pass the
+                # checks below; the containment check alone cannot see
+                # where a link points.
+                if member.issym() or member.islnk():
+                    raise ValueError(f"link entry in archive: {member.name}")
                 target = (staging / member.name).resolve()
                 if staging_resolved not in target.parents and target != staging_resolved:
                     raise ValueError(f"unsafe path in archive: {member.name}")
                 tar.extract(member, staging)
                 if member.isfile():
                     n_extracted += 1
-        if not (staging / "manifest.json").is_file():
+        if not _is_regular_file(staging / "manifest.json"):
             raise ValueError("archive carries no manifest.json")
         # Complete and validated: swap it in. rmtree of a stale seed is only
         # reached when no manifest was there (fetch_and_extract returns early

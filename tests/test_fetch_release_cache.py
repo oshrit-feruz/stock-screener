@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tarfile
 
 import pytest
@@ -189,3 +190,45 @@ def test_manifest_must_be_a_file_not_a_directory(seed_dir, monkeypatch):
     calls.clear()
     assert frc.fetch_and_extract() is False
     assert calls, "a directory named manifest.json must not read as a present seed"
+
+
+def test_archive_with_a_symlink_member_installs_nothing(seed_dir, monkeypatch):
+    """A link entry is never part of a seed. An archive planting a manifest.json
+    symlink (or any link) is rejected whole, nothing is installed."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("manifest.json")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tar.addfile(info)
+        info = tarfile.TarInfo("prices/AAPL_2009-01-01.pkl")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    archive = buf.getvalue()
+
+    def fake_get(url, **kw):
+        return _Resp(200, archive) if "/releases/download/" in url else _Resp(403)
+
+    monkeypatch.setattr(frc.requests, "get", fake_get)
+    assert frc.fetch_and_extract() is False
+    assert not seed_dir.exists()
+    assert not (seed_dir.parent / (seed_dir.name + ".partial")).exists()
+
+
+def test_manifest_symlink_does_not_read_as_a_present_seed(seed_dir, monkeypatch, tmp_path):
+    """A manifest.json that is a symlink to a real file must not short-circuit
+    the fetch: only a regular file counts as the seed's marker."""
+    real = tmp_path / "real.json"
+    real.write_text(json.dumps({}))
+    seed_dir.mkdir(parents=True)
+    os.symlink(real, seed_dir / "manifest.json")
+
+    calls: list[str] = []
+
+    def fake_get(url, **kw):
+        calls.append(url)
+        return _Resp(404 if "/releases/download/" in url else 403)
+
+    monkeypatch.setattr(frc.requests, "get", fake_get)
+    assert frc.fetch_and_extract() is False
+    assert calls, "a manifest.json symlink must not read as a present seed"
