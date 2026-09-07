@@ -209,6 +209,9 @@
   "use strict";
 
   var REFRESH_MS = 60000;
+  // A request that never answers must not pile up: each cycle is aborted
+  // when the next one starts, and in any case after this deadline.
+  var REQUEST_TIMEOUT_MS = 20000;
   var $ = function (id) { return document.getElementById(id); };
 
   function esc(s) {
@@ -252,8 +255,8 @@
   // Fetch that reports HTTP failures instead of swallowing them — a 503 from
   // /api/screener is real information (stale or missing daily state), not an
   // empty table.
-  function get(path) {
-    return fetch(path, { headers: { Accept: "application/json" }, cache: "no-store" })
+  function get(path, signal) {
+    return fetch(path, { headers: { Accept: "application/json" }, cache: "no-store", signal: signal })
       .then(function (r) {
         return r.json().catch(function () { return {}; }).then(function (body) {
           if (!r.ok) {
@@ -476,16 +479,36 @@
   // can start a new load() while a slow one is still in flight, and without
   // this the older cycle would land last and overwrite fresher data.
   var generation = 0;
+  var inflight = null;   // the previous cycle's controller, so it can be cut off
+
+  // What to call a rejection in a banner. An abort is only ever reported when
+  // the deadline fired: a cycle aborted because a newer one started is stale by
+  // definition, and its handlers return before writing anything.
+  function reason(e, timedOut) {
+    if (e && e.name === "AbortError") {
+      return timedOut() ? "no response after " + (REQUEST_TIMEOUT_MS / 1000) + "s" : "superseded";
+    }
+    return e && e.message ? e.message : String(e);
+  }
 
   function load() {
     var gen = ++generation;
     var current = function () { return gen === generation; };
     var notes = [];
+
+    // Supersede the previous cycle's requests rather than letting them run on.
+    if (inflight) inflight.abort();
+    var ctrl = new AbortController();
+    inflight = ctrl;
+    var expired = false;
+    var deadline = setTimeout(function () { expired = true; ctrl.abort(); }, REQUEST_TIMEOUT_MS);
+    var timedOut = function () { return expired; };
+    var sig = ctrl.signal;
     // Set once the screener answers; stays null on failure so the positions
     // table falls back to the policy default rather than last cycle's value.
     var holdDays = null;
 
-    var pScreener = get("/api/screener").then(function (d) {
+    var pScreener = get("/api/screener", sig).then(function (d) {
       if (!current()) return;
       holdDays = d.satellite_policy && d.satellite_policy.hold_trading_days;
       renderRegime(d.market_regime, d.satellite_policy);
@@ -516,7 +539,7 @@
       var extra = e.status === 503
         ? " — a 503 here means the daily state is missing or its universe fingerprint no longer matches; the engine refuses to serve an empty ranking as a success."
         : "";
-      notes.push(banner("err", "<b>/api/screener failed:</b> " + esc(e.message) + esc(extra)));
+      notes.push(banner("err", "<b>/api/screener failed:</b> " + esc(reason(e, timedOut)) + esc(extra)));
       // Every view below is screener-derived. On a refresh that fails after an
       // earlier one succeeded, leaving any of them up would show last cycle's
       // policy and ranking under an error banner, which reads as current.
@@ -524,26 +547,28 @@
     });
 
     var pPositions = pScreener.then(function () {
-      return get("/api/positions").then(function (d) {
+      return get("/api/positions", sig).then(function (d) {
         if (!current()) return;
         renderPositions(d.positions, holdDays);
       }).catch(function (e) {
         if (!current()) return;
-        notes.push(banner("err", "<b>/api/positions failed:</b> " + esc(e.message)));
+        notes.push(banner("err", "<b>/api/positions failed:</b> " + esc(reason(e, timedOut))));
         $("positions").innerHTML = '<div class="empty">unavailable</div>';
       });
     });
 
-    var pBeta = get("/api/beta/dashboard").then(function (d) {
+    var pBeta = get("/api/beta/dashboard", sig).then(function (d) {
       if (!current()) return;
       renderBeta(d);
     }).catch(function (e) {
       if (!current()) return;
-      notes.push(banner("err", "<b>/api/beta/dashboard failed:</b> " + esc(e.message)));
+      notes.push(banner("err", "<b>/api/beta/dashboard failed:</b> " + esc(reason(e, timedOut))));
       $("beta").innerHTML = '<div class="empty">unavailable</div>';
     });
 
     return Promise.all([pScreener, pPositions, pBeta]).then(function () {
+      clearTimeout(deadline);
+      if (inflight === ctrl) inflight = null;
       if (!current()) return;
       $("alerts").innerHTML = notes.join("");
       var t = new Date();
