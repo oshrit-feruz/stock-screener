@@ -377,6 +377,22 @@ class PortfolioHolding(BaseModel):
 class PortfolioIn(BaseModel):
     holdings: List[PortfolioHolding]
 
+_SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
+# Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and
+# the UI date-picker's max in product/web/index.html). Requests past this have no
+# cached prices for the tail, so every universe ticker would live-refetch its
+# entire history — the exact slow "still running for minutes" path the cache
+# exists to avoid. The UI already caps the picker here; this server-side guard
+# makes the boundary real for stale clients / direct API callers, returning a
+# clean 400 instead of a silent slow refetch. Bump this (and the UI max, and the
+# cache) together whenever the prebuilt cache is extended.
+_SIM_MAX_END = date(2026, 6, 30)
+# Trading days in the widest window the simulator will accept, at the usual 252
+# a year. The ceiling on hold_days: past this no permitted run can complete a
+# single trade.
+_MAX_HOLD_DAYS = int((_SIM_MAX_END - _SIM_MIN_START).days * 252 / 365.25)
+
+
 class BacktestParams(BaseModel):
     # Default matches the production BUY_THRESHOLD so a default backtest
     # replicates live screener behavior (imported to prevent future drift).
@@ -388,7 +404,18 @@ class BacktestParams(BaseModel):
     # ge=1 rather than leaving it to the engine: without it a 0 is accepted
     # here, a job is created and returns 202, and the ValueError surfaces later
     # as "Internal error" on a poll — a client mistake reported as a server one.
-    hold_days:        int   = Field(default=HOLD_TRADING_DAYS, ge=1)
+    #
+    # The upper bound is the simulator's own widest window, NOT the policy hold.
+    # Capping at 504 would forbid the one question the holding-period study
+    # itself leaves open: it compared 252 / 378 / 504, found the upper tail grows
+    # monotonically with holding time, and flagged that the 504 edge rests on
+    # only 21 completed trades. Asking whether a longer hold helps or just runs
+    # out of trades is what this tool is for. Past _MAX_HOLD_DAYS, though, no
+    # permitted window can complete a single trade, so the run would report zero
+    # trades — which reads as "the strategy did nothing" rather than "your hold
+    # is longer than the data".
+    hold_days:        int   = Field(default=HOLD_TRADING_DAYS, ge=1,
+                                    le=_MAX_HOLD_DAYS)
     # Constrained rather than a bare str: the engine matches these by equality,
     # so an unrecognised spelling falls through every branch and runs a backtest
     # with no exit rule at all, silently. The old spellings stay accepted.
@@ -1075,16 +1102,6 @@ def portfolio_alerts() -> dict:
 # hangs). POST kicks off the run in a background thread and returns a job_id
 # immediately (202); the client polls GET .../{job_id} for the result.
 
-_SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
-# Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and
-# the UI date-picker's max in product/web/index.html). Requests past this have no
-# cached prices for the tail, so every universe ticker would live-refetch its
-# entire history — the exact slow "still running for minutes" path the cache
-# exists to avoid. The UI already caps the picker here; this server-side guard
-# makes the boundary real for stale clients / direct API callers, returning a
-# clean 400 instead of a silent slow refetch. Bump this (and the UI max, and the
-# cache) together whenever the prebuilt cache is extended.
-_SIM_MAX_END = date(2026, 6, 30)
 
 
 def _prune_old_jobs(now: float) -> None:

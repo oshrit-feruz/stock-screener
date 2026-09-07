@@ -313,3 +313,27 @@ def test_the_api_still_accepts_every_supported_mode(mode):
     failing validation on a rename the engine still understands."""
     from product.api.main import BacktestParams
     assert BacktestParams(exit_mode=mode).exit_mode == mode
+
+
+@pytest.mark.parametrize("bad", [4157, 10000, 10**9])
+def test_the_api_rejects_a_hold_no_window_could_complete(bad):
+    """Past the simulator's widest window no run can close a single trade, so
+    the result would be an empty table reading as "the strategy did nothing"."""
+    import pydantic
+
+    from product.api.main import BacktestParams
+    with pytest.raises(pydantic.ValidationError):
+        BacktestParams(hold_days=bad)
+
+
+def test_the_ceiling_is_the_window_not_the_policy_hold():
+    """Deliberately NOT capped at HOLD_TRADING_DAYS. The holding-period study
+    compared 252/378/504, found the upper tail grows monotonically with holding
+    time, and flagged that the 504 edge rests on 21 completed trades — so
+    "does a longer hold help, or just run out of trades?" is exactly what this
+    tool is for, and a cap at the policy value would forbid asking it."""
+    from product.api.main import _MAX_HOLD_DAYS, BacktestParams
+    assert _MAX_HOLD_DAYS > HOLD_TRADING_DAYS
+    assert BacktestParams(hold_days=HOLD_TRADING_DAYS + 1).hold_days \
+        == HOLD_TRADING_DAYS + 1
+    assert BacktestParams(hold_days=_MAX_HOLD_DAYS).hold_days == _MAX_HOLD_DAYS
