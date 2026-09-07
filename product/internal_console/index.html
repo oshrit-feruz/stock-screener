@@ -835,65 +835,89 @@
     }).join("") + "</tr>";
   }
 
+  // Each block parser takes the line array and the current index, pushes what
+  // it recognised onto `out`, and returns the next index — or -1 when it does
+  // not apply. Splitting them keeps mdToHtml a dispatch loop instead of one
+  // deeply nested function.
+
+  function blockTable(lines, i, out) {
+    if (!lines[i].startsWith("|")) return -1;
+    if (i + 1 >= lines.length || !/^\|[\s:|-]+\|?$/.test(lines[i + 1])) return -1;
+    var head = mdRow(lines[i], "th");
+    var j = i + 2;
+    var body = [];
+    while (j < lines.length && lines[j].startsWith("|")) {
+      body.push(mdRow(lines[j], "td"));
+      j++;
+    }
+    out.push('<div class="scroll"><table><thead>' + head + "</thead><tbody>" +
+             body.join("") + "</tbody></table></div>");
+    return j;
+  }
+
+  function blockHeading(lines, i, out) {
+    // One whitespace then the rest, deliberately: "\s+(.*)" lets both parts
+    // match the same spaces, which is the ambiguity that makes such a pattern
+    // backtrack super-linearly.
+    var m = /^(#{1,6})\s(.*)$/.exec(lines[i]);
+    if (!m) return -1;
+    var level = Math.min(m[1].length, 3);
+    out.push("<h" + level + ">" + mdInline(m[2].trim()) + "</h" + level + ">");
+    return i + 1;
+  }
+
+  function blockList(lines, i, out) {
+    if (!/^[-*]\s/.test(lines[i])) return -1;
+    var items = [];
+    var j = i;
+    while (j < lines.length && /^[-*]\s/.test(lines[j])) {
+      var item = lines[j].replace(/^[-*]\s+/, "");
+      j++;
+      // The reports wrap long bullets with a hanging indent; fold those in so
+      // a sentence does not break into a separate paragraph mid-clause.
+      while (j < lines.length && /^\s/.test(lines[j]) && lines[j].trim() !== "" &&
+             !/^\s*[-*]\s/.test(lines[j])) {
+        item += " " + lines[j].trim();
+        j++;
+      }
+      items.push("<li>" + mdInline(item) + "</li>");
+    }
+    out.push("<ul>" + items.join("") + "</ul>");
+    return j;
+  }
+
+  function blockRule(lines, i) {
+    return /^\s*(-{3,}|={3,})\s*$/.test(lines[i]) ? i + 1 : -1;
+  }
+
+  function blockParagraph(lines, i, out) {
+    var para = [];
+    var j = i;
+    while (j < lines.length && lines[j].trim() !== "" &&
+           !lines[j].startsWith("|") && !/^#{1,6}\s/.test(lines[j]) &&
+           !/^[-*]\s/.test(lines[j])) {
+      para.push(lines[j].trim());
+      j++;
+    }
+    if (!para.length) return -1;
+    out.push("<p>" + mdInline(para.join(" ")) + "</p>");
+    return j;
+  }
+
   function mdToHtml(md) {
     var lines = md.split("\n");
     var out = [];
     var i = 0;
     while (i < lines.length) {
-      var line = lines[i];
-
-      // table: a header row, a separator row, then body rows
-      if (line.startsWith("|") && i + 1 < lines.length && /^\|[\s:|-]+\|?$/.test(lines[i + 1])) {
-        var head = mdRow(line, "th");
-        i += 2;
-        var body = [];
-        while (i < lines.length && lines[i].startsWith("|")) {
-          body.push(mdRow(lines[i], "td"));
-          i++;
-        }
-        out.push('<div class="scroll"><table><thead>' + head + "</thead><tbody>" +
-                 body.join("") + "</tbody></table></div>");
-        continue;
-      }
-
-      var heading = /^(#{1,6})\s+(.*)$/.exec(line);
-      if (heading) {
-        var level = Math.min(heading[1].length, 3);
-        out.push("<h" + level + ">" + mdInline(heading[2]) + "</h" + level + ">");
-        i++;
-        continue;
-      }
-
-      if (/^[-*]\s+/.test(line)) {
-        var items = [];
-        while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
-          var item = lines[i].replace(/^[-*]\s+/, "");
-          i++;
-          // Continuation lines are indented under the bullet; fold them in so
-          // a wrapped sentence stays one sentence.
-          while (i < lines.length && /^\s+\S/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i])) {
-            item += " " + lines[i].trim();
-            i++;
-          }
-          items.push("<li>" + mdInline(item) + "</li>");
-        }
-        out.push("<ul>" + items.join("") + "</ul>");
-        continue;
-      }
-
-      if (/^\s*(---+|===+)\s*$/.test(line)) { i++; continue; }
-
-      if (line.trim() === "") { i++; continue; }
-
-      // paragraph: consecutive non-blank, non-structural lines
-      var para = [];
-      while (i < lines.length && lines[i].trim() !== "" &&
-             !lines[i].startsWith("|") && !/^#{1,6}\s/.test(lines[i]) &&
-             !/^[-*]\s+/.test(lines[i])) {
-        para.push(lines[i].trim());
-        i++;
-      }
-      if (para.length) out.push("<p>" + mdInline(para.join(" ")) + "</p>");
+      if (lines[i].trim() === "") { i++; continue; }
+      var next = blockTable(lines, i, out);
+      if (next < 0) next = blockHeading(lines, i, out);
+      if (next < 0) next = blockList(lines, i, out);
+      if (next < 0) next = blockRule(lines, i);
+      if (next < 0) next = blockParagraph(lines, i, out);
+      // Every parser declining would loop forever; consuming the line is the
+      // safe fallback and cannot happen for any line that is not blank.
+      i = next < 0 ? i + 1 : next;
     }
     return out.join("");
   }
@@ -922,13 +946,13 @@
       }).join("");
       $("rs-note").textContent = reports.length + " studies, already run";
       pick.addEventListener("change", function () {
-        var sel = reports.filter(function (r) { return r.id === pick.value; })[0];
+        var sel = reports.find(function (r) { return r.id === pick.value; });
         $("rs-lead").textContent = sel ? sel.lead : "";
         rsShow(pick.value);
       });
       // Open on the entry-threshold sweep when it is there: it is the study
       // that most often prompts the question "why 0.60?".
-      var preferred = reports.filter(function (r) { return r.id === "threshold_sweep"; })[0];
+      var preferred = reports.find(function (r) { return r.id === "threshold_sweep"; });
       pick.value = (preferred || reports[0]).id;
       $("rs-lead").textContent = (preferred || reports[0]).lead;
       rsShow(pick.value);

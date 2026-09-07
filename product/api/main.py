@@ -1283,7 +1283,8 @@ def research_index() -> dict:
     return {"reports": reports}
 
 
-@app.get("/api/research/{report_id}")
+@app.get("/api/research/{report_id}",
+         responses={404: {"description": "No report with that id"}})
 def research_report(report_id: str) -> dict:
     """One report's markdown, verbatim."""
     path = _RESEARCH_INDEX.get(report_id)
