@@ -409,7 +409,7 @@ function trackPosition(ticker) {
         showToast('Failed to track. Try again.');
       }
     })
-    .catch(function () { showToast('Failed to track. Try again.'); });
+    .catch(function (e) { showToast(e && e.message ? e.message : 'Failed to track. Try again.'); });
 }
 
 // ── Positions ──────────────────────────────────────────────────────────────────
@@ -489,7 +489,7 @@ function closePosition(ticker) {
         showToast('Failed to close position.');
       }
     })
-    .catch(function () { showToast('Failed to close position.'); });
+    .catch(function (e) { showToast(e && e.message ? e.message : 'Failed to close position.'); });
 }
 
 // ── Beta tracking ────────────────────────────────────────────────────────────────

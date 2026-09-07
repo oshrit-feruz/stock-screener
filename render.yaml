@@ -24,6 +24,15 @@ services:
       # release assets download without one; leave unset in that case.
       - key: GITHUB_TOKEN
         sync: false
+      # Required for the mutating endpoints (/api/positions/open, /api/positions/
+      # close, POST /api/portfolio). Writes FAIL CLOSED without it: leave this
+      # unset and every write is refused, so a misconfigured deploy stops the
+      # buttons working rather than leaving the tracked book open to the
+      # internet. Render generates the value; to use the app, open
+      # https://<service>/api/auth?k=<value> once in each browser — the app's
+      # own POSTs then carry the session cookie.
+      - key: ADMIN_TOKEN
+        generateValue: true
 
   # The daily scheduled run has moved to GitHub Actions (free tier) —
   # see .github/workflows/daily-screener.yml. Only the web service runs on Render.
