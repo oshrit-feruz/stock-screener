@@ -1,3 +1,5 @@
+'use strict';
+
 var HOLD_DAYS_DEFAULT = 504;   // policy hold (~2 years); see satellite_policy.py
 
 // "1 year" / "1.5 years" / "2 years" for the periods the Simulator offers, and
@@ -10,7 +12,6 @@ function holdLabel(days) {
   if (d === 504) return '2 years';
   return d + ' days';
 }
-'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────────
 var _sigCache   = null;
@@ -899,7 +900,7 @@ function _getSimParams(suffix) {
   var et        = etEl ? parseFloat(etEl.value) : 0.80;
   var em        = emEl ? emEl.value : 'hold_only';
   var hdEl      = document.querySelector('input[name="hold_days"]:checked');
-  var hd        = hdEl ? parseInt(hdEl.value, 10) : HOLD_DAYS_DEFAULT;
+  var hd        = hdEl ? Number.parseInt(hdEl.value, 10) : HOLD_DAYS_DEFAULT;
   var ps        = parseFloat((document.getElementById('pos-size-slider') || {}).value || 10);
   var sd        = (document.getElementById('sim-start-date') || {}).value || '2018-01-01';
   var ed        = (document.getElementById('sim-end-date')   || {}).value || '2024-12-31';
