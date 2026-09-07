@@ -18,14 +18,14 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import numpy as np
 import requests
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -385,10 +385,20 @@ class BacktestParams(BaseModel):
     # Holding period in trading days. Defaults to the validated policy hold so
     # a default Simulator run reproduces what the exit tracker enforces; the
     # UI offers 252 / 378 / 504 for comparison.
-    hold_days:        int   = HOLD_TRADING_DAYS
-    # "hold_only" | "threshold_or_hold" | "threshold_only". The old spellings
-    # ("252d_only", "threshold_or_252d") are still accepted by the engine.
-    exit_mode:        str   = "hold_only"
+    # ge=1 rather than leaving it to the engine: without it a 0 is accepted
+    # here, a job is created and returns 202, and the ValueError surfaces later
+    # as "Internal error" on a poll — a client mistake reported as a server one.
+    hold_days:        int   = Field(default=HOLD_TRADING_DAYS, ge=1)
+    # Constrained rather than a bare str: the engine matches these by equality,
+    # so an unrecognised spelling falls through every branch and runs a backtest
+    # with no exit rule at all, silently. The old spellings stay accepted.
+    exit_mode: Literal[
+        "hold_only",
+        "threshold_or_hold",
+        "threshold_only",
+        "252d_only",
+        "threshold_or_252d",
+    ] = "hold_only"
     take_profit_pct:  float = 0.0           # 0 = disabled; e.g. 30 = exit at +30%
     stop_loss_pct:    float = 0.0           # 0 = disabled; e.g. 20 = exit at -20%
     trailing_stop_pct: float = 0.0         # 0 = disabled; e.g. 25 = exit 25% below peak
@@ -459,6 +469,12 @@ def _current_price(ticker: str, prices: PriceData) -> Optional[float]:
 
 
 def _context_msg(ret: float) -> str:
+    """Positional context for an open position, keyed on unrealized return.
+
+    The last branch names the exit day, which must be the policy hold: this
+    string ships alongside days_remaining in the same object, and the two
+    disagreeing is how a reader learns two different exit dates.
+    """
     if ret < -0.20:
         return (
             "You are in the bottom quartile. This happens to 25% of entries. "
@@ -478,7 +494,7 @@ def _context_msg(ret: float) -> str:
     return (
         "You are ahead of 80% of historical entries at this stage. "
         "Average at 12 months is +49.2%. "
-        "Consider your exit plan as you approach day 252."
+        f"Consider your exit plan as you approach day {HOLD_TRADING_DAYS}."
     )
 
 
@@ -1351,7 +1367,7 @@ def research_report(report_id: str) -> dict:
 # being stumbled upon and read at a glance; it is not a data boundary.
 @app.get("/internal", include_in_schema=False)
 @app.get("/internal/", include_in_schema=False)
-def internal_console(request: Request, k: str = "") -> FileResponse:
+def internal_console(request: Request, k: str = "") -> Response:
     """Serve the internal console to a caller holding the token.
 
     Accepts it as ?k= once and then as a cookie, so the page can refresh
@@ -1364,10 +1380,18 @@ def internal_console(request: Request, k: str = "") -> FileResponse:
     page = _INTERNAL_DIR / "index.html"
     if not _token_ok(supplied) or not page.is_file():
         raise HTTPException(status_code=404, detail="Not Found")
-    resp = FileResponse(page, media_type="text/html")
-    # Never let a shared cache hold a copy handed out against a token.
-    resp.headers["Cache-Control"] = "no-store, private"
+
     if k:
+        # Redirect rather than serving the page at ?k=<token>. Otherwise that
+        # stays the document URL: it sits in the address bar and in history, it
+        # is what gets copied and pasted, and — because the browser sends the
+        # full URL as Referer on same-origin requests — the console's own
+        # polling would put the token in the access log every 60 seconds. The
+        # one request that carried it is still logged once; that cannot be
+        # undone from here, only not repeated.
+        resp: Response = RedirectResponse(url="/internal", status_code=303)
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Cache-Control"] = "no-store, private"
         resp.set_cookie(
             _INTERNAL_COOKIE, _INTERNAL_TOKEN,
             max_age=_INTERNAL_MAX_AGE, httponly=True, samesite="lax",
@@ -1375,6 +1399,12 @@ def internal_console(request: Request, k: str = "") -> FileResponse:
             # local development over plain http still needs to work.
             secure=not _IS_LOCAL,
         )
+        return resp
+
+    resp = FileResponse(page, media_type="text/html")
+    # Never let a shared cache hold a copy handed out against a token.
+    resp.headers["Cache-Control"] = "no-store, private"
+    resp.headers["Referrer-Policy"] = "no-referrer"
     return resp
 
 

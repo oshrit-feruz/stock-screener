@@ -80,17 +80,38 @@ def test_console_is_404_without_the_token(app, path, cookie):
     assert _get(app, path, cookie)["status"] == 404
 
 
-def test_console_opens_with_the_token_and_sets_a_cookie(app):
-    """?k= serves the page and hands back a cookie, so a refresh (and the
-    page's own polling) works without the token sitting in every URL."""
+def test_the_token_is_exchanged_for_a_cookie_and_redirected_away(app):
+    """?k= hands back a cookie and REDIRECTS rather than serving the page.
+
+    Serving it directly would leave ?k=<token> as the document URL: in the
+    address bar, in history, in whatever gets copied and pasted, and — since a
+    browser sends the full URL as Referer on same-origin requests — in the
+    access log on every one of the console's 60-second polls.
+    """
     r = _get(app, f"/internal/?k={_TOKEN}")
-    assert r["status"] == 200
-    assert r["size"] > 1000, "expected the console HTML, not an empty body"
+    assert r["status"] == 303
+    assert r["headers"].get("location") == "/internal"
     cookie = r["headers"].get("set-cookie", "")
     assert "internal_console=" in cookie
     assert "HttpOnly" in cookie, "the token cookie must not be readable from JS"
     assert "no-store" in r["headers"].get("cache-control", ""), \
-        "a page handed out against a token must not sit in a shared cache"
+        "a response handed out against a token must not sit in a shared cache"
+    assert r["headers"].get("referrer-policy") == "no-referrer"
+
+
+def test_the_redirect_target_serves_the_page_with_that_cookie(app):
+    """The exchange is only useful if the cookie it sets opens the page."""
+    r = _get(app, "/internal", f"internal_console={_TOKEN}")
+    assert r["status"] == 200
+    assert r["size"] > 1000, "expected the console HTML, not an empty body"
+    assert "no-store" in r["headers"].get("cache-control", "")
+    assert r["headers"].get("referrer-policy") == "no-referrer"
+
+
+def test_a_wrong_token_is_not_redirected_either(app):
+    """404 before the cookie is set — a redirect for a bad token would confirm
+    the path exists, which is the thing the 404 is there to hide."""
+    assert _get(app, "/internal/?k=wrong-token")["status"] == 404
 
 
 def test_the_cookie_alone_opens_the_console(app):

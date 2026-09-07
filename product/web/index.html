@@ -605,17 +605,24 @@
             </span>
           </label>
           <label class="ob-horizon-opt">
-            <input type="radio" name="time_horizon" value="6_to_12m" checked>
+            <input type="radio" name="time_horizon" value="6_to_12m">
             <span class="ob-horizon-body">
               <span class="ob-horizon-label">6 to 12 months</span>
-              <span class="ob-horizon-ret" style="color:var(--green);">avg +49.2% &#10003;</span>
+              <span class="ob-horizon-ret">avg +49.2%</span>
             </span>
           </label>
           <label class="ob-horizon-opt">
-            <input type="radio" name="time_horizon" value="over_12m">
+            <input type="radio" name="time_horizon" value="12_to_24m">
             <span class="ob-horizon-body">
-              <span class="ob-horizon-label">More than 12 months</span>
+              <span class="ob-horizon-label">12 to 24 months</span>
               <span class="ob-horizon-ret">avg +49.2%*</span>
+            </span>
+          </label>
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="2y_or_more" checked>
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">2 years or more</span>
+              <span class="ob-horizon-ret" style="color:var(--green);">the planned hold &#10003;</span>
             </span>
           </label>
         </div>
@@ -624,7 +631,8 @@
           The validated hold is ~2 years; on the clean backtest a 1-year hold lost to SPY.<br>
           Measured 12-month average: +49.2%.<br>
           At 3 months: +6.4% avg &nbsp;&middot;&nbsp; At 6 months: +11.9% avg.<br><br>
-          If you select under 6 months, every signal card will show a caution warning &mdash; the edge is weak at short horizons.
+          The +49.2% is the measured 12-month average, not a 2-year figure &mdash; the study did not measure one.<br><br>
+          If you select anything shorter than 2 years, every signal card will show a caution &mdash; exiting before the planned hold is not the tested strategy.
         </p>
         <div class="ob-nav-row">
           <button class="btn btn-ghost" onclick="obBack(1)">&larr; Back</button>
@@ -945,7 +953,8 @@
             <option value="under_3m">Under 3 months</option>
             <option value="3_to_6m">3 to 6 months</option>
             <option value="6_to_12m">6 to 12 months</option>
-            <option value="over_12m">Over 12 months</option>
+            <option value="12_to_24m">12 to 24 months</option>
+            <option value="2y_or_more">2 years or more</option>
           </select>
         </div>
         <div class="about-row">

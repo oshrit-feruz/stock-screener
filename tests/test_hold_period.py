@@ -237,3 +237,79 @@ def test_the_endpoint_default_is_the_policy_hold(monkeypatch):
     main.backtest(main.BacktestParams(start_date="2018-01-01", end_date="2020-01-01"))
     main._bt_semaphore.release()
     assert captured.get("hold_days") == HOLD_TRADING_DAYS
+
+
+# ── exit-mode dispatch ────────────────────────────────────────────────────────
+# _ui_exit_reason is the branch run_backtest takes for a Simulator run. It was
+# lifted out of the loop so these can drive the real decision rather than a
+# mirror of it — the hold_days bug above got through precisely because the
+# tests agreed with a copy instead of with the engine.
+
+@pytest.mark.parametrize("chosen", [252, 378, 504])
+def test_hold_only_exits_on_the_chosen_day(chosen):
+    from product.backtest.engine import _ui_exit_reason
+    assert _ui_exit_reason("hold_only", chosen - 1, chosen, None, 0.4) is None
+    assert _ui_exit_reason("hold_only", chosen, chosen, None, 0.4) == f"{chosen}d"
+
+
+def test_threshold_or_hold_prefers_the_hold():
+    from product.backtest.engine import _ui_exit_reason
+    # Both conditions true on the same bar: the hold is the one reported.
+    assert _ui_exit_reason("threshold_or_hold", 504, 504, 0.1, 0.4) == "504d"
+    assert _ui_exit_reason("threshold_or_hold", 10, 504, 0.1, 0.4) == "threshold"
+    assert _ui_exit_reason("threshold_or_hold", 10, 504, 0.9, 0.4) is None
+
+
+def test_threshold_only_respects_a_shorter_chosen_hold():
+    """The cap used to be the policy constant unconditionally, so a 252-day
+    selection still ran to 504 and the trade table said "504d_cap" — the
+    result disagreed with the control the user had set."""
+    from product.backtest.engine import _ui_exit_reason
+    assert _ui_exit_reason("threshold_only", 252, 252, 0.9, 0.4) == "252d_cap"
+    assert _ui_exit_reason("threshold_only", 251, 252, 0.9, 0.4) is None
+
+
+def test_threshold_only_never_runs_past_the_research():
+    """A selection longer than the policy hold does not extend the cap: the
+    study covers 504 days and nothing beyond it."""
+    from product.backtest.engine import _ui_exit_reason
+    assert _ui_exit_reason("threshold_only", HOLD_TRADING_DAYS, 5000, 0.9, 0.4) \
+        == f"{HOLD_TRADING_DAYS}d_cap"
+
+
+def test_an_unknown_exit_mode_closes_nothing():
+    """Documents why the API constrains exit_mode: reaching the engine with a
+    spelling it does not match is not an error, it is a run with no exit rule."""
+    from product.backtest.engine import _ui_exit_reason
+    assert _ui_exit_reason("hold-only", 100000, 504, 0.0, 0.4) is None
+
+
+# ── request validation ────────────────────────────────────────────────────────
+# Without these the bad value is accepted, a job is created, 202 comes back, and
+# the failure surfaces on a later poll as "Internal error" — a client mistake
+# reported as a server fault, or in the exit_mode case not reported at all.
+
+@pytest.mark.parametrize("bad", [0, -1, -504])
+def test_the_api_rejects_a_nonsense_hold(bad):
+    import pydantic
+
+    from product.api.main import BacktestParams
+    with pytest.raises(pydantic.ValidationError):
+        BacktestParams(hold_days=bad)
+
+
+def test_the_api_rejects_an_unknown_exit_mode():
+    import pydantic
+
+    from product.api.main import BacktestParams
+    with pytest.raises(pydantic.ValidationError):
+        BacktestParams(exit_mode="hold-only")
+
+
+@pytest.mark.parametrize("mode", ["hold_only", "threshold_or_hold", "threshold_only",
+                                  "252d_only", "threshold_or_252d"])
+def test_the_api_still_accepts_every_supported_mode(mode):
+    """Including the two legacy spellings — a cached page must not start
+    failing validation on a rename the engine still understands."""
+    from product.api.main import BacktestParams
+    assert BacktestParams(exit_mode=mode).exit_mode == mode
