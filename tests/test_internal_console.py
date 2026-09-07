@@ -1,0 +1,122 @@
+"""The internal console must be unreachable without its token.
+
+Two things are being pinned here, and the second is the one that bites: the
+token check itself, and the fact that the page does NOT live under the public
+StaticFiles mount. `product/web/` is served wholesale at `/`, so a console kept
+there would be fetchable by path whatever the route decided — the guard would
+look right in code review and protect nothing.
+
+Driven through the ASGI app directly: starlette's TestClient needs httpx, which
+this environment does not carry.
+"""
+from __future__ import annotations
+
+import asyncio
+import importlib
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+_TOKEN = "test-token-value"
+
+
+@pytest.fixture(scope="module")
+def app():
+    """The API with a console token configured, as a deployed service has."""
+    os.environ["INTERNAL_CONSOLE_TOKEN"] = _TOKEN
+    os.environ.pop("RENDER", None)          # local: cookie must not be Secure-only
+    import product.api.main as main
+    importlib.reload(main)
+    yield main.app
+    os.environ.pop("INTERNAL_CONSOLE_TOKEN", None)
+
+
+def _get(app, path: str, cookie: str | None = None) -> dict:
+    """GET `path` through the ASGI app; returns status, body size and headers."""
+    query = ""
+    if "?" in path:
+        path, query = path.split("?", 1)
+    headers = [(b"cookie", cookie.encode())] if cookie else []
+    scope = {
+        "type": "http", "method": "GET", "path": path, "raw_path": path.encode(),
+        "query_string": query.encode(), "headers": headers, "client": ("1.2.3.4", 1),
+        "server": ("testserver", 80), "scheme": "http", "root_path": "", "app": app,
+    }
+    out: dict = {"size": 0, "headers": {}}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            out["status"] = message["status"]
+            for key, value in message["headers"]:
+                out["headers"].setdefault(key.decode().lower(), value.decode())
+        elif message["type"] == "http.response.body":
+            out["size"] += len(message.get("body", b""))
+
+    asyncio.run(app(scope, receive, send))
+    return out
+
+
+@pytest.mark.parametrize("path,cookie", [
+    ("/internal/", None),                               # nothing supplied
+    ("/internal/?k=wrong-token", None),                 # wrong token
+    ("/internal/", "internal_console=wrong-token"),     # wrong cookie
+])
+def test_console_is_404_without_the_token(app, path, cookie):
+    """404 rather than 401/403: an unauthenticated caller should not learn that
+    this path exists or that a token would open it."""
+    assert _get(app, path, cookie)["status"] == 404
+
+
+def test_console_opens_with_the_token_and_sets_a_cookie(app):
+    """?k= serves the page and hands back a cookie, so a refresh (and the
+    page's own polling) works without the token sitting in every URL."""
+    r = _get(app, f"/internal/?k={_TOKEN}")
+    assert r["status"] == 200
+    assert r["size"] > 1000, "expected the console HTML, not an empty body"
+    cookie = r["headers"].get("set-cookie", "")
+    assert "internal_console=" in cookie
+    assert "HttpOnly" in cookie, "the token cookie must not be readable from JS"
+    assert "no-store" in r["headers"].get("cache-control", ""), \
+        "a page handed out against a token must not sit in a shared cache"
+
+
+def test_the_cookie_alone_opens_the_console(app):
+    assert _get(app, "/internal/", f"internal_console={_TOKEN}")["status"] == 200
+
+
+def test_console_is_absent_when_no_token_is_configured(monkeypatch):
+    """Fail CLOSED. A deploy that forgets INTERNAL_CONSOLE_TOKEN must expose
+    nothing — the opposite default would publish the console silently."""
+    monkeypatch.delenv("INTERNAL_CONSOLE_TOKEN", raising=False)
+    import product.api.main as main
+    importlib.reload(main)
+    try:
+        assert _get(main.app, f"/internal/?k={_TOKEN}")["status"] == 404
+        assert _get(main.app, "/internal/")["status"] == 404
+    finally:
+        os.environ["INTERNAL_CONSOLE_TOKEN"] = _TOKEN
+        importlib.reload(main)
+
+
+@pytest.mark.parametrize("path", [
+    "/internal/index.html",             # the path it had while under web/
+    "/internal_console/index.html",     # its directory name, if it were served
+])
+def test_the_console_is_not_reachable_as_a_static_file(app, path):
+    """The whole point of keeping it outside product/web/: the mount at "/"
+    serves that tree unconditionally, so a file left there would bypass the
+    token check entirely."""
+    assert _get(app, path)["status"] == 404
+
+
+def test_the_gate_does_not_touch_the_public_surface(app):
+    """The client PWA and the API it depends on must be unaffected."""
+    assert _get(app, "/index.html")["status"] == 200
+    assert _get(app, "/api/health")["status"] == 200

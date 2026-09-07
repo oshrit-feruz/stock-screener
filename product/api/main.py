@@ -10,6 +10,7 @@ import logging
 import os
 import pickle
 import re as _re
+import secrets
 import sys
 import threading
 import time
@@ -22,8 +23,9 @@ from typing import List, Optional
 import numpy as np
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -308,6 +310,10 @@ _OPEN_FILE     = _DATA_DIR / "positions" / "open_positions.json"
 _CLOSED_FILE   = _DATA_DIR / "positions" / "closed_positions.json"
 _PORTFOLIO_FILE = _DATA_DIR / "portfolio" / "portfolio.json"
 _WEB_DIR       = Path(__file__).parent.parent / "web"
+# The internal console lives OUTSIDE _WEB_DIR on purpose: everything under
+# that directory is served by the public StaticFiles mount, so a page kept
+# there is reachable by path no matter what the route below checks.
+_INTERNAL_DIR  = Path(__file__).parent.parent / "internal_console"
 
 # Server-side screener cache (1 hour)
 _sc_lock = threading.Lock()  # guards _sc_data / _sc_ts / _sc_warming
@@ -1196,6 +1202,64 @@ def backtest_status(job_id: str) -> dict:
         if job["status"] == "error":
             return {"job_id": job_id, "status": "error", "detail": job["error"]}
         return {"job_id": job_id, "status": "running"}
+
+
+# ── Internal console ──────────────────────────────────────────────────────────
+# Gated by a shared token in INTERNAL_CONSOLE_TOKEN. Fails CLOSED: with the
+# variable unset the page does not exist, so a deploy that forgets it exposes
+# nothing rather than everything.
+#
+# Scope, stated plainly: this protects the PAGE. The /api/* endpoints it reads
+# stay public, because the client PWA served at / depends on them — so the data
+# is still reachable by anyone who knows those URLs. The gate stops the console
+# being stumbled upon and read at a glance; it is not a data boundary.
+_INTERNAL_TOKEN  = os.environ.get("INTERNAL_CONSOLE_TOKEN", "").strip()
+_INTERNAL_COOKIE = "internal_console"
+_INTERNAL_MAX_AGE = 60 * 60 * 12  # re-supply ?k= once a day, not on every load
+# Render sets RENDER=true in every service; anywhere else is a dev machine
+# on plain http, where a Secure cookie would silently never be stored.
+_IS_LOCAL = not os.environ.get("RENDER")
+
+
+def _token_ok(supplied: str) -> bool:
+    """Constant-time compare against the configured token.
+
+    compare_digest over bytes: it raises on non-ASCII str input, and a token
+    typed into a URL bar is attacker-controlled text.
+    """
+    if not _INTERNAL_TOKEN:
+        return False
+    return secrets.compare_digest(supplied.encode("utf-8"),
+                                  _INTERNAL_TOKEN.encode("utf-8"))
+
+
+@app.get("/internal", include_in_schema=False)
+@app.get("/internal/", include_in_schema=False)
+def internal_console(request: Request, k: str = "") -> FileResponse:
+    """Serve the internal console to a caller holding the token.
+
+    Accepts it as ?k= once and then as a cookie, so the page can refresh
+    itself (and be reloaded) without the token sitting in every URL.
+
+    Answers 404, never 401/403: an unauthenticated caller learns nothing
+    about whether this path exists or whether a token would help.
+    """
+    supplied = k or request.cookies.get(_INTERNAL_COOKIE, "")
+    page = _INTERNAL_DIR / "index.html"
+    if not _token_ok(supplied) or not page.is_file():
+        raise HTTPException(status_code=404, detail="Not Found")
+    resp = FileResponse(page, media_type="text/html")
+    # Never let a shared cache hold a copy handed out against a token.
+    resp.headers["Cache-Control"] = "no-store, private"
+    if k:
+        resp.set_cookie(
+            _INTERNAL_COOKIE, _INTERNAL_TOKEN,
+            max_age=_INTERNAL_MAX_AGE, httponly=True, samesite="lax",
+            # Render terminates TLS, so the cookie can be https-only there;
+            # local development over plain http still needs to work.
+            secure=not _IS_LOCAL,
+        )
+    return resp
 
 
 # ── Static files — mount LAST so API routes take priority ─────────────────────
