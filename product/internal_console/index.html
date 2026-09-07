@@ -113,6 +113,19 @@
   .prog { height: 5px; background: #14161e; border-radius: 3px; overflow: hidden; min-width: 70px; }
   .prog i { display: block; height: 100%; background: var(--blue); }
 
+  /* ── track record ── */
+  .tr-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+  .tr-controls label { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .tr-controls input, .tr-controls select {
+    background: var(--raise); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 7px; font-size: 12px; font-family: inherit;
+  }
+  #tr-run {
+    background: var(--blue); color: #fff; border: 0; border-radius: 6px;
+    padding: 7px 13px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  #tr-run:disabled { background: var(--border); color: var(--dim); cursor: default; }
+
   /* ── messages ── */
   .msg { border-radius: 8px; padding: 12px 14px; font-size: 12.5px; border: 1px solid; }
   .msg-err  { border-color: rgba(239,68,68,.35);  background: #1f151a; color: #ffc4c4; }
@@ -175,6 +188,32 @@
   <section>
     <h2>Beta tracking <span class="note">strategy vs SPY vs money market, per opened position</span></h2>
     <div class="card" id="beta"><div class="empty">loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Track record <span class="note">what the engine would have done, run on demand</span></h2>
+    <div class="card">
+      <div class="tr-controls">
+        <label>From <input type="date" id="tr-start" value="2018-01-01" min="2010-01-01" max="2026-06-30"></label>
+        <label>To <input type="date" id="tr-end" value="2026-06-30" min="2010-01-01" max="2026-06-30"></label>
+        <label>Hold
+          <select id="tr-hold">
+            <option value="252">1 year</option>
+            <option value="378">1.5 years</option>
+            <option value="504" selected>2 years (policy)</option>
+          </select>
+        </label>
+        <button id="tr-run" type="button">Run backtest</button>
+        <span class="dim" id="tr-status"></span>
+      </div>
+      <div id="tr-result"></div>
+      <div class="foot" style="margin-top:12px">
+        Runs the same engine the live screener uses, on the survivorship-free
+        point-in-time universe. Takes a few minutes and only one runs at a time.
+        Entry threshold, sizing and sleeve count are the production values — only
+        the window and the hold period are yours to set.
+      </div>
+    </div>
   </section>
 
   <section>
@@ -577,6 +616,163 @@
         String(t.getSeconds()).padStart(2, "0");
     });
   }
+
+  // ── track record ──────────────────────────────────────────────────────────
+  // A backtest runs for minutes, so it deliberately does NOT use the refresh
+  // cycle's AbortController or its 20-second deadline — that would kill it.
+  // It is user-initiated, owns its own lifetime, and is independent of the
+  // 60-second polling above.
+  var TR_POLL_MS = 4000;
+  var TR_MAX_WAIT_MS = 15 * 60 * 1000;   // give up rather than poll forever
+  var trRunning = false;
+
+  function trSay(text, cls) {
+    var el = $("tr-status");
+    el.textContent = text;
+    el.className = cls || "dim";
+  }
+
+  function trHoldLabel(days) {
+    return { 252: "1 year", 378: "1.5 years", 504: "2 years" }[days] || days + " days";
+  }
+
+  // POST/GET without the cycle signal; see the note above.
+  function trFetch(path, body) {
+    var opts = { headers: { Accept: "application/json" }, cache: "no-store" };
+    if (body) {
+      opts.method = "POST";
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(path, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (payload) {
+        if (!r.ok) {
+          var e = new Error(payload && payload.detail ? payload.detail : "HTTP " + r.status);
+          e.status = r.status;
+          throw e;
+        }
+        return payload;
+      });
+    });
+  }
+
+  function trSummary(sum, params) {
+    var beat = sum.beat_spy;
+    var verdict = beat === true ? "beat SPY" : beat === false ? "lost to SPY" : "no SPY comparison";
+    var vcls = beat === true ? "pos" : beat === false ? "neg" : "dim";
+    return '<div class="grid g4" style="margin:14px 0">' +
+      '<div class="tile"><div class="k">CAGR</div><div class="v">' + pct(sum.cagr) +
+        '</div><div class="u">SPY ' + pct(sum.spy_cagr) + '</div></div>' +
+      '<div class="tile"><div class="k">Sharpe</div><div class="v">' + num(sum.sharpe, 2) +
+        '</div><div class="u">risk-adjusted</div></div>' +
+      '<div class="tile"><div class="k">Max drawdown</div><div class="v">' + pct(sum.max_drawdown_pct) +
+        '</div><div class="u">peak to trough</div></div>' +
+      '<div class="tile"><div class="k">Verdict</div><div class="v ' + vcls + '">' + verdict +
+        '</div><div class="u">' + sum.n_trades + ' trades · ' + pct(sum.pct_positive, 0) +
+        ' positive</div></div>' +
+      "</div>" +
+      '<div class="foot" style="margin-bottom:14px">' +
+        "Hold " + esc(trHoldLabel(params.hold_days)) + " · entry ≥ " + num(params.entry_threshold, 2) +
+        " · " + num(params.position_size_pct, 0) + "% per sleeve, max " + params.max_positions +
+        " · avg hold " + num(sum.avg_hold_days, 0) + " days" +
+        (sum.n_open_at_end ? " · " + sum.n_open_at_end +
+          " still open at the end, marked to market (" + signed(sum.unrealized_pnl_pct) + ")" : "") +
+      "</div>";
+  }
+
+  function trYearly(rows) {
+    if (!rows || !rows.length) return "";
+    var body = rows.map(function (y) {
+      var diff = fin(y.portfolio_return) !== null && fin(y.spy_return) !== null
+        ? y.portfolio_return - y.spy_return : null;
+      return "<tr><td class='tick'>" + esc(y.year) + "</td>" +
+        "<td class='n'>" + signed(y.portfolio_return) + "</td>" +
+        "<td class='n dim'>" + pct(y.spy_return) + "</td>" +
+        "<td class='n'>" + signed(diff) + "</td></tr>";
+    }).join("");
+    return '<div class="scroll"><table><thead><tr><th>Year</th>' +
+      "<th class='n'>Engine</th><th class='n'>SPY</th><th class='n'>vs SPY</th>" +
+      "</tr></thead><tbody>" + body + "</tbody></table></div>";
+  }
+
+  function trTrades(trades) {
+    if (!trades || !trades.length) return '<div class="empty">no trades in this window</div>';
+    var body = trades.map(function (t) {
+      return "<tr><td class='tick'>" + esc(t.ticker) + "</td>" +
+        "<td class='dim'>" + esc(t.entry_date) + " → " + esc(t.exit_date) + "</td>" +
+        "<td class='n'>" + num(t.entry_price) + "</td>" +
+        "<td class='n'>" + num(t.exit_price) + "</td>" +
+        "<td class='n'>" + signed(t.return_pct) + "</td>" +
+        "<td class='n dim'>" + esc(t.hold_days) + "</td>" +
+        "<td class='dim'>" + esc(t.exit_reason) + "</td></tr>";
+    }).join("");
+    return '<div class="scroll"><table><thead><tr><th>Ticker</th><th>Held</th>' +
+      "<th class='n'>In $</th><th class='n'>Out $</th><th class='n'>Return</th>" +
+      "<th class='n'>Days</th><th>Exit</th>" +
+      "</tr></thead><tbody>" + body + "</tbody></table></div>";
+  }
+
+  function trRender(result) {
+    var sum = result.summary || {};
+    var trades = result.trades || [];
+    $("tr-result").innerHTML =
+      trSummary(sum, result.params || {}) +
+      '<h2 style="margin-top:4px">By year</h2>' + trYearly(result.yearly) +
+      '<h2 style="margin-top:18px">Every trade <span class="note">' + trades.length +
+        " in this window</span></h2>" + trTrades(trades);
+  }
+
+  function trPoll(jobId, startedAt) {
+    return trFetch("/api/backtest/" + encodeURIComponent(jobId)).then(function (r) {
+      if (r.status === "done") return r;
+      if (r.status === "error") throw new Error(r.detail || "the backtest failed");
+      if (Date.now() - startedAt > TR_MAX_WAIT_MS) {
+        throw new Error("still running after " + (TR_MAX_WAIT_MS / 60000) +
+                        " minutes — check the service logs");
+      }
+      var mins = Math.floor((Date.now() - startedAt) / 60000);
+      var secs = Math.floor(((Date.now() - startedAt) % 60000) / 1000);
+      trSay("running… " + mins + "m " + String(secs).padStart(2, "0") + "s");
+      return new Promise(function (resolve) {
+        setTimeout(function () { resolve(trPoll(jobId, startedAt)); }, TR_POLL_MS);
+      });
+    });
+  }
+
+  function trRun() {
+    if (trRunning) return;
+    var body = {
+      start_date: $("tr-start").value,
+      end_date: $("tr-end").value,
+      hold_days: Number($("tr-hold").value),
+    };
+    trRunning = true;
+    $("tr-run").disabled = true;
+    $("tr-result").innerHTML = "";
+    trSay("starting…");
+    var startedAt = Date.now();
+
+    trFetch("/api/backtest", body)
+      .then(function (job) { return trPoll(job.job_id, startedAt); })
+      .then(function (result) {
+        trRender(result);
+        trSay("done in " + Math.round((Date.now() - startedAt) / 1000) + "s");
+      })
+      .catch(function (e) {
+        var hint = e.status === 429
+          ? " — only one backtest runs at a time; wait for the other to finish."
+          : "";
+        $("tr-result").innerHTML = banner("err",
+          "<b>Backtest failed:</b> " + esc(e.message || String(e)) + esc(hint));
+        trSay("failed", "neg");
+      })
+      .then(function () {
+        trRunning = false;
+        $("tr-run").disabled = false;
+      });
+  }
+
+  $("tr-run").addEventListener("click", trRun);
 
   load();
   setInterval(load, REFRESH_MS);
