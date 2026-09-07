@@ -124,7 +124,7 @@ def test_the_guard_lets_an_authenticated_write_through(app, path, body, tmp_path
 
 
 def test_auth_endpoint_exchanges_the_token_for_a_cookie(app):
-    r = _call(app, f"/api/auth?k={_TOKEN}")
+    r = _call(app, "/api/auth", "POST", {"token": _TOKEN})
     assert r["status"] == 200
     cookie = r["headers"].get("set-cookie", "")
     assert "admin_session=" in cookie
@@ -134,9 +134,60 @@ def test_auth_endpoint_exchanges_the_token_for_a_cookie(app):
 
 
 def test_auth_endpoint_rejects_a_wrong_token(app):
-    r = _call(app, "/api/auth?k=nope")
+    r = _call(app, "/api/auth", "POST", {"token": "nope"})
     assert r["status"] == 403
     assert "set-cookie" not in r["headers"]
+
+
+# The token must never travel in a URL. This one opens and closes positions, so
+# a query string carrying it would sit in browser history, in anything copied
+# and pasted, and in the platform access log — where reading it back out is
+# enough to trade the book.
+
+def test_the_token_is_not_accepted_in_the_query_string(app):
+    """The old ?k= contract must be gone, not merely undocumented: a GET that
+    carries the right token still must not hand back a session."""
+    r = _call(app, f"/api/auth?k={_TOKEN}")
+    assert "set-cookie" not in r["headers"], \
+        "a token in the URL must not be exchanged for a session"
+
+
+def test_the_sign_in_page_is_served_without_a_token(app):
+    """GET is the form. It has to work unauthenticated — it is how a browser
+    gets authenticated in the first place — so it must carry no credential and
+    must not be cached."""
+    r = _call(app, "/api/auth")
+    assert r["status"] == 200
+    body = r["body"].decode()
+    assert "<form" in body
+    assert "set-cookie" not in r["headers"]
+    assert _TOKEN not in body, "the page must never contain the token itself"
+    assert "no-store" in r["headers"].get("cache-control", "")
+
+
+def test_the_sign_in_page_posts_the_token_in_a_body(app):
+    """Pins the mechanism, not just the absence of ?k=: the page's own script
+    has to send the token as a POST body for the form to work at all."""
+    body = _call(app, "/api/auth")["body"].decode()
+    assert "method: 'POST'" in body
+    assert "JSON.stringify({ token:" in body
+
+
+def test_a_get_with_no_token_configured_still_shows_the_form(monkeypatch):
+    """503 belongs on the exchange, not on the form — a deploy missing
+    ADMIN_TOKEN should say so when the token is submitted, not 503 a page that
+    would otherwise explain nothing."""
+    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    import product.api.main as main
+    importlib.reload(main)
+    try:
+        assert _call(main.app, "/api/auth")["status"] == 200
+        r = _call(main.app, "/api/auth", "POST", {"token": _TOKEN})
+        assert r["status"] == 503
+        assert "set-cookie" not in r["headers"]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(main)
 
 
 @pytest.mark.parametrize("path,body", _WRITES)
