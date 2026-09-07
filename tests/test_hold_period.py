@@ -102,3 +102,52 @@ def test_the_beta_tracker_counts_against_the_policy_hold():
 def test_the_exit_tracker_enforces_the_policy_hold():
     import product.exit.exit_tracker as tracker
     assert tracker._EXIT_HOLD_DAYS == HOLD_TRADING_DAYS
+
+
+# ── alert copy ────────────────────────────────────────────────────────────────
+# The alerts a user actually reads promised "Day N of 252" and a "12-Month Hold
+# Complete" while the exit tracker fired at 504, so the exit alert read "Day 504
+# of 252" and told them a 252-day hold was complete.
+
+def test_the_position_update_counts_against_the_policy_hold():
+    from product.alerts.alert_templates import format_position_update
+    u = format_position_update("COIN", 210.0, 175.0, 128, -0.168)
+    assert f"of {HOLD_TRADING_DAYS}" in u["headline"]
+    assert "of 252" not in u["headline"]
+    assert f"Days remaining: {HOLD_TRADING_DAYS - 128}" in u["body"]
+
+
+def test_the_exit_alert_names_the_policy_hold():
+    from product.alerts.alert_templates import format_exit_alert
+    x = format_exit_alert("COIN", 210.0, 260.0, HOLD_TRADING_DAYS, 0.238)
+    assert "12-Month" not in x["headline"]
+    assert f"{HOLD_TRADING_DAYS}-day planned hold is complete" in x["body"]
+
+
+def test_the_buy_alert_promises_the_policy_hold():
+    from product.alerts.alert_templates import format_new_buy_alert
+    b = format_new_buy_alert("COIN", 0.548, 0.825, 175.0)
+    assert f"{HOLD_TRADING_DAYS} trading days" in b["body"]
+    assert "~252 trading days" not in b["body"]
+
+
+def test_the_research_figures_are_not_relabelled():
+    """The +49.2% mean is a Stage 5b measurement of 252-day forward returns.
+    Following the hold everywhere would have turned it into a 2-year claim the
+    study never made, so those lines stay labelled as 12-month."""
+    from product.alerts.alert_templates import format_exit_alert
+    x = format_exit_alert("COIN", 210.0, 260.0, HOLD_TRADING_DAYS, 0.238)
+    assert "+49.2%" in x["body"]
+
+
+@pytest.mark.parametrize("days,phrase,adjective", [
+    (252, "1 year", "1-Year"),
+    (504, "2 years", "2-Year"),
+    (378, "18 months", "18-Month"),
+])
+def test_hold_wording(days, phrase, adjective):
+    """English does not pluralise a noun used adjectivally — "2 Years Hold"
+    reads as a typo, hence the two forms."""
+    from product.alerts.alert_templates import _hold_adjective, _hold_phrase
+    assert _hold_phrase(days) == phrase
+    assert _hold_adjective(days) == adjective

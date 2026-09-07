@@ -7,7 +7,8 @@ Copy rules (from copy_framework.json):
   - Never use "win rate", "guaranteed", "high confidence", or "bullish"
   - Lead with what the signal IS (recovery opportunity) not what it predicts
   - Always name the expected drawdown path (median -15% before recovery)
-  - Signal is a 252-day hold -- communicate the full timeline upfront
+  - Communicate the full timeline upfront, using the enforced policy hold
+    (HOLD_TRADING_DAYS) -- never a literal, which drifted to 252 once
   - Magnitude edge framing: recovery returns are typically large but lumpy
 """
 from __future__ import annotations
@@ -17,6 +18,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict
 
+from product.satellite_policy import HOLD_TRADING_DAYS
+
 _COPY_PATH = Path(__file__).parent.parent / "ui_copy" / "copy_framework.json"
 
 _CASE_STUDY_LINES = [
@@ -25,7 +28,10 @@ _CASE_STUDY_LINES = [
     "  CRM Dec 2022: down 50%, signal fired -> +53.0% in 3 months",
 ]
 
-# Historical return anchors (day -> mean cumulative return from Stage 5b)
+# Historical return anchors (day -> mean cumulative return from Stage 5b).
+# These are 252-day measurements and stay that way; _interp_expected_return
+# clamps to the last anchor past day 252, so a longer hold reports the 252-day
+# mean rather than extrapolating a number the study never measured.
 _RETURN_ANCHORS = [(0, 0.0), (21, 0.020), (63, 0.064), (252, 0.492)]
 
 # Approximate percentile lookup: (unrealized_return threshold -> percentile)
@@ -46,6 +52,31 @@ def load_copy_framework() -> Dict[str, Any]:
     """Load the full copy_framework.json into a dict."""
     with open(_COPY_PATH) as fh:
         return json.load(fh)
+
+
+def _hold_phrase(days: int) -> str:
+    """The holding period in words, for copy that reads as a sentence.
+
+    Kept in one place so the alert a user reads can never promise a timeline
+    the exit tracker does not enforce — the "12 months" it used to hardcode
+    outlived the move to a 504-day hold.
+    """
+    if days % 252 == 0:
+        years = days // 252
+        return "1 year" if years == 1 else f"{years} years"
+    months = round(days / 21)
+    return f"{months} months"
+
+
+def _hold_adjective(days: int) -> str:
+    """The holding period as a modifier: "2-Year", "18-Month".
+
+    Separate from _hold_phrase because English does not pluralise a noun used
+    adjectivally — "2 Years Hold Complete" reads as a typo.
+    """
+    if days % 252 == 0:
+        return f"{days // 252}-Year"
+    return f"{round(days / 21)}-Month"
 
 
 def _interp_expected_return(days_held: int) -> float:
@@ -99,7 +130,8 @@ def format_new_buy_alert(
         f"What to expect:\n"
         f"The stock may drop another 10-15% before recovering.\n"
         f"That is normal. Median drawdown before recovery: -15%.\n"
-        f"Planned hold: 12 months (~252 trading days).\n"
+        f"Planned hold: {_hold_phrase(HOLD_TRADING_DAYS)} "
+        f"({HOLD_TRADING_DAYS} trading days).\n"
         f"No stop-loss. The edge requires holding through the dip.\n\n"
         f"Similar historical entries:\n"
         + "\n".join(_CASE_STUDY_LINES) + "\n\n"
@@ -132,7 +164,8 @@ def format_position_update(
     """
     expected_return = _interp_expected_return(days_held)
     pct_rank = _pct_rank(unrealized_return)
-    days_remaining = max(0, 252 - days_held)
+    hold = HOLD_TRADING_DAYS
+    days_remaining = max(0, hold - days_held)
     # Approximate calendar days to exit (trading days * 7/5)
     exit_date_approx = date.today() + timedelta(days=int(days_remaining * 7 / 5))
 
@@ -156,12 +189,12 @@ def format_position_update(
         context_msg = (
             "You are ahead of 80% of historical entries at this stage.\n"
             "Average at 12 months is +49.2%. Consider your exit plan\n"
-            "as you approach day 252."
+            f"as you approach day {hold}."
         )
 
-    headline = f"{ticker} -- Day {days_held} of 252 ({unrealized_return * 100:+.1f}%)"
+    headline = f"{ticker} -- Day {days_held} of {hold} ({unrealized_return * 100:+.1f}%)"
     body = (
-        f"{ticker} -- Day {days_held} of 252\n\n"
+        f"{ticker} -- Day {days_held} of {hold}\n\n"
         f"Your return: {unrealized_return * 100:+.1f}%\n"
         f"Historical average at day {days_held}: {expected_return * 100:+.1f}%\n"
         f"Your position in distribution: {pct_rank}th percentile\n\n"
@@ -181,22 +214,23 @@ def format_exit_alert(
     days_held: int,
     realized_return: float,
 ) -> Dict[str, str]:
-    """Render the 252-day exit alert copy.
+    """Render the end-of-hold exit alert copy.
 
     Args:
         ticker:           Stock ticker symbol.
         entry_price:      Price at signal date.
-        exit_price:       Current price at day 252.
-        days_held:        Should be 252 (or close to it).
+        exit_price:       Current price at the exit date.
+        days_held:        Trading days held; at or near HOLD_TRADING_DAYS.
         realized_return:  (exit_price / entry_price) - 1.
 
     Returns:
         Dict with keys: "headline", "body", "disclaimer".
     """
     ret_str = f"{realized_return * 100:+.1f}%"
-    headline = f"{ticker} -- 12-Month Hold Complete ({ret_str})"
+    hold_phrase = _hold_adjective(HOLD_TRADING_DAYS)
+    headline = f"{ticker} -- {hold_phrase} Hold Complete ({ret_str})"
     body = (
-        f"{ticker} -- 12-Month Hold Complete\n\n"
+        f"{ticker} -- {hold_phrase} Hold Complete\n\n"
         f"You entered at ${entry_price:.2f}.\n"
         f"Today's price: ${exit_price:.2f}\n"
         f"Your return: {ret_str}\n\n"
@@ -204,7 +238,7 @@ def format_exit_alert(
         f"Average return for this signal: +49.2%\n"
         f"% of similar entries that were positive: 78.9%\n\n"
         f"What now?\n"
-        f"Your 252-day planned hold is complete. The signal has no view\n"
+        f"Your {HOLD_TRADING_DAYS}-day planned hold is complete. The signal has no view\n"
         f"beyond this point -- there is no validated edge for holding longer.\n\n"
         f"Your options:\n"
         f"  - Sell today and lock in your return.\n"
