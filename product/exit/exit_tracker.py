@@ -64,7 +64,7 @@ class Position:
 
 @dataclass
 class ExitAlert:
-    """Alert generated when a position reaches the 252-day exit date."""
+    """Alert generated when a position reaches its policy exit date."""
 
     ticker: str
     entry_date: date
@@ -128,7 +128,7 @@ def _dict_to_pos(d: dict) -> Position:
 
 
 class ExitTracker:
-    """Tracks open positions and fires exit alerts at 252 trading days.
+    """Tracks open positions and fires exit alerts at HOLD_TRADING_DAYS.
 
     Positions are persisted at:
       data/positions/open_positions.json

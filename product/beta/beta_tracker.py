@@ -32,6 +32,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core.data.prices import PriceData  # noqa: E402
+from product.satellite_policy import HOLD_TRADING_DAYS  # noqa: E402
 from scripts.run_combined_validation import load_fedfunds  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,10 @@ _CLOSED_FILE = _ROOT / "data" / "positions" / "closed_positions.json"
 _REPORT_DIR  = _ROOT / "data" / "beta_tracking"
 _REPORT_FILE = _REPORT_DIR / "beta_log.md"
 
-_HOLD_TARGET = 252   # frozen 252-day hold, for the "days (of 252)" display only
+# The policy hold, not a literal: this column used to read "of 252" while the
+# exit tracker was already exiting at 504, so the progress shown never lined
+# up with the date a position actually closed.
+_HOLD_TARGET = HOLD_TRADING_DAYS
 
 
 # ── data loading ────────────────────────────────────────────────────────────
@@ -249,7 +253,7 @@ def _f(x: Optional[float]) -> str:
 
 
 def _open_table(rows: list[dict]) -> list[str]:
-    out = ["| Ticker | Entry date | Entry $ | Current $ | Days (of 252) | Return | SPY | Money-mkt | vs SPY | vs MM |",
+    out = [f"| Ticker | Entry date | Entry $ | Current $ | Days (of {_HOLD_TARGET}) | Return | SPY | Money-mkt | vs SPY | vs MM |",
            "|---|---|--:|--:|--:|--:|--:|--:|--:|--:|"]
     for r in rows:
         cur = f"{r['current_price']:.2f}" if r["current_price"] is not None else "n/a"

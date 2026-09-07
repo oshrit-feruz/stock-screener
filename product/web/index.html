@@ -765,19 +765,34 @@
         <div style="font-size:11px;color:var(--muted);margin-top:8px;">Production signal BUY threshold: 0.60 (required to enter)</div>
       </div>
 
+      <!-- Holding period -->
+      <div class="section-title">Holding Period</div>
+      <div class="card">
+        <div class="radio-group">
+          <label class="radio-option"><input type="radio" name="hold_days" value="252"> 1 year</label>
+          <label class="radio-option"><input type="radio" name="hold_days" value="378"> 1.5 years</label>
+          <label class="radio-option"><input type="radio" name="hold_days" value="504" checked> 2 years</label>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;">
+          Production hold: 504 trading days (~2 years). On the clean survivorship-free
+          backtest the 1-year hold <em>lost</em> to SPY (+9.0% vs +10.3% CAGR) and only
+          the 2-year hold beat it (+12.0%).
+        </div>
+      </div>
+
       <!-- Exit rule -->
       <div class="section-title">Exit Rule</div>
       <div class="card">
         <div class="exit-option">
           <label>
-            <input type="radio" name="exit_mode" value="252d_only" checked>
-            <span>Hold 12 months / 252 trading days <span style="color:var(--muted)">(recommended)</span></span>
+            <input type="radio" name="exit_mode" value="hold_only" checked>
+            <span>Hold for the full period <span style="color:var(--muted)">(recommended)</span></span>
           </label>
         </div>
         <div class="exit-option">
           <label>
-            <input type="radio" name="exit_mode" value="threshold_or_252d">
-            <span>Exit when signal drops below <input type="number" id="exit-thresh-val" class="exit-threshold-input" value="0.40" step="0.05" min="0.10" max="0.59"> OR 12 months, whichever first</span>
+            <input type="radio" name="exit_mode" value="threshold_or_hold">
+            <span>Exit when signal drops below <input type="number" id="exit-thresh-val" class="exit-threshold-input" value="0.40" step="0.05" min="0.10" max="0.59"> OR the full period, whichever first</span>
           </label>
         </div>
         <div class="exit-option">
@@ -880,10 +895,10 @@
         <div class="section-title">Scenario B — Exit Rule</div>
         <div class="card">
           <div class="exit-option">
-            <label><input type="radio" name="exit_mode_B" value="252d_only" checked> Hold 252 days</label>
+            <label><input type="radio" name="exit_mode_B" value="hold_only" checked> Hold the full period</label>
           </div>
           <div class="exit-option">
-            <label><input type="radio" name="exit_mode_B" value="threshold_or_252d"> Signal drops below 0.40 or 252d</label>
+            <label><input type="radio" name="exit_mode_B" value="threshold_or_hold"> Signal drops below 0.40 or the full period</label>
           </div>
           <div class="exit-option">
             <label><input type="radio" name="exit_mode_B" value="threshold_only"> Signal drops below 0.40 only</label>
@@ -981,7 +996,7 @@
         <div class="about-row"><span>% positive at 12 months</span><span class="about-val">78.9%</span></div>
         <div class="about-row"><span>Median drawdown before recovery</span><span class="about-val">-15.0%</span></div>
         <div class="about-row"><span>BUY threshold</span><span class="about-val">score &ge; 0.60</span></div>
-        <div class="about-row"><span>Hold rule</span><span class="about-val">252 trading days, no stop-loss</span></div>
+        <div class="about-row"><span>Hold rule</span><span class="about-val">504 trading days (~2 years), no stop-loss</span></div>
       </div>
 
       <div class="card">
