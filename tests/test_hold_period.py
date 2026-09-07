@@ -151,3 +151,34 @@ def test_hold_wording(days, phrase, adjective):
     from product.alerts.alert_templates import _hold_adjective, _hold_phrase
     assert _hold_phrase(days) == phrase
     assert _hold_adjective(days) == adjective
+
+
+@pytest.mark.parametrize("days_held", [378, 504])
+def test_the_research_average_is_not_attributed_to_a_day_it_never_measured(days_held):
+    """_interp_expected_return clamps past the 252-day anchor, so beyond it the
+    number is the 12-month mean whatever the position's age. Printing it as
+    "the average at day 504" would offer a 12-month result as evidence for a
+    2-year hold — a claim the study does not make."""
+    from product.alerts.alert_templates import format_position_update
+    line = next(ln for ln in format_position_update("COIN", 210.0, 175.0, days_held, -0.168)
+                ["body"].split("\n") if "Historical average" in ln)
+    assert "at 12 months" in line
+    assert f"at day {days_held}" not in line
+
+
+@pytest.mark.parametrize("days_held,expected", [(63, "+6.4%"), (252, "+49.2%")])
+def test_within_the_measured_range_the_day_is_named(days_held, expected):
+    """Inside the study's range the figure really is the average at that day."""
+    from product.alerts.alert_templates import format_position_update
+    line = next(ln for ln in format_position_update("COIN", 210.0, 175.0, days_held, -0.168)
+                ["body"].split("\n") if "Historical average" in ln)
+    assert f"at day {days_held}" in line
+    assert expected in line
+
+
+def test_the_exit_alert_labels_its_average_with_the_measured_horizon():
+    """The exit alert is headlined "2-Year Hold Complete"; an unlabelled +49.2%
+    beneath that reads as the 2-year average."""
+    from product.alerts.alert_templates import format_exit_alert
+    body = format_exit_alert("COIN", 210.0, 260.0, HOLD_TRADING_DAYS, 0.238)["body"]
+    assert "Average return for this signal at 12 months: +49.2%" in body

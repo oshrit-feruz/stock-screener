@@ -33,6 +33,11 @@ _CASE_STUDY_LINES = [
 # clamps to the last anchor past day 252, so a longer hold reports the 252-day
 # mean rather than extrapolating a number the study never measured.
 _RETURN_ANCHORS = [(0, 0.0), (21, 0.020), (63, 0.064), (252, 0.492)]
+# The furthest day the study actually measured. Past it the interpolation
+# clamps, so the value stops being "the average at day N" and stays the
+# 12-month figure — the copy has to say so rather than attach the reader's
+# day number to it.
+_RESEARCH_HORIZON_DAYS = _RETURN_ANCHORS[-1][0]
 
 # Approximate percentile lookup: (unrealized_return threshold -> percentile)
 _PCT_RANK_TABLE = [
@@ -88,6 +93,21 @@ def _interp_expected_return(days_held: int) -> float:
             t = (days_held - d0) / (d1 - d0)
             return r0 + t * (r1 - r0)
     return _RETURN_ANCHORS[-1][1]
+
+
+def _expected_return_line(days_held: int, expected_return: float) -> str:
+    """Label the historical average by the horizon it was actually measured over.
+
+    _interp_expected_return clamps past _RESEARCH_HORIZON_DAYS, so beyond that
+    the number is the 12-month mean no matter how long the position has run.
+    Printing it as "the average at day 504" would offer a 12-month result as
+    evidence for a 2-year hold, which the study does not support.
+    """
+    pct = f"{expected_return * 100:+.1f}%"
+    if days_held <= _RESEARCH_HORIZON_DAYS:
+        return f"Historical average at day {days_held}: {pct}"
+    return (f"Historical average at 12 months: {pct} "
+            f"(the furthest horizon measured; no figure exists for day {days_held})")
 
 
 def _pct_rank(current_return: float) -> int:
@@ -196,7 +216,7 @@ def format_position_update(
     body = (
         f"{ticker} -- Day {days_held} of {hold}\n\n"
         f"Your return: {unrealized_return * 100:+.1f}%\n"
-        f"Historical average at day {days_held}: {expected_return * 100:+.1f}%\n"
+        f"{_expected_return_line(days_held, expected_return)}\n"
         f"Your position in distribution: {pct_rank}th percentile\n\n"
         f"{context_msg}\n\n"
         f"Days remaining: {days_remaining}\n"
@@ -235,7 +255,7 @@ def format_exit_alert(
         f"Today's price: ${exit_price:.2f}\n"
         f"Your return: {ret_str}\n\n"
         f"Historical context:\n"
-        f"Average return for this signal: +49.2%\n"
+        f"Average return for this signal at 12 months: +49.2%\n"
         f"% of similar entries that were positive: 78.9%\n\n"
         f"What now?\n"
         f"Your {HOLD_TRADING_DAYS}-day planned hold is complete. The signal has no view\n"
