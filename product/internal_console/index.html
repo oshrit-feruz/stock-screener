@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Engine Console — internal</title>
+<style>
+  :root {
+    --bg:      #0f1117;
+    --surface: #1a1d27;
+    --raise:   #21242f;
+    --border:  #2a2d3a;
+    --text:    #e8eaf0;
+    --muted:   #8b8fa8;
+    --dim:     #5f6478;
+    --green:   #22c55e;
+    --red:     #ef4444;
+    --amber:   #f59e0b;
+    --blue:    #3b82f6;
+    --violet:  #a78bfa;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+    padding: 20px 20px 60px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  /* ── header ── */
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 19px; font-weight: 650; letter-spacing: -0.01em; }
+  .badge {
+    font: 600 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 4px 7px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .badge.warn { color: var(--amber); border-color: rgba(245,158,11,.35); background: rgba(245,158,11,.08); }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 22px; }
+  .sub code { font-family: var(--mono); color: var(--muted); }
+
+  /* ── layout ── */
+  section { margin-bottom: 26px; }
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 9px; display: flex; align-items: center; gap: 8px;
+  }
+  h2 .note { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--dim); font-size: 11px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 15px 17px;
+  }
+  .grid { display: grid; gap: 11px; }
+  .g2 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .g4 { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+
+  /* ── regime hero ── */
+  .regime { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+  .dial { flex: 0 0 auto; }
+  .regime-text { flex: 1 1 260px; min-width: 240px; }
+  .regime-state { font-size: 17px; font-weight: 650; margin-bottom: 3px; }
+  .regime-why { color: var(--muted); font-size: 12px; }
+  .on  { color: var(--amber); }
+  .off { color: var(--blue); }
+
+  /* ── stat tiles ── */
+  .tile { background: var(--raise); border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px; }
+  .tile .k { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); margin-bottom: 5px; }
+  .tile .v { font: 600 17px/1.2 var(--mono); }
+  .tile .u { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+  /* ── tables ── */
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th {
+    text-align: left; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--dim); font-weight: 600; padding: 0 9px 7px; white-space: nowrap;
+  }
+  td { padding: 8px 9px; border-top: 1px solid var(--border); vertical-align: middle; }
+  th.n, td.n { text-align: right; font-family: var(--mono); }
+  tbody tr:hover { background: rgba(255,255,255,.022); }
+  .tick { font: 600 13px/1 var(--mono); }
+  .scroll { overflow-x: auto; }
+
+  /* ── score bar ── */
+  .bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: #14161e; min-width: 90px; }
+  .bar i { display: block; height: 100%; }
+  .bar .dip { background: var(--blue); }
+  .bar .mom { background: var(--violet); }
+  .bar .vol { background: #64748b; }
+  .legend { display: flex; gap: 13px; font-size: 11px; color: var(--muted); margin-top: 10px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+  /* ── pills ── */
+  .pill {
+    font: 600 10px/1 var(--mono); letter-spacing: 0.05em;
+    padding: 3px 6px; border-radius: 4px; white-space: nowrap;
+  }
+  .p-buy  { background: rgba(34,197,94,.14);  color: var(--green); }
+  .p-wait { background: rgba(139,143,168,.14); color: var(--muted); }
+  .p-skip { background: rgba(139,143,168,.10); color: var(--dim); }
+  .p-veto { background: rgba(239,68,68,.14);  color: var(--red); }
+  .p-act  { background: rgba(245,158,11,.16); color: var(--amber); }
+  .p-park { background: rgba(59,130,246,.13); color: var(--blue); }
+  .p-unver{ background: rgba(245,158,11,.13); color: var(--amber); }
+
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  .muted { color: var(--muted); } .dim { color: var(--dim); }
+
+  /* ── progress ── */
+  .prog { height: 5px; background: #14161e; border-radius: 3px; overflow: hidden; min-width: 70px; }
+  .prog i { display: block; height: 100%; background: var(--blue); }
+
+  /* ── messages ── */
+  .msg { border-radius: 8px; padding: 12px 14px; font-size: 12.5px; border: 1px solid; }
+  .msg-err  { border-color: rgba(239,68,68,.35);  background: #1f151a; color: #ffc4c4; }
+  .msg-warn { border-color: rgba(245,158,11,.35); background: #1f1b16; color: #ffdf8a; }
+  .msg-info { border-color: var(--border); background: var(--surface); color: var(--muted); }
+  .msg b { color: inherit; }
+
+  .empty { color: var(--dim); font-size: 12.5px; padding: 6px 0; }
+  .foot { color: var(--dim); font-size: 11px; line-height: 1.75; }
+  .foot b { color: var(--muted); font-weight: 600; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 2px 0; }
+  details summary:hover { color: var(--text); }
+  details[open] summary { margin-bottom: 10px; }
+  .refresh { margin-left: auto; font-size: 11px; color: var(--dim); font-family: var(--mono); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Engine Console</h1>
+    <span class="badge warn">Internal</span>
+    <span class="refresh" id="refresh">loading…</span>
+  </header>
+  <p class="sub">
+    Live read of this service's own API —
+    <code>/api/screener</code> · <code>/api/positions</code> · <code>/api/beta/dashboard</code>.
+    Not a client surface. Nothing here is written back.
+  </p>
+
+  <div id="alerts"></div>
+
+  <section>
+    <h2>Market gate</h2>
+    <div class="card" id="regime"><div class="empty">loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Policy <span class="note">frozen — published by the engine with every payload</span></h2>
+    <div class="grid g4" id="policy"></div>
+  </section>
+
+  <section>
+    <h2>Signals <span class="note" id="sig-note"></span></h2>
+    <div class="card"><div class="scroll" id="signals"><div class="empty">loading…</div></div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--blue)"></i> dip · 50%</span>
+        <span><i class="sw" style="background:var(--violet)"></i> momentum · 30%</span>
+        <span><i class="sw" style="background:#64748b"></i> volume · 20%</span>
+        <span class="dim">bar width = contribution to the composite score</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Open positions</h2>
+    <div class="card"><div class="scroll" id="positions"><div class="empty">loading…</div></div></div>
+  </section>
+
+  <section>
+    <h2>Beta tracking <span class="note">strategy vs SPY vs money market, per opened position</span></h2>
+    <div class="card" id="beta"><div class="empty">loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Full ranking</h2>
+    <div class="card">
+      <details>
+        <summary id="rank-summary">show all screened names</summary>
+        <div class="scroll" id="ranking"></div>
+      </details>
+    </div>
+  </section>
+
+  <section>
+    <h2>How a name gets picked</h2>
+    <div class="card foot">
+      <b>1 · Universe</b> — actual S&amp;P 500 members that month, cut to the 100 largest by dollar volume. Point-in-time, includes names that later delisted.<br>
+      <b>2 · Score</b> — dip from the 52-week high (50%) + momentum (30%) + volume (20%). Needs ≥ 0.60. Kept at 0.60 because 0.65 won 2018–24 but lost out-of-sample on 2010–17.<br>
+      <b>3 · Quality gate</b> — SEC EDGAR filings on a 90-day lag: revenue growth &gt; 0, net margin &gt; 0, debt/equity &lt; 3. Equity ≤ 0 fails outright.
+      The live screener is <b>fail-open</b>: only an explicit <span class="neg">fail</span> demotes a name to SKIP, while <span class="dim">no data</span> passes through on the price signal alone —
+      deliberate, so the gate does not re-introduce survivorship bias into a universe that includes delisted names. Those rows are flagged <span class="pill p-unver">UNVERIFIED</span> above.
+      (The research path in <code>core/signals/recovery_score.py</code> is fail-closed instead; it is not what produces these rows.)<br>
+      <b>4 · 8-K veto</b> — a recent distress filing blocks an otherwise-valid BUY.<br>
+      <b>5 · Market gate</b> — sleeves only go live while SPY sits ≥ 10% below its trailing 252-day high. Otherwise signals are shown but parked in the core.<br>
+      <b>6 · Size &amp; hold</b> — up to 10 sleeves at 10% of the satellite budget, filled the session after the signal, held 504 trading days. No stop-loss, no take-profit.
+    </div>
+  </section>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var REFRESH_MS = 60000;
+  // A request that never answers must not pile up: each cycle is aborted
+  // when the next one starts, and in any case after this deadline.
+  var REQUEST_TIMEOUT_MS = 20000;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  // Returns a finite Number, or null for anything unusable (null, undefined,
+  // NaN, Infinity, a non-numeric string) so every formatter below can render a
+  // dash instead of "NaN" without repeating the guard.
+  function fin(v) {
+    if (v == null || v === "") return null;
+    var n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  function fixed(v, d, fallback) {
+    var n = fin(v);
+    return n === null ? fallback : n.toFixed(d);
+  }
+  function num(v, d) { return fixed(v, d == null ? 2 : d, "—"); }
+  function pct(v, d) {
+    var t = fixed(v, d == null ? 1 : d, null);
+    return t === null ? "—" : t + "%";
+  }
+  function signed(v, d) {
+    var n = fin(v);
+    if (n === null) return '<span class="dim">—</span>';
+    var cls = "muted";
+    if (n > 0) cls = "pos";
+    else if (n < 0) cls = "neg";
+    return '<span class="' + cls + '">' + (n > 0 ? "+" : "") +
+           n.toFixed(d == null ? 1 : d) + "%</span>";
+  }
+  function daysAgo(iso) {
+    if (!iso) return null;
+    var t = Date.parse(iso + "T00:00:00Z");
+    if (!Number.isFinite(t)) return null;
+    return Math.floor((Date.now() - t) / 86400000);
+  }
+
+  // Fetch that reports HTTP failures instead of swallowing them — a 503 from
+  // /api/screener is real information (stale or missing daily state), not an
+  // empty table.
+  function get(path, signal) {
+    return fetch(path, { headers: { Accept: "application/json" }, cache: "no-store", signal: signal })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (body) {
+          if (!r.ok) {
+            var e = new Error(body && body.detail ? body.detail : "HTTP " + r.status);
+            e.status = r.status;
+            throw e;
+          }
+          return body;
+        });
+      });
+  }
+
+  function banner(kind, html) {
+    return '<div class="msg msg-' + kind + '" style="margin-bottom:14px">' + html + "</div>";
+  }
+
+  // ── market gate ────────────────────────────────────────────────────────────
+  function renderRegime(reg, policy) {
+    if (!reg) {
+      $("regime").innerHTML =
+        '<div class="msg msg-warn">Market regime is <b>null</b> — SPY data was unavailable when this ran, ' +
+        "so the engine refused to invent one. Sleeves cannot activate without it.</div>";
+      return;
+    }
+    var gate = reg.gate_dd != null ? reg.gate_dd : (policy && policy.gate_dd) || 0.10;
+    var dd = reg.spy_dd_from_high || 0;
+    var live = !!reg.in_dislocation;
+    // Dial fills toward the gate; at/over the gate it is full.
+    var frac = Math.max(0, Math.min(1, dd / gate));
+    var R = 52, C = 2 * Math.PI * R;
+    var partial = "";
+    if (gate > 0) partial = dd < gate ? "how far toward the gate" : "past the gate";
+
+    $("regime").innerHTML =
+      '<div class="regime">' +
+        '<div class="dial">' +
+          '<svg width="132" height="132" viewBox="0 0 132 132" aria-hidden="true">' +
+            '<circle cx="66" cy="66" r="' + R + '" fill="none" stroke="#14161e" stroke-width="11"/>' +
+            '<circle cx="66" cy="66" r="' + R + '" fill="none" stroke="' + (live ? "#f59e0b" : "#3b82f6") + '" ' +
+              'stroke-width="11" stroke-linecap="round" stroke-dasharray="' + (C * frac) + " " + C + '" ' +
+              'transform="rotate(-90 66 66)"/>' +
+            '<text x="66" y="61" text-anchor="middle" fill="#e8eaf0" ' +
+              'font-family="ui-monospace,monospace" font-size="23" font-weight="600">' + pct(dd * 100) + "</text>" +
+            '<text x="66" y="80" text-anchor="middle" fill="#5f6478" font-size="10.5">below high</text>' +
+          "</svg>" +
+        "</div>" +
+        '<div class="regime-text">' +
+          '<div class="regime-state ' + (live ? "on" : "off") + '">' +
+            (live ? "Dislocation — sleeves active" : "Calm — satellite parked in core") + "</div>" +
+          '<div class="regime-why">' +
+            esc(reg.market_ticker || "SPY") + " is " + pct(dd * 100) + " below its trailing " +
+            (reg.lookback_days || 252) + "-session high; the gate opens at " + pct(gate * 100, 0) + ". " +
+            (live
+              ? "New BUY signals are actionable."
+              : "Signals below are informational only — nothing is bought while the gate is shut.") +
+            (partial ? " <span class=\"dim\">(dial shows " + partial + ")</span>" : "") +
+          "</div>" +
+          (reg.bars_in_window != null && reg.lookback_days != null && reg.bars_in_window < reg.lookback_days
+            ? '<div class="regime-why" style="margin-top:7px;color:var(--amber)">Partial window: ' +
+              reg.bars_in_window + " of " + reg.lookback_days + " bars fed the trailing high.</div>"
+            : "") +
+        "</div>" +
+      "</div>";
+  }
+
+  // ── policy tiles ───────────────────────────────────────────────────────────
+  function renderPolicy(p) {
+    if (!p) { $("policy").innerHTML = '<div class="empty">no policy block in payload</div>'; return; }
+    var tiles = [
+      ["Hold", p.hold_trading_days, "trading days (~2y)"],
+      ["Gate", p.gate_dd != null ? pct(p.gate_dd * 100, 0) : "—", "SPY drawdown, " + (p.gate_lookback_days || "—") + "d window"],
+      ["Sleeve", p.sleeve_pct_of_budget != null ? p.sleeve_pct_of_budget + "%" : "—", "of satellite budget"],
+      ["Max sleeves", p.max_sleeves, "concurrent"],
+      ["Exit rule", null, esc(p.exit_rule || "—")]
+    ];
+    $("policy").innerHTML = tiles.map(function (t) {
+      return '<div class="tile"><div class="k">' + t[0] + "</div>" +
+             (t[1] != null ? '<div class="v">' + esc(t[1]) + "</div>" : "") +
+             '<div class="u">' + t[2] + "</div></div>";
+    }).join("");
+  }
+
+  // ── signals ────────────────────────────────────────────────────────────────
+  var W = { dip: 0.50, mom: 0.30, vol: 0.20 };
+
+  function scoreBar(r) {
+    var d = (r.dip_score || 0) * W.dip, m = (r.momentum_score || 0) * W.mom, v = (r.volume_score || 0) * W.vol;
+    return '<div class="bar" title="dip ' + num(d, 3) + " · momentum " + num(m, 3) + " · volume " + num(v, 3) + '">' +
+      '<i class="dip" style="width:' + (d * 100) + '%"></i>' +
+      '<i class="mom" style="width:' + (m * 100) + '%"></i>' +
+      '<i class="vol" style="width:' + (v * 100) + '%"></i></div>';
+  }
+
+  function signalPill(r) {
+    var s = (r.signal || "").toUpperCase();
+    var cls = { BUY: "p-buy", VETO: "p-veto", SKIP: "p-skip" }[s] || "p-wait";
+    return '<span class="pill ' + cls + '">' + esc(s || "—") + "</span>";
+  }
+
+  function gateCell(g) {
+    if (g === true)  return '<span class="pos">pass</span>';
+    if (g === false) return '<span class="neg">fail</span>';
+    // Fail-open: no EDGAR data still yields a BUY on the price signal alone,
+    // so it must read as an unverified pass, never as a neutral blank.
+    return '<span class="pill p-unver" title="no EDGAR data — passed on the price signal alone">UNVERIFIED</span>';
+  }
+
+  function sleeveCell(active) {
+    if (active === true)  return '<span class="pill p-act">ACTIVE</span>';
+    if (active === false) return '<span class="pill p-park">parked</span>';
+    return '<span class="dim">—</span>';
+  }
+
+  function rowsTable(rows, opts) {
+    if (!rows || !rows.length) return '<div class="empty">' + (opts.empty || "nothing here") + "</div>";
+    var body = rows.map(function (r) {
+      return "<tr>" +
+        '<td class="tick">' + esc(r.ticker) + "</td>" +
+        "<td>" + signalPill(r) + "</td>" +
+        "<td>" + sleeveCell(r.active) + "</td>" +
+        '<td class="n">' + num(r.composite_score, 3) + "</td>" +
+        '<td style="min-width:110px">' + scoreBar(r) + "</td>" +
+        '<td class="n">' + pct(r.drawdown_pct) + "</td>" +
+        '<td class="n">' + num(r.price) + "</td>" +
+        '<td class="n dim">' + num(r.high_52w) + "</td>" +
+        "<td>" + gateCell(r.gate) + "</td>" +
+        '<td class="dim">' + (r.target_exit_date ? esc(r.target_exit_date) : "—") +
+          (r.veto_reason ? '<br><span class="neg">' + esc(r.veto_reason) + "</span>" : "") + "</td>" +
+      "</tr>";
+    }).join("");
+    return "<table><thead><tr>" +
+      "<th>Ticker</th><th>Signal</th><th>Sleeve</th><th class='n'>Score</th><th>Breakdown</th>" +
+      "<th class='n'>Below high</th><th class='n'>Price</th><th class='n'>52w high</th>" +
+      "<th>Quality</th><th>Target exit / veto</th>" +
+      "</tr></thead><tbody>" + body + "</tbody></table>";
+  }
+
+  // ── positions ──────────────────────────────────────────────────────────────
+  function renderPositions(list, holdDays) {
+    if (!list || !list.length) { $("positions").innerHTML = '<div class="empty">no open positions</div>'; return; }
+    var hold = holdDays || 504;
+    var body = list.map(function (p) {
+      // The API reports days_remaining on a 252-day basis; the enforced policy
+      // hold is 504, so progress is recomputed against the policy value.
+      var held = p.days_held || 0;
+      var frac = Math.max(0, Math.min(1, held / hold));
+      return "<tr>" +
+        '<td class="tick">' + esc(p.ticker) + "</td>" +
+        '<td class="dim">' + esc(p.entry_date) + "</td>" +
+        '<td class="n">' + num(p.entry_price) + "</td>" +
+        '<td class="n">' + num(p.current_price) + "</td>" +
+        '<td class="n">' + signed(p.current_return_pct) + "</td>" +
+        '<td style="min-width:90px"><div class="prog"><i style="width:' + (frac * 100) + '%"></i></div>' +
+          '<span class="dim" style="font-size:11px">' + held + " / " + hold + " d</span></td>" +
+        '<td class="n dim">' + Math.max(0, hold - held) + "</td>" +
+        '<td class="n dim">' + (p.percentile_rank != null ? "p" + p.percentile_rank : "—") + "</td>" +
+      "</tr>";
+    }).join("");
+    $("positions").innerHTML = "<table><thead><tr>" +
+      "<th>Ticker</th><th>Entry</th><th class='n'>Entry $</th><th class='n'>Now $</th>" +
+      "<th class='n'>Return</th><th>Progress</th><th class='n'>Days left</th><th class='n'>Pctile</th>" +
+      "</tr></thead><tbody>" + body + "</tbody></table>";
+  }
+
+  // ── beta ───────────────────────────────────────────────────────────────────
+  // Excess over SPY across closed positions — null unless both legs are real
+  // numbers, so a missing leg shows a dash rather than an invented figure.
+  function closedExcess(ca) {
+    var strat = fin(ca.strategy_return_pct), spy = fin(ca.spy_return_pct);
+    if (strat === null || spy === null) return null;
+    return strat - spy;
+  }
+
+  function renderBeta(d) {
+    if (!d || !d.summary) { $("beta").innerHTML = '<div class="empty">no beta data</div>'; return; }
+    var s = d.summary, ca = s.closed_aggregate;
+    var tiles =
+      '<div class="grid g4" style="margin-bottom:14px">' +
+        '<div class="tile"><div class="k">Opened</div><div class="v">' + s.total_opened + '</div><div class="u">since ' + esc(d.beta_start || "—") + "</div></div>" +
+        '<div class="tile"><div class="k">Open</div><div class="v">' + s.open + '</div><div class="u">running</div></div>' +
+        '<div class="tile"><div class="k">Closed</div><div class="v">' + s.closed + '</div><div class="u">completed</div></div>' +
+        (ca
+          ? '<div class="tile"><div class="k">Closed avg vs SPY</div><div class="v">' +
+            signed(closedExcess(ca)) +
+            '</div><div class="u">strategy ' + pct(ca.strategy_return_pct) + " · SPY " + pct(ca.spy_return_pct) + "</div></div>"
+          : '<div class="tile"><div class="k">Closed avg</div><div class="v dim">—</div><div class="u">no closed positions yet</div></div>') +
+      "</div>";
+
+    var rows = (d.open_positions || []).concat(d.closed_positions || []);
+    if (!rows.length) { $("beta").innerHTML = tiles + '<div class="empty">no tracked positions</div>'; return; }
+    var body = rows.map(function (r) {
+      return "<tr>" +
+        '<td class="tick">' + esc(r.ticker) + "</td>" +
+        '<td class="dim">' + esc(r.entry_date) + (r.exit_date ? " → " + esc(r.exit_date) : "") + "</td>" +
+        '<td class="n">' + signed(r.return_pct) + "</td>" +
+        '<td class="n dim">' + pct(r.spy_return_pct) + "</td>" +
+        '<td class="n dim">' + pct(r.mm_return_pct) + "</td>" +
+        '<td class="n">' + signed(r.vs_spy_pct) + "</td>" +
+        '<td class="n">' + signed(r.vs_mm_pct) + "</td>" +
+        "<td>" + (r.exit_date ? '<span class="pill p-skip">closed</span>' : '<span class="pill p-buy">open</span>') + "</td>" +
+      "</tr>";
+    }).join("");
+    $("beta").innerHTML = tiles + '<div class="scroll"><table><thead><tr>' +
+      "<th>Ticker</th><th>Period</th><th class='n'>Strategy</th><th class='n'>SPY</th><th class='n'>Money mkt</th>" +
+      "<th class='n'>vs SPY</th><th class='n'>vs MM</th><th>State</th>" +
+      "</tr></thead><tbody>" + body + "</tbody></table></div>";
+  }
+
+  function clearScreenerViews() {
+    $("regime").innerHTML  = '<div class="empty">unavailable</div>';
+    $("signals").innerHTML = '<div class="empty">unavailable</div>';
+    $("policy").innerHTML  = '<div class="empty">unavailable</div>';
+    $("ranking").innerHTML = '<div class="empty">unavailable</div>';
+    $("rank-summary").textContent = "no ranking — screener unavailable";
+    $("sig-note").textContent = "";
+  }
+
+  // ── load ───────────────────────────────────────────────────────────────────
+  // One generation counter guards against overlapping cycles: the 60s interval
+  // can start a new load() while a slow one is still in flight, and without
+  // this the older cycle would land last and overwrite fresher data.
+  var generation = 0;
+  var inflight = null;   // the previous cycle's controller, so it can be cut off
+
+  // What to call a rejection in a banner. An abort is only ever reported when
+  // the deadline fired: a cycle aborted because a newer one started is stale by
+  // definition, and its handlers return before writing anything.
+  function reason(e, timedOut) {
+    if (e && e.name === "AbortError") {
+      return timedOut() ? "no response after " + (REQUEST_TIMEOUT_MS / 1000) + "s" : "superseded";
+    }
+    return e && e.message ? e.message : String(e);
+  }
+
+  function load() {
+    var gen = ++generation;
+    var current = function () { return gen === generation; };
+    var notes = [];
+
+    // Supersede the previous cycle's requests rather than letting them run on.
+    if (inflight) inflight.abort();
+    var ctrl = new AbortController();
+    inflight = ctrl;
+    var expired = false;
+    var deadline = setTimeout(function () { expired = true; ctrl.abort(); }, REQUEST_TIMEOUT_MS);
+    var timedOut = function () { return expired; };
+    var sig = ctrl.signal;
+    // Set once the screener answers; stays null on failure so the positions
+    // table falls back to the policy default rather than last cycle's value.
+    var holdDays = null;
+
+    var pScreener = get("/api/screener", sig).then(function (d) {
+      if (!current()) return;
+      holdDays = d.satellite_policy && d.satellite_policy.hold_trading_days;
+      renderRegime(d.market_regime, d.satellite_policy);
+      renderPolicy(d.satellite_policy);
+
+      var buys = d.buy_signals || [], all = d.full_ranking || [];
+      var live = d.market_regime && d.market_regime.in_dislocation;
+      var unver = buys.filter(function (r) { return r.gate == null; }).length;
+      $("sig-note").textContent = buys.length + " BUY of " + all.length + " screened" +
+        (buys.length && !live ? " · none actionable, gate shut" : "") +
+        (unver ? " · " + unver + " unverified" : "");
+      $("signals").innerHTML = rowsTable(buys, { empty: "no BUY signals today" });
+      $("rank-summary").textContent = "show all " + all.length + " screened names";
+      $("ranking").innerHTML = rowsTable(all, { empty: "ranking is empty" });
+
+      // Freshness: as_of is the data date, computed_on is when it was produced.
+      var stale = daysAgo(d.as_of);
+      if (stale != null && stale > 4) {
+        notes.push(banner("warn", "Screener data is <b>" + stale + " days old</b> (as of " +
+          esc(d.as_of) + "). The daily job may not have run."));
+      }
+      if (d.computed_on && d.as_of && d.computed_on !== d.as_of) {
+        notes.push(banner("info", "Data date <b>" + esc(d.as_of) + "</b>, produced on <b>" +
+          esc(d.computed_on) + "</b>."));
+      }
+    }).catch(function (e) {
+      if (!current()) return;
+      var extra = e.status === 503
+        ? " — a 503 here means the daily state is missing or its universe fingerprint no longer matches; the engine refuses to serve an empty ranking as a success."
+        : "";
+      notes.push(banner("err", "<b>/api/screener failed:</b> " + esc(reason(e, timedOut)) + esc(extra)));
+      // Every view below is screener-derived. On a refresh that fails after an
+      // earlier one succeeded, leaving any of them up would show last cycle's
+      // policy and ranking under an error banner, which reads as current.
+      clearScreenerViews();
+    });
+
+    var pPositions = pScreener.then(function () {
+      return get("/api/positions", sig).then(function (d) {
+        if (!current()) return;
+        renderPositions(d.positions, holdDays);
+      }).catch(function (e) {
+        if (!current()) return;
+        notes.push(banner("err", "<b>/api/positions failed:</b> " + esc(reason(e, timedOut))));
+        $("positions").innerHTML = '<div class="empty">unavailable</div>';
+      });
+    });
+
+    var pBeta = get("/api/beta/dashboard", sig).then(function (d) {
+      if (!current()) return;
+      renderBeta(d);
+    }).catch(function (e) {
+      if (!current()) return;
+      notes.push(banner("err", "<b>/api/beta/dashboard failed:</b> " + esc(reason(e, timedOut))));
+      $("beta").innerHTML = '<div class="empty">unavailable</div>';
+    });
+
+    return Promise.all([pScreener, pPositions, pBeta]).then(function () {
+      clearTimeout(deadline);
+      if (inflight === ctrl) inflight = null;
+      if (!current()) return;
+      $("alerts").innerHTML = notes.join("");
+      var t = new Date();
+      $("refresh").textContent = "updated " +
+        String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0") + ":" +
+        String(t.getSeconds()).padStart(2, "0");
+    });
+  }
+
+  load();
+  setInterval(load, REFRESH_MS);
+})();
+</script>
+</body>
+</html>
