@@ -23,7 +23,7 @@ from typing import List, Optional
 import numpy as np
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -1211,6 +1211,46 @@ def backtest_status(job_id: str) -> dict:
         return {"job_id": job_id, "status": "running"}
 
 
+_INTERNAL_TOKEN  = os.environ.get("INTERNAL_CONSOLE_TOKEN", "").strip()
+_INTERNAL_COOKIE = "internal_console"
+# 30 days. This is a console the owner opens from a handful of browsers, not
+# a public login: a short window only means re-pasting the token into the URL
+# bar, which puts it in browser history more often rather than less.
+_INTERNAL_MAX_AGE = 60 * 60 * 24 * 30
+# Render sets RENDER=true in every service; anywhere else is a dev machine
+# on plain http, where a Secure cookie would silently never be stored.
+_IS_LOCAL = not os.environ.get("RENDER")
+
+
+def _token_ok(supplied: str) -> bool:
+    """Constant-time compare against the configured token.
+
+    compare_digest over bytes: it raises on non-ASCII str input, and a token
+    typed into a URL bar is attacker-controlled text.
+    """
+    if not _INTERNAL_TOKEN:
+        return False
+    return secrets.compare_digest(supplied.encode("utf-8"),
+                                  _INTERNAL_TOKEN.encode("utf-8"))
+
+
+def require_console_token(request: Request) -> None:
+    """Gate a route behind the internal-console token.
+
+    Accepts the cookie the console page already holds — its own fetches are
+    same-origin, so they carry it without any change — or an
+    X-Internal-Token header for curl.
+
+    404, not 401/403, and fail-closed when no token is configured: the same
+    rule the console page itself follows, so a caller learns nothing about
+    whether the path exists.
+    """
+    supplied = (request.headers.get("X-Internal-Token", "")
+                or request.cookies.get(_INTERNAL_COOKIE, ""))
+    if not _token_ok(supplied):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 # ── Research reports ──────────────────────────────────────────────────────────
 # The already-run studies: every sweep and backtest the policy rests on, with
 # their tables. They are committed markdown, so they ship with the service and
@@ -1265,7 +1305,7 @@ def _research_meta(path: Path) -> dict:
     return {"title": title, "lead": lead}
 
 
-@app.get("/api/research")
+@app.get("/api/research", dependencies=[Depends(require_console_token)])
 def research_index() -> dict:
     """List the available research reports, newest-looking first by group."""
     reports = []
@@ -1284,7 +1324,8 @@ def research_index() -> dict:
 
 
 @app.get("/api/research/{report_id}",
-         responses={404: {"description": "No report with that id"}})
+         dependencies=[Depends(require_console_token)],
+         responses={404: {"description": "No report with that id, or no token"}})
 def research_report(report_id: str) -> dict:
     """One report's markdown, verbatim."""
     path = _RESEARCH_INDEX.get(report_id)
@@ -1308,29 +1349,6 @@ def research_report(report_id: str) -> dict:
 # stay public, because the client PWA served at / depends on them — so the data
 # is still reachable by anyone who knows those URLs. The gate stops the console
 # being stumbled upon and read at a glance; it is not a data boundary.
-_INTERNAL_TOKEN  = os.environ.get("INTERNAL_CONSOLE_TOKEN", "").strip()
-_INTERNAL_COOKIE = "internal_console"
-# 30 days. This is a console the owner opens from a handful of browsers, not
-# a public login: a short window only means re-pasting the token into the URL
-# bar, which puts it in browser history more often rather than less.
-_INTERNAL_MAX_AGE = 60 * 60 * 24 * 30
-# Render sets RENDER=true in every service; anywhere else is a dev machine
-# on plain http, where a Secure cookie would silently never be stored.
-_IS_LOCAL = not os.environ.get("RENDER")
-
-
-def _token_ok(supplied: str) -> bool:
-    """Constant-time compare against the configured token.
-
-    compare_digest over bytes: it raises on non-ASCII str input, and a token
-    typed into a URL bar is attacker-controlled text.
-    """
-    if not _INTERNAL_TOKEN:
-        return False
-    return secrets.compare_digest(supplied.encode("utf-8"),
-                                  _INTERNAL_TOKEN.encode("utf-8"))
-
-
 @app.get("/internal", include_in_schema=False)
 @app.get("/internal/", include_in_schema=False)
 def internal_console(request: Request, k: str = "") -> FileResponse:

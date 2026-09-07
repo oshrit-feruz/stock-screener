@@ -129,3 +129,49 @@ def test_the_gate_does_not_touch_the_public_surface(app):
     """The client PWA and the API it depends on must be unaffected."""
     assert _get(app, "/index.html")["status"] == 200
     assert _get(app, "/api/health")["status"] == 200
+
+
+# ── research endpoints ────────────────────────────────────────────────────────
+# The console's research panel reads the committed study reports. Those are the
+# numbers behind the policy, so they sit behind the same token as the page that
+# shows them — and the page's own fetches are same-origin, so the cookie it was
+# handed carries them without any change to how they are written.
+
+@pytest.mark.parametrize("path", ["/api/research", "/api/research/threshold_sweep"])
+def test_research_is_404_without_the_token(app, path):
+    """404 rather than 401/403, matching the console page itself."""
+    assert _get(app, path)["status"] == 404
+    assert _get(app, path, "internal_console=wrong-token")["status"] == 404
+
+
+@pytest.mark.parametrize("path", ["/api/research", "/api/research/threshold_sweep"])
+def test_the_console_cookie_opens_the_research_endpoints(app, path):
+    r = _get(app, path, f"internal_console={_TOKEN}")
+    assert r["status"] == 200
+    assert r["size"] > 100
+
+
+def test_an_unknown_report_is_404_even_with_the_token(app):
+    assert _get(app, "/api/research/no_such_report",
+                f"internal_console={_TOKEN}")["status"] == 404
+
+
+def test_research_fails_closed_when_no_token_is_configured(monkeypatch):
+    """A deploy that forgets INTERNAL_CONSOLE_TOKEN must not publish the
+    studies, the same way it must not publish the console."""
+    monkeypatch.delenv("INTERNAL_CONSOLE_TOKEN", raising=False)
+    import product.api.main as main
+    importlib.reload(main)
+    try:
+        assert _get(main.app, "/api/research")["status"] == 404
+        assert _get(main.app, "/api/research",
+                    f"internal_console={_TOKEN}")["status"] == 404
+    finally:
+        monkeypatch.undo()
+        importlib.reload(main)
+
+
+def test_gating_research_leaves_the_public_api_alone(app):
+    """Only the research routes moved behind the token."""
+    assert _get(app, "/api/health")["status"] == 200
+    assert _get(app, "/api/positions")["status"] == 200
