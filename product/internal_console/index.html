@@ -656,10 +656,20 @@
     });
   }
 
+  // beat_spy is true / false / null (null when the window had no SPY series),
+  // and the three cases read better as a lookup than as a chain.
+  var TR_VERDICT = {
+    "true":  { text: "beat SPY",          cls: "pos" },
+    "false": { text: "lost to SPY",       cls: "neg" },
+    "null":  { text: "no SPY comparison", cls: "dim" },
+  };
+
+  function trVerdict(beatSpy) {
+    return TR_VERDICT[String(beatSpy)] || TR_VERDICT["null"];
+  }
+
   function trSummary(sum, params) {
-    var beat = sum.beat_spy;
-    var verdict = beat === true ? "beat SPY" : beat === false ? "lost to SPY" : "no SPY comparison";
-    var vcls = beat === true ? "pos" : beat === false ? "neg" : "dim";
+    var verdict = trVerdict(sum.beat_spy);
     return '<div class="grid g4" style="margin:14px 0">' +
       '<div class="tile"><div class="k">CAGR</div><div class="v">' + pct(sum.cagr) +
         '</div><div class="u">SPY ' + pct(sum.spy_cagr) + '</div></div>' +
@@ -667,7 +677,7 @@
         '</div><div class="u">risk-adjusted</div></div>' +
       '<div class="tile"><div class="k">Max drawdown</div><div class="v">' + pct(sum.max_drawdown_pct) +
         '</div><div class="u">peak to trough</div></div>' +
-      '<div class="tile"><div class="k">Verdict</div><div class="v ' + vcls + '">' + verdict +
+      '<div class="tile"><div class="k">Verdict</div><div class="v ' + verdict.cls + '">' + verdict.text +
         '</div><div class="u">' + sum.n_trades + ' trades · ' + pct(sum.pct_positive, 0) +
         ' positive</div></div>' +
       "</div>" +
