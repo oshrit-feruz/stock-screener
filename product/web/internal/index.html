@@ -481,9 +481,13 @@
     var gen = ++generation;
     var current = function () { return gen === generation; };
     var notes = [];
+    // Set once the screener answers; stays null on failure so the positions
+    // table falls back to the policy default rather than last cycle's value.
+    var holdDays = null;
 
     var pScreener = get("/api/screener").then(function (d) {
-      if (!current()) return d.satellite_policy;
+      if (!current()) return;
+      holdDays = d.satellite_policy && d.satellite_policy.hold_trading_days;
       renderRegime(d.market_regime, d.satellite_policy);
       renderPolicy(d.satellite_policy);
 
@@ -507,9 +511,8 @@
         notes.push(banner("info", "Data date <b>" + esc(d.as_of) + "</b>, produced on <b>" +
           esc(d.computed_on) + "</b>."));
       }
-      return d.satellite_policy;
     }).catch(function (e) {
-      if (!current()) return null;
+      if (!current()) return;
       var extra = e.status === 503
         ? " — a 503 here means the daily state is missing or its universe fingerprint no longer matches; the engine refuses to serve an empty ranking as a success."
         : "";
@@ -518,13 +521,12 @@
       // earlier one succeeded, leaving any of them up would show last cycle's
       // policy and ranking under an error banner, which reads as current.
       clearScreenerViews();
-      return null;
     });
 
-    var pPositions = pScreener.then(function (policy) {
+    var pPositions = pScreener.then(function () {
       return get("/api/positions").then(function (d) {
         if (!current()) return;
-        renderPositions(d.positions, policy && policy.hold_trading_days);
+        renderPositions(d.positions, holdDays);
       }).catch(function (e) {
         if (!current()) return;
         notes.push(banner("err", "<b>/api/positions failed:</b> " + esc(e.message)));
