@@ -13,6 +13,38 @@ function holdLabel(days) {
   return d + ' days';
 }
 
+// ── Time horizon ──────────────────────────────────────────────────────────────
+// The buckets a user picks from, each with the longest hold it promises in
+// trading days. Anything short of HOLD_DAYS_DEFAULT is a caution: the signal
+// was measured over the full hold, and on the clean backtest a 1-year exit
+// lost to SPY — so "more than 12 months" is not on its own a match for it,
+// which is why the old single over_12m bucket is split in two here.
+var TIME_HORIZONS = {
+  'under_3m':   { days: 63 },
+  '3_to_6m':    { days: 126 },
+  '6_to_12m':   { days: 252 },
+  '12_to_24m':  { days: 503 },
+  '2y_or_more': { days: HOLD_DAYS_DEFAULT }
+};
+var TIME_HORIZON_DEFAULT = '2y_or_more';
+
+// Read the stored horizon as one of the buckets above. 'over_12m' is the
+// spelling used before the hold moved to two years; it promised more than a
+// year and nothing further, so it reads as 12-24 months rather than as a
+// match — a stored value must not be silently upgraded into an endorsement.
+function readTimeHorizon() {
+  var th = localStorage.getItem('user_time_horizon');
+  if (th === 'over_12m') return '12_to_24m';
+  return (th && TIME_HORIZONS[th]) ? th : TIME_HORIZON_DEFAULT;
+}
+
+// Normalise on write so an unrecognised value can never reach storage and
+// suppress the caution by falling through every branch.
+function storeTimeHorizon(val) {
+  localStorage.setItem('user_time_horizon',
+                       TIME_HORIZONS[val] ? val : TIME_HORIZON_DEFAULT);
+}
+
 // ── State ──────────────────────────────────────────────────────────────────────
 var _sigCache   = null;
 var _sigCacheTs = 0;
@@ -115,8 +147,7 @@ function obBack(toScreen)  { showOnboardingScreen(toScreen); }
 
 function completeOnboarding(mode) {
   var sel = document.querySelector('input[name="time_horizon"]:checked');
-  var th  = sel ? sel.value : '6_to_12m';
-  localStorage.setItem('user_time_horizon', th);
+  storeTimeHorizon(sel ? sel.value : TIME_HORIZON_DEFAULT);
   localStorage.setItem('user_mode', mode);
   localStorage.setItem('onboarding_complete', 'true');
   hideOnboarding();
@@ -267,7 +298,7 @@ function renderSignals(data) {
 }
 
 function timeHorizonBannerHTML() {
-  var th = localStorage.getItem('user_time_horizon') || '6_to_12m';
+  var th = readTimeHorizon();
   if (th === 'under_3m' || th === '3_to_6m') {
     return '<div class="th-warning-banner">'
       + '&#9888;&#65039; Your time horizon is under 6 months. '
@@ -275,14 +306,18 @@ function timeHorizonBannerHTML() {
       + 'At 3&ndash;6 months: avg +6&ndash;12%. Proceed with extra caution.'
       + '</div>';
   }
-  if (th === 'over_12m') {
-    return '<div class="th-info-banner">'
-      + '&#8505;&#65039; A long horizon suits this signal — the planned hold is ~2 years. '
-      + 'The signal has no validated edge past the policy hold. '
-      + 'You may hold longer at your own discretion.'
+  if (TIME_HORIZONS[th].days < HOLD_DAYS_DEFAULT) {
+    return '<div class="th-warning-banner">'
+      + '&#9888;&#65039; Your time horizon is shorter than the ~2 year planned hold. '
+      + 'The 12-month average is +49.2%, but on the clean backtest a 1-year hold '
+      + 'lost to SPY &mdash; exiting early is not the tested strategy.'
       + '</div>';
   }
-  return '';
+  return '<div class="th-info-banner">'
+    + '&#8505;&#65039; Your horizon matches the ~2 year planned hold. '
+    + 'The signal has no validated edge past it. '
+    + 'You may hold longer at your own discretion.'
+    + '</div>';
 }
 
 function maybeShowFirstSignalTooltip() {
@@ -1417,7 +1452,7 @@ function fmtK(n) {
 function loadSettings() {
   var hEl = document.getElementById('settings-horizon');
   var mEl = document.getElementById('settings-mode');
-  var th  = localStorage.getItem('user_time_horizon') || '6_to_12m';
+  var th  = readTimeHorizon();
   var m   = localStorage.getItem('user_mode') || 'fresh';
   if (m === 'portfolio') m = 'existing';
   if (hEl) hEl.value = th;
@@ -1481,7 +1516,7 @@ function settingsRemoveHolding(ticker) {
 }
 
 function saveTimeHorizon(val) {
-  localStorage.setItem('user_time_horizon', val);
+  storeTimeHorizon(val);
   showToast('Time horizon updated');
 }
 
