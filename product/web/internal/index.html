@@ -139,7 +139,7 @@
   </header>
   <p class="sub">
     Live read of this service's own API —
-    <code>/api/screener</code> · <code>/api/positions</code> · <code>/api/beta/dashboard</code> · <code>/api/health</code>.
+    <code>/api/screener</code> · <code>/api/positions</code> · <code>/api/beta/dashboard</code>.
     Not a client surface. Nothing here is written back.
   </p>
 
@@ -462,11 +462,28 @@
       "</tr></thead><tbody>" + body + "</tbody></table></div>";
   }
 
+  function clearScreenerViews() {
+    $("regime").innerHTML  = '<div class="empty">unavailable</div>';
+    $("signals").innerHTML = '<div class="empty">unavailable</div>';
+    $("policy").innerHTML  = '<div class="empty">unavailable</div>';
+    $("ranking").innerHTML = '<div class="empty">unavailable</div>';
+    $("rank-summary").textContent = "no ranking — screener unavailable";
+    $("sig-note").textContent = "";
+  }
+
   // ── load ───────────────────────────────────────────────────────────────────
+  // One generation counter guards against overlapping cycles: the 60s interval
+  // can start a new load() while a slow one is still in flight, and without
+  // this the older cycle would land last and overwrite fresher data.
+  var generation = 0;
+
   function load() {
+    var gen = ++generation;
+    var current = function () { return gen === generation; };
     var notes = [];
 
     var pScreener = get("/api/screener").then(function (d) {
+      if (!current()) return d.satellite_policy;
       renderRegime(d.market_regime, d.satellite_policy);
       renderPolicy(d.satellite_policy);
 
@@ -492,30 +509,40 @@
       }
       return d.satellite_policy;
     }).catch(function (e) {
+      if (!current()) return null;
       var extra = e.status === 503
         ? " — a 503 here means the daily state is missing or its universe fingerprint no longer matches; the engine refuses to serve an empty ranking as a success."
         : "";
       notes.push(banner("err", "<b>/api/screener failed:</b> " + esc(e.message) + esc(extra)));
-      $("regime").innerHTML = '<div class="empty">unavailable</div>';
-      $("signals").innerHTML = '<div class="empty">unavailable</div>';
+      // Every view below is screener-derived. On a refresh that fails after an
+      // earlier one succeeded, leaving any of them up would show last cycle's
+      // policy and ranking under an error banner, which reads as current.
+      clearScreenerViews();
       return null;
     });
 
     var pPositions = pScreener.then(function (policy) {
       return get("/api/positions").then(function (d) {
+        if (!current()) return;
         renderPositions(d.positions, policy && policy.hold_trading_days);
       }).catch(function (e) {
+        if (!current()) return;
         notes.push(banner("err", "<b>/api/positions failed:</b> " + esc(e.message)));
         $("positions").innerHTML = '<div class="empty">unavailable</div>';
       });
     });
 
-    var pBeta = get("/api/beta/dashboard").then(renderBeta).catch(function (e) {
+    var pBeta = get("/api/beta/dashboard").then(function (d) {
+      if (!current()) return;
+      renderBeta(d);
+    }).catch(function (e) {
+      if (!current()) return;
       notes.push(banner("err", "<b>/api/beta/dashboard failed:</b> " + esc(e.message)));
       $("beta").innerHTML = '<div class="empty">unavailable</div>';
     });
 
     return Promise.all([pScreener, pPositions, pBeta]).then(function () {
+      if (!current()) return;
       $("alerts").innerHTML = notes.join("");
       var t = new Date();
       $("refresh").textContent = "updated " +
