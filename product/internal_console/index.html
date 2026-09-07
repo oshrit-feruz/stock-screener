@@ -126,6 +126,19 @@
   }
   #tr-run:disabled { background: var(--border); color: var(--dim); cursor: default; }
 
+  /* ── research reports ── */
+  #rs-pick { max-width: 460px; }
+  #rs-body h1 { font-size: 15px; font-weight: 650; margin: 4px 0 10px; }
+  #rs-body h2 { font-size: 12px; margin: 20px 0 8px; }
+  #rs-body h3 { font-size: 11px; color: var(--muted); margin: 15px 0 7px;
+                text-transform: uppercase; letter-spacing: 0.06em; }
+  #rs-body p  { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; max-width: 78ch; }
+  #rs-body ul { margin: 0 0 10px 18px; color: var(--muted); font-size: 12.5px; max-width: 78ch; }
+  #rs-body li { margin-bottom: 4px; }
+  #rs-body table { margin-bottom: 14px; }
+  #rs-body strong { color: var(--text); font-weight: 600; }
+  #rs-body code { font-family: var(--mono); font-size: 12px; color: var(--violet); }
+
   /* ── messages ── */
   .msg { border-radius: 8px; padding: 12px 14px; font-size: 12.5px; border: 1px solid; }
   .msg-err  { border-color: rgba(239,68,68,.35);  background: #1f151a; color: #ffc4c4; }
@@ -188,6 +201,17 @@
   <section>
     <h2>Beta tracking <span class="note">strategy vs SPY vs money market, per opened position</span></h2>
     <div class="card" id="beta"><div class="empty">loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Research results <span class="note" id="rs-note">every study already run — no engine run needed</span></h2>
+    <div class="card">
+      <div class="tr-controls">
+        <label>Report <select id="rs-pick"><option>loading…</option></select></label>
+        <span class="dim" id="rs-lead"></span>
+      </div>
+      <div id="rs-body"><div class="empty">loading…</div></div>
+    </div>
   </section>
 
   <section>
@@ -783,6 +807,138 @@
   }
 
   $("tr-run").addEventListener("click", trRun);
+
+  // ── research results ──────────────────────────────────────────────────────
+  // The already-run studies. Every sweep the policy rests on, served as the
+  // committed markdown it lives in, so what shows here is the report itself
+  // rather than a summary of it that could drift.
+  //
+  // The renderer escapes the whole line FIRST and only then emits tags it
+  // built itself, so nothing in a report file can inject markup — these are
+  // repo files, but the rule costs nothing and removes the question.
+
+  function mdInline(text) {
+    return esc(text)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+      .replace(/(^|[\s(])_([^_]+)_(?=[\s.,;:)]|$)/g, "$1<em>$2</em>");
+  }
+
+  function mdRow(line, cell) {
+    var cells = line.replace(/^\||\|$/g, "").split("|");
+    return "<tr>" + cells.map(function (c) {
+      var t = c.trim();
+      // Right-align anything that reads as a number, the way the reports do.
+      var numeric = /^[+\-−$]?[\d.,]+%?$/.test(t) || /^[+\-−]?\d/.test(t);
+      return "<" + cell + (numeric ? " class='n'" : "") + ">" + mdInline(t) + "</" + cell + ">";
+    }).join("") + "</tr>";
+  }
+
+  function mdToHtml(md) {
+    var lines = md.split("\n");
+    var out = [];
+    var i = 0;
+    while (i < lines.length) {
+      var line = lines[i];
+
+      // table: a header row, a separator row, then body rows
+      if (line.startsWith("|") && i + 1 < lines.length && /^\|[\s:|-]+\|?$/.test(lines[i + 1])) {
+        var head = mdRow(line, "th");
+        i += 2;
+        var body = [];
+        while (i < lines.length && lines[i].startsWith("|")) {
+          body.push(mdRow(lines[i], "td"));
+          i++;
+        }
+        out.push('<div class="scroll"><table><thead>' + head + "</thead><tbody>" +
+                 body.join("") + "</tbody></table></div>");
+        continue;
+      }
+
+      var heading = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (heading) {
+        var level = Math.min(heading[1].length, 3);
+        out.push("<h" + level + ">" + mdInline(heading[2]) + "</h" + level + ">");
+        i++;
+        continue;
+      }
+
+      if (/^[-*]\s+/.test(line)) {
+        var items = [];
+        while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
+          var item = lines[i].replace(/^[-*]\s+/, "");
+          i++;
+          // Continuation lines are indented under the bullet; fold them in so
+          // a wrapped sentence stays one sentence.
+          while (i < lines.length && /^\s+\S/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i])) {
+            item += " " + lines[i].trim();
+            i++;
+          }
+          items.push("<li>" + mdInline(item) + "</li>");
+        }
+        out.push("<ul>" + items.join("") + "</ul>");
+        continue;
+      }
+
+      if (/^\s*(---+|===+)\s*$/.test(line)) { i++; continue; }
+
+      if (line.trim() === "") { i++; continue; }
+
+      // paragraph: consecutive non-blank, non-structural lines
+      var para = [];
+      while (i < lines.length && lines[i].trim() !== "" &&
+             !lines[i].startsWith("|") && !/^#{1,6}\s/.test(lines[i]) &&
+             !/^[-*]\s+/.test(lines[i])) {
+        para.push(lines[i].trim());
+        i++;
+      }
+      if (para.length) out.push("<p>" + mdInline(para.join(" ")) + "</p>");
+    }
+    return out.join("");
+  }
+
+  function rsShow(id) {
+    $("rs-body").innerHTML = '<div class="empty">loading…</div>';
+    get("/api/research/" + encodeURIComponent(id))
+      .then(function (r) { $("rs-body").innerHTML = mdToHtml(r.markdown || ""); })
+      .catch(function (e) {
+        $("rs-body").innerHTML = banner("err",
+          "<b>Could not load the report:</b> " + esc(e.message || String(e)));
+      });
+  }
+
+  function rsInit() {
+    get("/api/research").then(function (d) {
+      var reports = d.reports || [];
+      if (!reports.length) {
+        $("rs-body").innerHTML = '<div class="empty">no reports found on this deploy</div>';
+        return;
+      }
+      var pick = $("rs-pick");
+      pick.innerHTML = reports.map(function (r) {
+        return '<option value="' + esc(r.id) + '">' + esc(r.title) +
+               (r.tables ? "  (" + r.tables + " rows)" : "") + "</option>";
+      }).join("");
+      $("rs-note").textContent = reports.length + " studies, already run";
+      pick.addEventListener("change", function () {
+        var sel = reports.filter(function (r) { return r.id === pick.value; })[0];
+        $("rs-lead").textContent = sel ? sel.lead : "";
+        rsShow(pick.value);
+      });
+      // Open on the entry-threshold sweep when it is there: it is the study
+      // that most often prompts the question "why 0.60?".
+      var preferred = reports.filter(function (r) { return r.id === "threshold_sweep"; })[0];
+      pick.value = (preferred || reports[0]).id;
+      $("rs-lead").textContent = (preferred || reports[0]).lead;
+      rsShow(pick.value);
+    }).catch(function (e) {
+      $("rs-body").innerHTML = banner("err",
+        "<b>Could not list the reports:</b> " + esc(e.message || String(e)));
+    });
+  }
+
+  rsInit();
 
   load();
   setInterval(load, REFRESH_MS);

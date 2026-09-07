@@ -1211,6 +1211,93 @@ def backtest_status(job_id: str) -> dict:
         return {"job_id": job_id, "status": "running"}
 
 
+# ── Research reports ──────────────────────────────────────────────────────────
+# The already-run studies: every sweep and backtest the policy rests on, with
+# their tables. They are committed markdown, so they ship with the service and
+# need no engine run to read — the point is to see results that exist, not to
+# compute new ones.
+#
+# The id-to-path map is built once at import from a fixed pair of directories,
+# and lookups only ever hit that dict, so a caller cannot reach a path the map
+# does not already contain.
+_RESEARCH_DIRS = (_ROOT / "validation", _ROOT / "results" / "research")
+
+
+def _research_index() -> dict:
+    """Map report id -> path, for every committed report. Ids are unique across
+    both directories; a collision would be a repo mistake, so it is surfaced
+    rather than silently shadowed."""
+    index: dict[str, Path] = {}
+    for directory in _RESEARCH_DIRS:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.md")):
+            key = path.stem
+            if key in index:
+                key = f"{directory.name}_{path.stem}"
+            index[key] = path
+    return index
+
+
+_RESEARCH_INDEX = _research_index()
+
+
+def _research_meta(path: Path) -> dict:
+    """Title and lead paragraph, read from the file's own first heading and the
+    first prose line under it, so the listing never drifts from the report."""
+    title, lead = path.stem.replace("_", " "), ""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {"title": title, "lead": ""}
+    for line in lines:
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+    started = False
+    for line in lines:
+        if line.startswith("# "):
+            started = True
+            continue
+        if started and line.strip() and not line.startswith(("#", "|", "-", "*")):
+            lead = line.strip()
+            break
+    return {"title": title, "lead": lead}
+
+
+@app.get("/api/research")
+def research_index() -> dict:
+    """List the available research reports, newest-looking first by group."""
+    reports = []
+    for key, path in _RESEARCH_INDEX.items():
+        meta = _research_meta(path)
+        reports.append({
+            "id": key,
+            "group": path.parent.name,
+            "title": meta["title"],
+            "lead": meta["lead"],
+            "tables": sum(1 for ln in path.read_text(encoding="utf-8").splitlines()
+                          if ln.startswith("|")),
+        })
+    reports.sort(key=lambda r: (r["group"], r["title"]))
+    return {"reports": reports}
+
+
+@app.get("/api/research/{report_id}")
+def research_report(report_id: str) -> dict:
+    """One report's markdown, verbatim."""
+    path = _RESEARCH_INDEX.get(report_id)
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"No such report: {report_id}")
+    meta = _research_meta(path)
+    return {
+        "id": report_id,
+        "group": path.parent.name,
+        "title": meta["title"],
+        "markdown": path.read_text(encoding="utf-8"),
+    }
+
+
 # ── Internal console ──────────────────────────────────────────────────────────
 # Gated by a shared token in INTERNAL_CONSOLE_TOKEN. Fails CLOSED: with the
 # variable unset the page does not exist, so a deploy that forgets it exposes
