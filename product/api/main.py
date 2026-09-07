@@ -1215,7 +1215,10 @@ def backtest_status(job_id: str) -> dict:
 # being stumbled upon and read at a glance; it is not a data boundary.
 _INTERNAL_TOKEN  = os.environ.get("INTERNAL_CONSOLE_TOKEN", "").strip()
 _INTERNAL_COOKIE = "internal_console"
-_INTERNAL_MAX_AGE = 60 * 60 * 12  # re-supply ?k= once a day, not on every load
+# 30 days. This is a console the owner opens from a handful of browsers, not
+# a public login: a short window only means re-pasting the token into the URL
+# bar, which puts it in browser history more often rather than less.
+_INTERNAL_MAX_AGE = 60 * 60 * 24 * 30
 # Render sets RENDER=true in every service; anywhere else is a dev machine
 # on plain http, where a Secure cookie would silently never be stored.
 _IS_LOCAL = not os.environ.get("RENDER")
