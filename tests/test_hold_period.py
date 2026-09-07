@@ -182,3 +182,58 @@ def test_the_exit_alert_labels_its_average_with_the_measured_horizon():
     from product.alerts.alert_templates import format_exit_alert
     body = format_exit_alert("COIN", 210.0, 260.0, HOLD_TRADING_DAYS, 0.238)["body"]
     assert "Average return for this signal at 12 months: +49.2%" in body
+
+
+# ── endpoint wiring ───────────────────────────────────────────────────────────
+# The tests above exercise a mirror of the engine's parameter handling, which is
+# exactly why they missed the real bug: BacktestParams declared hold_days and
+# the endpoint never forwarded it, so every Simulator run used the default and
+# the new selector did nothing. This one drives the endpoint itself and asserts
+# on the dict the engine actually receives.
+
+def test_the_endpoint_forwards_the_chosen_hold_to_the_engine(monkeypatch):
+    import product.api.main as main
+
+    captured: dict = {}
+
+    def fake_thread(target=None, args=(), **kwargs):
+        # args = (job_id, params); capture without running the backtest.
+        captured.update(args[1])
+
+        class _Noop:
+            def start(self):
+                pass
+        return _Noop()
+
+    monkeypatch.setattr(main.threading, "Thread", fake_thread)
+
+    for chosen in (252, 378, 504):
+        captured.clear()
+        body = main.BacktestParams(hold_days=chosen, start_date="2018-01-01",
+                                   end_date="2020-01-01")
+        main.backtest(body)
+        # The real job releases the concurrency semaphore when it finishes; the
+        # stand-in thread never runs, so release it here or the third call 429s.
+        main._bt_semaphore.release()
+        assert captured.get("hold_days") == chosen, (
+            f"the engine received {captured.get('hold_days')!r}, not the chosen {chosen}"
+        )
+
+
+def test_the_endpoint_default_is_the_policy_hold(monkeypatch):
+    import product.api.main as main
+
+    captured: dict = {}
+
+    def fake_thread(target=None, args=(), **kwargs):
+        captured.update(args[1])
+
+        class _Noop:
+            def start(self):
+                pass
+        return _Noop()
+
+    monkeypatch.setattr(main.threading, "Thread", fake_thread)
+    main.backtest(main.BacktestParams(start_date="2018-01-01", end_date="2020-01-01"))
+    main._bt_semaphore.release()
+    assert captured.get("hold_days") == HOLD_TRADING_DAYS
