@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import os
 import sys
 from pathlib import Path
 
@@ -26,13 +25,20 @@ _TOKEN = "test-token-value"
 
 @pytest.fixture(scope="module")
 def app():
-    """The API with a console token configured, as a deployed service has."""
-    os.environ["INTERNAL_CONSOLE_TOKEN"] = _TOKEN
-    os.environ.pop("RENDER", None)          # local: cookie must not be Secure-only
+    """The API with a console token configured, as a deployed service has.
+
+    MonkeyPatch.context() rather than the monkeypatch fixture: that one is
+    function-scoped and this has to hold for the module, since the token is
+    read into module state at import and every test here shares one reload.
+    """
     import product.api.main as main
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("INTERNAL_CONSOLE_TOKEN", _TOKEN)
+        mp.delenv("RENDER", raising=False)  # local: cookie must not be Secure-only
+        importlib.reload(main)
+        yield main.app
+    # The env is restored on exit; reload so the module agrees with it again.
     importlib.reload(main)
-    yield main.app
-    os.environ.pop("INTERNAL_CONSOLE_TOKEN", None)
 
 
 def _get(app, path: str, cookie: str | None = None) -> dict:
@@ -101,7 +107,10 @@ def test_console_is_absent_when_no_token_is_configured(monkeypatch):
         assert _get(main.app, f"/internal/?k={_TOKEN}")["status"] == 404
         assert _get(main.app, "/internal/")["status"] == 404
     finally:
-        os.environ["INTERNAL_CONSOLE_TOKEN"] = _TOKEN
+        # Undo first so the reload picks the token back up; the module caches
+        # it at import, so restoring the env alone would leave the app gated
+        # off for every test that runs after this one.
+        monkeypatch.undo()
         importlib.reload(main)
 
 
