@@ -271,13 +271,13 @@ function timeHorizonBannerHTML() {
   if (th === 'under_3m' || th === '3_to_6m') {
     return '<div class="th-warning-banner">'
       + '&#9888;&#65039; Your time horizon is under 6 months. '
-      + 'This signal\'s edge is strongest at 12 months. '
+      + 'This signal is built around a ~2 year hold. '
       + 'At 3&ndash;6 months: avg +6&ndash;12%. Proceed with extra caution.'
       + '</div>';
   }
   if (th === 'over_12m') {
     return '<div class="th-info-banner">'
-      + '&#8505;&#65039; You plan to hold beyond 12 months. '
+      + '&#8505;&#65039; A long horizon suits this signal — the planned hold is ~2 years. '
       + 'The signal has no validated edge past the policy hold. '
       + 'You may hold longer at your own discretion.'
       + '</div>';
