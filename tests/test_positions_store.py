@@ -422,3 +422,57 @@ def test_an_http_error_from_supabase_raises_with_the_reason(monkeypatch):
         lambda *a, **k: _Resp(401, {"message": "invalid authentication credentials"}))
     with pytest.raises(store.StorageError, match="invalid authentication"):
         store.load_open()
+
+
+# ── the API's error contract ────────────────────────────────────────────────
+
+def _post(app, path: str, body: dict, token: str) -> int:
+    """Drive one authenticated POST through the ASGI app, returning the status.
+
+    Raw ASGI rather than TestClient: httpx is not a dependency here, and this
+    only needs a status code.
+    """
+    import asyncio
+
+    raw = json.dumps(body).encode()
+    scope = {
+        "type": "http", "method": "POST", "path": path, "raw_path": path.encode(),
+        "query_string": b"", "client": ("1.2.3.4", 1), "server": ("testserver", 80),
+        "scheme": "http", "root_path": "", "app": app,
+        "headers": [(b"content-type", b"application/json"),
+                    (b"x-admin-token", token.encode())],
+    }
+    out = {}
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            out["status"] = message["status"]
+
+    asyncio.run(app(scope, receive, send))
+    return out["status"]
+
+
+def test_a_store_outage_is_503_on_both_halves_of_a_close(monkeypatch):
+    """close_position reads the book and then writes it. Both fail the same way
+    in an outage and both must say the same thing: 503, which tells a client the
+    failure is retryable. The read used to report 500 while the write four lines
+    below reported 503 -- one Supabase outage described two ways in one request,
+    against the 503 the endpoint documents."""
+    import product.api.main as main
+
+    monkeypatch.setenv("ADMIN_TOKEN", "t")
+    _configure(monkeypatch)
+
+    def dead(*a, **k):
+        raise requests.ConnectionError("no route to host")
+
+    monkeypatch.setattr(requests, "request", dead)
+    assert _post(main.app, "/api/positions/close", {"ticker": "AAPL"}, "t") == 503

@@ -1091,8 +1091,14 @@ def close_position(body: ClosePositionIn) -> dict:
     ticker   = body.ticker.upper()
     try:
         open_raw = _load_open_positions(raise_on_corrupt=True)
+    except positions_store.StorageError as exc:
+        # Same failure as the close below, so the same code: an outage is
+        # retryable and 503 says so. Reporting 500 here and 503 four lines
+        # down would have told a client two different things about one
+        # Supabase outage, in one request.
+        raise HTTPException(status_code=503, detail=f"Storage error: {exc}") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Storage error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Storage error: {exc}") from exc
     pos      = next((p for p in open_raw if p["ticker"] == ticker), None)
     if not pos:
         raise HTTPException(status_code=404, detail=f"Position {ticker} not found")
