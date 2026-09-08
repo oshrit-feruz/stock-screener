@@ -23,7 +23,7 @@ from typing import List, Optional
 import numpy as np
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -45,7 +45,7 @@ from product.alerts.alert_templates import (  # noqa: E402
 from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
-from product.satellite_policy import SCHEMA_VERSION  # noqa: E402
+from product.satellite_policy import HOLD_TRADING_DAYS, SCHEMA_VERSION  # noqa: E402
 from product.screener.daily_screener import (  # noqa: E402
     ScreenerRow,
     _load_disk_cache,
@@ -382,7 +382,13 @@ class BacktestParams(BaseModel):
     # replicates live screener behavior (imported to prevent future drift).
     entry_threshold:  float = BUY_THRESHOLD
     exit_threshold:   float = 0.40
-    exit_mode:        str   = "252d_only"   # "252d_only" | "threshold_or_252d" | "threshold_only"
+    # Holding period in trading days. Defaults to the validated policy hold so
+    # a default Simulator run reproduces what the exit tracker enforces; the
+    # UI offers 252 / 378 / 504 for comparison.
+    hold_days:        int   = HOLD_TRADING_DAYS
+    # "hold_only" | "threshold_or_hold" | "threshold_only". The old spellings
+    # ("252d_only", "threshold_or_252d") are still accepted by the engine.
+    exit_mode:        str   = "hold_only"
     take_profit_pct:  float = 0.0           # 0 = disabled; e.g. 30 = exit at +30%
     stop_loss_pct:    float = 0.0           # 0 = disabled; e.g. 20 = exit at -20%
     trailing_stop_pct: float = 0.0         # 0 = disabled; e.g. 25 = exit 25% below peak
@@ -728,6 +734,158 @@ def _get_edgar_report_client():
 _TICKER_RE = _re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 
 
+# ── Write protection ──────────────────────────────────────────────────────────
+# Reads stay public: the PWA served at / and the shift-app client both depend on
+# them, and the daily screener data is not secret. WRITES are a different thing
+# entirely — /api/positions/open, /api/positions/close and POST /api/portfolio
+# mutate the tracked book, and until now any caller on the internet could open
+# or close positions and rewrite the portfolio.
+#
+# Auth is a shared token in ADMIN_TOKEN, exchanged once at /api/auth for an
+# HttpOnly cookie. The PWA is same-origin, so its existing POSTs carry that
+# cookie with no change to app.js; a browser that has never authenticated gets
+# 403 on the write and an unchanged experience everywhere else.
+#
+# The exchange is a POST with the token in the body, never a ?k= query string.
+# A URL carrying a write credential ends up in browser history, in whatever is
+# copied and pasted, and in the platform access log — and this token opens or
+# closes positions, so anyone who reads it back out of a log can trade the book.
+# GET /api/auth serves a small sign-in page instead, so "open this link once in
+# each browser" still works while the token only ever travels in a request body.
+#
+# SameSite=Strict is what stops this being CSRF-able: a cookie alone would let
+# any page on the internet POST to these endpoints in a logged-in browser, and
+# Strict keeps the browser from attaching it to a cross-site request at all.
+_ADMIN_TOKEN  = os.environ.get("ADMIN_TOKEN", "").strip()
+_ADMIN_COOKIE = "admin_session"
+_ADMIN_HEADER = "X-Admin-Token"
+_ADMIN_MAX_AGE = 60 * 60 * 24 * 30
+
+
+def _matches_admin_token(supplied: str) -> bool:
+    """Constant-time compare against ADMIN_TOKEN; False when none is set.
+
+    Bytes, not str: compare_digest raises on non-ASCII str, and this value
+    arrives from a request.
+    """
+    if not _ADMIN_TOKEN or not supplied:
+        return False
+    return secrets.compare_digest(supplied.encode("utf-8"),
+                                  _ADMIN_TOKEN.encode("utf-8"))
+
+
+def require_admin(request: Request) -> None:
+    """Reject a write from a caller that has not authenticated.
+
+    Fails CLOSED: with ADMIN_TOKEN unset every write is refused (503), so a
+    deploy that forgets the variable stops writes rather than leaving them
+    open to the internet — the failure mode is a broken button, not a
+    stranger closing your positions.
+    """
+    if not _ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="Writes are disabled: ADMIN_TOKEN is not configured on this service.",
+        )
+    supplied = (request.headers.get(_ADMIN_HEADER, "")
+                or request.cookies.get(_ADMIN_COOKIE, ""))
+    if not _matches_admin_token(supplied):
+        raise HTTPException(
+            status_code=403,
+            detail="Not signed in. Open /api/auth once in this browser and "
+                   "enter the token, or send it as an X-Admin-Token header.",
+        )
+
+
+class AdminAuthIn(BaseModel):
+    token: str
+
+
+# Deliberately plain: no styling to maintain and nothing fetched from a CDN, so
+# the one page that handles a write credential has no third-party code on it.
+_AUTH_PAGE = """<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in</title>
+<style>
+ body{font:15px system-ui,sans-serif;margin:0;display:grid;place-items:center;
+      min-height:100vh;background:#f6f7f9;color:#111}
+ form{background:#fff;padding:28px;border-radius:10px;min-width:280px;
+      box-shadow:0 1px 3px rgba(0,0,0,.12)}
+ h1{font-size:16px;margin:0 0 4px} p{margin:0 0 16px;color:#666;font-size:13px}
+ input{width:100%;box-sizing:border-box;padding:9px;font:inherit;
+       border:1px solid #ccc;border-radius:6px}
+ button{width:100%;margin-top:12px;padding:9px;font:inherit;border:0;
+        border-radius:6px;background:#111;color:#fff;cursor:pointer}
+ #msg{margin:12px 0 0;font-size:13px;min-height:1em}
+ #msg.bad{color:#b00020} #msg.ok{color:#0a7d29}
+</style>
+<form id="f" autocomplete="off">
+  <h1>Position tracking</h1>
+  <p>Enter the admin token to enable position changes in this browser.</p>
+  <input id="t" type="password" placeholder="Token" autofocus>
+  <button type="submit">Sign in</button>
+  <p id="msg"></p>
+</form>
+<script>
+document.getElementById('f').addEventListener('submit', function (e) {
+  e.preventDefault();
+  var msg = document.getElementById('msg');
+  msg.className = ''; msg.textContent = 'Signing in\u2026';
+  fetch('/api/auth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: document.getElementById('t').value })
+  }).then(function (r) {
+    if (r.ok) { msg.className = 'ok'; msg.textContent = 'Signed in. Redirecting\u2026';
+                setTimeout(function () { location.href = '/'; }, 700); return; }
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      msg.className = 'bad';
+      msg.textContent = d.detail || ('Sign-in failed (' + r.status + ')');
+    });
+  }).catch(function () {
+    msg.className = 'bad'; msg.textContent = 'Could not reach the server.';
+  });
+});
+</script>
+"""
+
+
+@app.get("/api/auth", include_in_schema=False)
+def admin_auth_page() -> Response:
+    """The sign-in form. Takes no token — that only ever arrives by POST."""
+    return Response(
+        content=_AUTH_PAGE, media_type="text/html",
+        headers={"Cache-Control": "no-store, private",
+                 "Referrer-Policy": "no-referrer"},
+    )
+
+
+@app.post("/api/auth", include_in_schema=False)
+def admin_auth(body: AdminAuthIn, response: Response) -> dict:
+    """Exchange the token for the session cookie the write endpoints require.
+
+    Done once per browser; the cookie then rides along on the PWA's own POSTs
+    because they are same-origin. POST rather than GET so the token stays out
+    of the URL, and therefore out of history and the access log.
+    """
+    if not _ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="Writes are disabled: ADMIN_TOKEN is not configured on this service.",
+        )
+    if not _matches_admin_token(body.token):
+        raise HTTPException(status_code=403, detail="Invalid token.")
+    response.set_cookie(
+        _ADMIN_COOKIE, _ADMIN_TOKEN,
+        max_age=_ADMIN_MAX_AGE, httponly=True, samesite="strict",
+        # Render terminates TLS; local development runs on plain http, where a
+        # Secure cookie would be silently dropped.
+        secure=bool(os.environ.get("RENDER")),
+    )
+    response.headers["Cache-Control"] = "no-store, private"
+    return {"authenticated": True}
+
+
 @app.get("/api/stock/{ticker}/fundamentals")
 def stock_fundamentals(ticker: str) -> dict:
     """Fundamental highlights for one ticker, straight from SEC EDGAR.
@@ -836,7 +994,7 @@ def get_positions() -> dict:
             "current_price":       round(cur_price, 2) if cur_price else None,
             "current_return_pct":  round(ret * 100, 1) if ret is not None else None,
             "days_held":           days_held,
-            "days_remaining":      max(0, 252 - days_held),
+            "days_remaining":      max(0, HOLD_TRADING_DAYS - days_held),
             "percentile_rank":     pct_r,
             "expected_return_pct": round(exp_ret * 100, 1),
             "context_message":     context,
@@ -864,7 +1022,7 @@ def beta_dashboard() -> dict:
         ) from exc
 
 
-@app.post("/api/positions/open")
+@app.post("/api/positions/open", dependencies=[Depends(require_admin)])
 def open_position(body: OpenPositionIn) -> dict:
     tracker    = ExitTracker()
     entry_date = date.fromisoformat(body.entry_date) if body.entry_date else date.today()
@@ -876,7 +1034,7 @@ def open_position(body: OpenPositionIn) -> dict:
     return {"success": True}
 
 
-@app.post("/api/positions/close")
+@app.post("/api/positions/close", dependencies=[Depends(require_admin)])
 def close_position(body: ClosePositionIn) -> dict:
     ticker   = body.ticker.upper()
     try:
@@ -940,7 +1098,7 @@ def get_portfolio() -> dict:
     return {"holdings": result}
 
 
-@app.post("/api/portfolio")
+@app.post("/api/portfolio", dependencies=[Depends(require_admin)])
 def save_portfolio(body: PortfolioIn) -> dict:
     _PORTFOLIO_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = [
@@ -1168,6 +1326,7 @@ def backtest(body: BacktestParams) -> dict:
         "entry_threshold":  body.entry_threshold,
         "exit_threshold":   body.exit_threshold,
         "exit_mode":        body.exit_mode,
+        "hold_days":        body.hold_days,
         "take_profit_pct":  body.take_profit_pct,
         "stop_loss_pct":    body.stop_loss_pct,
         "trailing_stop_pct": body.trailing_stop_pct,

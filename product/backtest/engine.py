@@ -30,6 +30,7 @@ from data.sp500_universe import (
     prefetch_pit_dollar_volumes,
     release_pit_cache,
 )
+from product.satellite_policy import HOLD_TRADING_DAYS
 from scripts.run_combined_validation import load_fedfunds
 
 logger = logging.getLogger(__name__)
@@ -332,12 +333,30 @@ def _simulate(preloaded: dict, params: dict) -> dict:
         else params["end_date"]
     )
 
-    # Optimization mode overrides when hold_days is explicitly set
-    hold_days_param: Optional[int] = params.get("hold_days")
-    exit_rule:        str           = params.get("exit_rule", "A")
+    # Optimization mode: keyed on exit_rule, which only the parameter-grid
+    # script sends. It used to key on hold_days, which meant the UI could not
+    # choose a holding period at all without silently losing its threshold
+    # exits — that is why the Simulator was stuck at one year while the policy
+    # (and the exit tracker) had moved to two.
+    exit_rule_param: Optional[str] = params.get("exit_rule")
+    exit_rule:       str           = exit_rule_param or "A"
 
-    # Legacy UI mode params (only used when hold_days_param is None)
-    exit_mode:      str   = params.get("exit_mode", "252d_only")
+    # Holding period. Defaults to the validated policy hold rather than a
+    # literal, so the Simulator's default run reproduces what the engine
+    # actually enforces.
+    # `or` would be wrong here: 0 is falsy, so a hold_days of 0 would quietly
+    # become the default instead of being rejected, while -1 raised. An explicit
+    # None check makes every nonsense value fail the same way.
+    _hd = params.get("hold_days")
+    hold_days: int = HOLD_TRADING_DAYS if _hd is None else int(_hd)
+    if hold_days < 1:
+        raise ValueError(f"hold_days must be >= 1, got {hold_days}")
+
+    exit_mode:      str   = params.get("exit_mode", "hold_only")
+    # The mode names used to carry the number ("252d_only"); accept the old
+    # spellings so a cached page or a bookmarked call keeps working.
+    exit_mode = {"252d_only": "hold_only",
+                 "threshold_or_252d": "threshold_or_hold"}.get(exit_mode, exit_mode)
     exit_threshold: float = float(params.get("exit_threshold", 0.40))
 
     # Take profit — 0 means disabled; value is a fraction (e.g. 0.30 = +30%)
@@ -458,25 +477,26 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                 reason = "stop_loss"
             elif trailing_stop_pct > 0 and from_peak <= -trailing_stop_pct:
                 reason = "trailing_stop"
-            elif hold_days_param is not None:
-                # Optimization mode
-                if hold >= hold_days_param:
-                    reason = f"{hold_days_param}d"
+            elif exit_rule_param is not None:
+                # Optimization mode (parameter grid)
+                if hold >= hold_days:
+                    reason = f"{hold_days}d"
                 elif exit_rule == "B" and gain <= -0.40:
                     reason = "stop_loss"
             else:
-                # Legacy UI mode
-                if exit_mode == "252d_only":
-                    if hold >= 252:
-                        reason = "252d"
-                elif exit_mode == "threshold_or_252d":
-                    if hold >= 252:
-                        reason = "252d"
+                if exit_mode == "hold_only":
+                    if hold >= hold_days:
+                        reason = f"{hold_days}d"
+                elif exit_mode == "threshold_or_hold":
+                    if hold >= hold_days:
+                        reason = f"{hold_days}d"
                     elif comp is not None and comp < exit_threshold:
                         reason = "threshold"
                 elif exit_mode == "threshold_only":
-                    if hold >= 504:
-                        reason = "504d_cap"
+                    # No time limit, but never carry a sleeve past the point the
+                    # research covers — the cap is the policy hold, not a literal.
+                    if hold >= HOLD_TRADING_DAYS:
+                        reason = f"{HOLD_TRADING_DAYS}d_cap"
                     elif comp is not None and comp < exit_threshold:
                         reason = "threshold"
 
