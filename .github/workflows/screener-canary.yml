@@ -61,8 +61,16 @@ jobs:
       # library is installed deliberately — the rules-based fallback in
       # product/market_calendar.py would also work, but an alerter should not
       # itself be running on a fallback.
+      #
+      # Pinned, and wheels only. An alerter that pulls whatever PyPI serves
+      # today can fail for reasons that have nothing to do with the thing it
+      # watches — a broken release is a false alarm, a compromised one runs
+      # setup.py on the runner. Bump the pins on purpose, not by accident.
       - name: Install probe dependencies
-        run: pip install --quiet requests pandas_market_calendars
+        run: >-
+          pip install --quiet --only-binary :all:
+          requests==2.34.2
+          pandas_market_calendars==5.4.0
 
       - name: Probe /api/screener
         id: probe

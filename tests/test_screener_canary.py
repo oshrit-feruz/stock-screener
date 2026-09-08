@@ -72,7 +72,8 @@ def test_yesterdays_result_on_a_trading_day_is_stale():
     reason = check(200, _good(_YESTERDAY), _TODAY, trading_day=True)
     assert reason is not None
     assert "stale" in reason
-    assert _YESTERDAY in reason and _TODAY.isoformat() in reason
+    assert _YESTERDAY in reason, "the reason must say what was served"
+    assert _TODAY.isoformat() in reason, "and what was expected"
 
 
 def test_freshness_is_checked_only_after_the_ranking():

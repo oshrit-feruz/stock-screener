@@ -1003,7 +1003,16 @@ def health() -> dict:
     return {"status": "ok", "as_of": date.today().isoformat()}
 
 
-@app.get("/api/screener")
+@app.get(
+    "/api/screener",
+    responses={
+        503: {"description": (
+            "No usable screener result: nothing published within the lookback "
+            "window, the universe list is missing or stale, or an on-demand scan "
+            "scored too little of its universe to trust. The detail says which."
+        )},
+    },
+)
 def screener() -> dict:
     try:
         return _get_screener_data()
