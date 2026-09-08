@@ -16,6 +16,7 @@ Two production failures are pinned here:
 from __future__ import annotations
 
 import time
+import types
 
 import pytest
 
@@ -31,7 +32,10 @@ def _reset_state(monkeypatch):
     monkeypatch.setattr(m, "_sc_universe_fp", None)
     # A valid universe, so these tests exercise the scan/cache path and not the
     # separate universe-validation 503.
-    monkeypatch.setattr(m, "load_universe_list", lambda *a, **k: object())
+    # The serving path now reads len(ulist.tickers) to size the coverage check
+    # in _load_disk_cache; a bare object() no longer stands in for the list.
+    monkeypatch.setattr(m, "load_universe_list",
+                        lambda *a, **k: types.SimpleNamespace(tickers=["AAPL"]))
     monkeypatch.setattr(m, "_universe_fingerprint", lambda _u: "fp-test")
 
 

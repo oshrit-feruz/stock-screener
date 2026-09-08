@@ -48,6 +48,7 @@ from product.exit.exit_tracker import ExitTracker  # noqa: E402
 from product.market_calendar import is_trading_day  # noqa: E402
 from product.satellite_policy import HOLD_TRADING_DAYS, SCHEMA_VERSION  # noqa: E402
 from product.screener.daily_screener import (  # noqa: E402
+    ScreenerDegraded,
     ScreenerRow,
     _load_disk_cache,
     _universe_fingerprint,
@@ -678,21 +679,24 @@ def _screener_cache_dir():
     return _CACHE_DIR
 
 
-def _load_recent_published_result(universe_fp: str):
+def _load_recent_published_result(universe_fp: str, universe_size: int):
     """Newest usable result within the lookback window: (result, computed_on),
     or (None, None). Local disk first, then one fetch from the daily-state
-    branch per missing date. Fingerprint mismatches are discarded by
-    _load_disk_cache — a result computed under a superseded universe is not
-    'slightly stale', it is wrong."""
+    branch per missing date. Fingerprint mismatches and under-covered results
+    are both discarded by _load_disk_cache — a result computed under a
+    superseded universe is not 'slightly stale', it is wrong, and one that
+    scored a fraction of the universe is not a quiet day, it is a failed scan.
+    This walk never goes through run_screener, so the read-side check in
+    _load_disk_cache is the only guard between a bad file and a 200."""
     for d in _lookback_dates(date.today()):
         try:
-            cached = _load_disk_cache(d, universe_fp)
+            cached = _load_disk_cache(d, universe_fp, universe_size)
         except Exception:
             logger.exception("screener: disk-cache read failed for %s", d)
             cached = None
         if cached is None and _fetch_published_daily_result(d):
             try:
-                cached = _load_disk_cache(d, universe_fp)
+                cached = _load_disk_cache(d, universe_fp, universe_size)
             except Exception:
                 logger.exception("screener: fetched daily result unreadable for %s", d)
                 cached = None
@@ -737,7 +741,7 @@ def _get_screener_data() -> dict:
     # Prefer precomputed state. Local disk first, then the daily-state branch —
     # a JSON load / one small HTTP GET, fingerprint compare, no scan — safe on
     # the 512MB tier and the path the producer/consumer split intends.
-    cached, computed_on = _load_recent_published_result(universe_fp)
+    cached, computed_on = _load_recent_published_result(universe_fp, len(ulist.tickers))
     if cached is not None:
         if computed_on != date.today():
             logger.info("screener: serving result computed on %s (today is %s)",
@@ -1002,13 +1006,27 @@ def health() -> dict:
     return {"status": "ok", "as_of": date.today().isoformat()}
 
 
-@app.get("/api/screener")
+@app.get(
+    "/api/screener",
+    responses={
+        503: {"description": (
+            "No usable screener result: nothing published within the lookback "
+            "window, the universe list is missing or stale, or an on-demand scan "
+            "scored too little of its universe to trust. The detail says which."
+        )},
+    },
+)
 def screener() -> dict:
     try:
         return _get_screener_data()
     except ScreenerStateUnavailable as exc:
         # Same honesty rule as below: no state is a 503 with the reason, never a
         # 200 carrying an empty ranking.
+        raise HTTPException(status_code=503, detail=str(exc))
+    except ScreenerDegraded as exc:
+        # Only reachable on the on-demand scan path (SCREENER_ONDEMAND_SCAN=1):
+        # the scan scored too little of its universe to trust. Same rule — a
+        # 503 with the reason, not a 200 that looks like a quiet market.
         raise HTTPException(status_code=503, detail=str(exc))
     except UniverseListError as exc:
         # Loud by design. The universe list is produced by GitHub Actions and

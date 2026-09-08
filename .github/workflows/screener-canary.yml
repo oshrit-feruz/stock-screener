@@ -1,0 +1,113 @@
+name: Screener canary
+
+# Watches what the app actually serves, and says so when it is wrong.
+#
+# The daily screener runs in GitHub Actions and publishes a result the Render
+# web service fetches and serves. Either half can fail quietly: the run can go
+# green having scored nothing, the service can be up while /api/screener answers
+# 503, and the service's own staleness window means a dead producer is invisible
+# there for days. The September 2026 outage was found by opening the app.
+#
+# So this probes /api/screener the way a user would, after the daily run has had
+# time to publish, and holds it to a STRICTER bar than the service does: on a
+# trading day it must be serving today's result. On failure it opens a GitHub
+# issue (one per incident, not one per day); on recovery it closes it. GitHub
+# emails about issues — that is the channel, and it needs no secrets.
+on:
+  schedule:
+    # 14:00 UTC weekdays. The daily run fires at 11:30 UTC with a 30-minute
+    # timeout, and /api/screener caches in-process for an hour — so a stale
+    # answer at 14:00 is real, not a cache still holding yesterday.
+    - cron: "0 14 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      url_override:
+        description: >-
+          Probe this base URL instead of the deployed service. Point it at a
+          path that 404s to prove the alert reaches you end to end (an issue
+          should open and an email should arrive); dispatch again without it
+          to watch the issue close.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: screener-canary
+  cancel-in-progress: false
+
+env:
+  SCREENER_URL: ${{ inputs.url_override != '' && inputs.url_override || 'https://stock-screener-7lvr.onrender.com' }}
+  ISSUE_LABEL: screener-down
+  ISSUE_TITLE: "/api/screener is unavailable"
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      # Not the full requirements: this is a probe, not a scan. The calendar
+      # library is installed deliberately — the rules-based fallback in
+      # product/market_calendar.py would also work, but an alerter should not
+      # itself be running on a fallback.
+      #
+      # Pinned, and wheels only. An alerter that pulls whatever PyPI serves
+      # today can fail for reasons that have nothing to do with the thing it
+      # watches — a broken release is a false alarm, a compromised one runs
+      # setup.py on the runner. Bump the pins on purpose, not by accident.
+      - name: Install probe dependencies
+        run: >-
+          pip install --quiet --only-binary :all:
+          requests==2.34.2
+          pandas_market_calendars==5.4.0
+
+      - name: Probe /api/screener
+        id: probe
+        run: python scripts/screener_canary.py
+
+      # ── failure: open or update the incident issue ─────────────────────
+      - name: Open or update the incident issue
+        if: failure() && steps.probe.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          gh label create "$ISSUE_LABEL" --force \
+            --color B60205 \
+            --description "Opened by the screener-canary workflow while /api/screener is not serving usable results"
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          printf '\n---\n_Failing run: %s_\n' "$run_url" >> canary_report.md
+
+          existing="$(gh issue list --label "$ISSUE_LABEL" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "Incident issue #$existing is already open — adding this check to it."
+            gh issue comment "$existing" --body-file canary_report.md
+          else
+            echo "Opening a new incident issue."
+            gh issue create --title "$ISSUE_TITLE" --label "$ISSUE_LABEL" --body-file canary_report.md
+          fi
+
+      # ── success: close the incident issue if one is open ───────────────
+      - name: Close the incident issue on recovery
+        if: success()
+        run: |
+          set -euo pipefail
+          existing="$(gh issue list --label "$ISSUE_LABEL" --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$existing" ]; then
+            echo "No open incident issue — nothing to close."
+            exit 0
+          fi
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh issue comment "$existing" --body "$(printf 'Recovered — `/api/screener` is serving usable results again as of %s.\n\n_Passing run: %s_' "$(date -u +'%Y-%m-%d %H:%M UTC')" "$run_url")"
+          gh issue close "$existing" --reason completed
+          echo "Closed incident issue #$existing."

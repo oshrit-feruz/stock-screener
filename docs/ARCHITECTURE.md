@@ -130,6 +130,36 @@ empty because the universe rewrote itself under it. Widening a window that keeps
 being invalidated only postpones the next 503, and a stable universe still needs
 a window long enough to reach the last day the market was open.
 
+### How you find out
+
+Both September 2026 incidents were discovered the same way: by opening the app.
+Nothing in the system said anything, because the dangerous failures are the ones
+that stay green. A trading day where every ticker fails produced an empty
+ranking that looked exactly like a quiet market — saved, published, served as a
+200, workflow green. And `/api/screener` serves a result up to four trading days
+old before it admits anything is wrong, so a dead producer was invisible there
+for days.
+
+Two layers now, both GitHub-native, no new secrets:
+
+**The producer refuses to publish a degraded scan.** `run_screener` raises
+`ScreenerDegraded` when it scored under 80% of its universe — *before* the
+result is saved, so nothing that looks like a quiet day can reach the daily-state
+branch. The daily run exits non-zero and the workflow goes red, which is the one
+thing GitHub reliably emails about.
+
+**A canary watches what you actually see.** `.github/workflows/screener-canary.yml`
+probes the live `/api/screener` on weekdays at 14:00 UTC — after the daily run
+has published and the service's in-process cache has expired — and holds it to a
+stricter bar than the service holds itself: on a trading day it must be serving
+*today's* result. On failure it opens a GitHub issue labelled `screener-down`
+(one per incident, updated on each failing check) and closes it on recovery.
+That catches what the producer-side guard cannot: a broken deploy, a Render
+outage, a fingerprint mismatch, or a daily run that simply never fired.
+
+Dispatch the canary by hand with `url_override` pointed at a path that 404s to
+prove the whole chain — issue opened, email received — before trusting it.
+
 ### The position book is the one thing both halves write
 
 Everything else in the table has a single writer. The position book has two —

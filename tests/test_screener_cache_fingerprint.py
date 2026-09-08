@@ -68,17 +68,22 @@ def test_fingerprint_changes_with_as_of():
 
 # ── cache round-trip and invalidation ─────────────────────────────────────────
 
+# _load_disk_cache also enforces scan coverage against the universe size. These
+# tests are about the FINGERPRINT, and _result() carries a single row, so they
+# pass universe_size=1 to keep the coverage check satisfied and out of the way.
+# Coverage itself is pinned in test_daily_screener_degraded.py.
+
 def test_cache_hits_for_the_same_universe():
     fp = _universe_fingerprint(_ulist(["AAPL", "MSFT"]))
     _save_disk_cache(_result(), fp)
-    assert _load_disk_cache(_AS_OF, fp) is not None
+    assert _load_disk_cache(_AS_OF, fp, universe_size=1) is not None
 
 
 def test_cache_misses_when_the_universe_changed():
     """The month-boundary regression: same date, new list -> must recompute."""
     _save_disk_cache(_result(), _universe_fingerprint(_ulist(["AAPL", "MSFT"])))
     new_fp = _universe_fingerprint(_ulist(["AAPL", "NVDA"]))
-    assert _load_disk_cache(_AS_OF, new_fp) is None
+    assert _load_disk_cache(_AS_OF, new_fp, universe_size=1) is None
 
 
 def test_legacy_cache_without_fingerprint_is_discarded(tmp_path):
@@ -89,8 +94,10 @@ def test_legacy_cache_without_fingerprint_is_discarded(tmp_path):
         "buy_signals": [],
         "full_ranking": [],
     }))
-    assert _load_disk_cache(_AS_OF, _universe_fingerprint(_ulist(["AAPL"]))) is None
+    assert _load_disk_cache(_AS_OF, _universe_fingerprint(_ulist(["AAPL"])),
+                            universe_size=1) is None
 
 
 def test_absent_cache_returns_none():
-    assert _load_disk_cache(_AS_OF, _universe_fingerprint(_ulist(["AAPL"]))) is None
+    assert _load_disk_cache(_AS_OF, _universe_fingerprint(_ulist(["AAPL"])),
+                            universe_size=1) is None
