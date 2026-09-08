@@ -48,6 +48,7 @@ from product.exit.exit_tracker import ExitTracker  # noqa: E402
 from product.market_calendar import is_trading_day  # noqa: E402
 from product.satellite_policy import HOLD_TRADING_DAYS, SCHEMA_VERSION  # noqa: E402
 from product.screener.daily_screener import (  # noqa: E402
+    ScreenerDegraded,
     ScreenerRow,
     _load_disk_cache,
     _universe_fingerprint,
@@ -1009,6 +1010,11 @@ def screener() -> dict:
     except ScreenerStateUnavailable as exc:
         # Same honesty rule as below: no state is a 503 with the reason, never a
         # 200 carrying an empty ranking.
+        raise HTTPException(status_code=503, detail=str(exc))
+    except ScreenerDegraded as exc:
+        # Only reachable on the on-demand scan path (SCREENER_ONDEMAND_SCAN=1):
+        # the scan scored too little of its universe to trust. Same rule — a
+        # 503 with the reason, not a 200 that looks like a quiet market.
         raise HTTPException(status_code=503, detail=str(exc))
     except UniverseListError as exc:
         # Loud by design. The universe list is produced by GitHub Actions and

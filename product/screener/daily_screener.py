@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import sys
 import warnings
 from dataclasses import asdict, dataclass, field
@@ -71,6 +72,30 @@ _UNIVERSE_N = 100
 _MIN_HISTORY = 252
 _WARMUP_START = "2016-01-01"
 _CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "screener_cache"
+
+# The fraction of the universe a scan must actually score before its result may
+# be saved or served. Every per-ticker failure in run_screener is caught and
+# skipped — correctly, since one bad ticker must not sink the run — but that
+# means a day where EVERY ticker fails (dead API key, provider outage, rate
+# limit) produces an empty ranking that looks exactly like a quiet market:
+# saved to disk, published, served as a 200, and the run goes green. Nothing
+# anywhere compared what was scored against what was asked for.
+#
+# 0.8 is a judgement call. A healthy day loses 0-3 of 100 (a fresh S&P entrant
+# without a year of history, a transient fetch error); a real outage is
+# all-or-nothing. Twenty tickers of slack against false alarms, and every
+# systemic failure still trips it.
+_MIN_SCAN_COVERAGE = 0.8
+
+
+class ScreenerDegraded(RuntimeError):
+    """The scan scored too little of its universe to be trusted.
+
+    Raised BEFORE the result is saved, so a degraded scan is never written to
+    disk, never published to the daily-state branch, and never served. The
+    daily run's main() turns it into a non-zero exit — a red workflow, which is
+    the one thing GitHub reliably emails about.
+    """
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +402,21 @@ def run_screener(
         except Exception as exc:
             logger.warning("%s: unexpected error — %s", ticker, exc)
             continue
+
+    # Refuse to save or serve a scan that covered too little of its universe.
+    # Must run before _save_disk_cache: the whole point is that a degraded
+    # result never becomes a file that looks like a quiet day.
+    required = math.ceil(_MIN_SCAN_COVERAGE * len(universe))
+    if len(rows) < required:
+        scored = {r.ticker for r in rows}
+        missing = [t for t in universe if t not in scored]
+        shown = ", ".join(missing[:10]) + (" …" if len(missing) > 10 else "")
+        raise ScreenerDegraded(
+            f"Scored {len(rows)}/{len(universe)} tickers as of {as_of_date} "
+            f"(need at least {required}, {_MIN_SCAN_COVERAGE:.0%}). Refusing to "
+            f"publish a scan this incomplete — it would look like a quiet market. "
+            f"Not scored: {shown}. Check the price provider and EODHD_API_KEY."
+        )
 
     rows.sort(key=lambda r: (r.composite_score is None, -(r.composite_score or 0)))
 
