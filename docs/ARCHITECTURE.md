@@ -80,7 +80,7 @@ Three separate things kept it invisible:
 | Monthly Top-100 universe | `scripts/build_universe_list.py` via `.github/workflows/monthly-universe.yml` | daily screener, `/api/screener` | `data/universe/current.json`, **committed to main** |
 | Daily screening state, alerts | `.github/workflows/daily-screener.yml` | — | `automation/daily-state` branch |
 | The position book | `/api/positions/*` (Render) **and** the daily exit tracker (Actions) | both of those, plus the beta report | Supabase `public.bot_positions` |
-| Daily screener result (`data/screener_cache/<date>.json`) | `.github/workflows/daily-screener.yml` | `/api/screener` (raw-file fetch, 4-day lookback, `computed_on` provenance) | `automation/daily-state` branch |
+| Daily screener result (`data/screener_cache/<date>.json`) | `.github/workflows/daily-screener.yml` | `/api/screener` (raw-file fetch, 4-**trading**-day lookback, `computed_on` provenance) | `automation/daily-state` branch |
 | Prebuilt PIT grid + price cache | `scripts/build_full_cache.py` (manual) | Simulator/backtest | GitHub Release asset → `scripts/fetch_release_cache.py` |
 
 ### A month's universe is written once
@@ -108,6 +108,27 @@ refused to serve.
 Both halves are now guarded: the build exits before any provider work once the
 month is published, and refuses to rank at all while any pool member cannot
 produce a dollar-volume, naming it.
+
+### The staleness window is counted in trading days
+
+`/api/screener` serves the newest published result within a bounded window, and
+that window is measured in **trading days**, not calendar days — because the
+producer only emits on days the NYSE is open. A consumer counting calendar days
+spends its budget on days that could never have carried a result.
+
+That is not hypothetical. After Labor Day 2026 the four-calendar-day window from
+Tuesday reached back only to the Friday; Saturday, Sunday and the holiday
+consumed the rest. The one weekday left inside it had been computed under a
+universe that was since rebuilt, so the fingerprint check correctly discarded
+it — and `/api/screener` answered 503 with two perfectly good results sitting
+one day outside the window. Both halves now share one definition of "the market
+was open", in `product/market_calendar.py`.
+
+These two are the same outage seen from both ends, and neither fix subsumes the
+other. The window was too narrow because it counted in the wrong unit; it was
+empty because the universe rewrote itself under it. Widening a window that keeps
+being invalidated only postpones the next 503, and a stable universe still needs
+a window long enough to reach the last day the market was open.
 
 ### The position book is the one thing both halves write
 

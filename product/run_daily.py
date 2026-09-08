@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from product.alerts.alert_engine import Alert, AlertEngine, PortfolioAlert
 from product.exit.exit_tracker import ExitAlert, ExitTracker
+from product.market_calendar import is_trading_day
 from product.storage import positions as positions_store
 
 _ALERTS_DIR      = Path(__file__).parent.parent / "data" / "alerts"
@@ -36,24 +37,6 @@ _PORTFOLIO_FILE  = Path(__file__).parent.parent / "data" / "portfolio" / "portfo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("run_daily")
-
-
-def is_trading_day(day: date) -> bool:
-    """True if `day` is an NYSE trading day (weekday and not a market holiday).
-
-    Uses pandas_market_calendars' NYSE calendar. If the library or its data is
-    unavailable, falls back to a plain weekday check so a real trading day is
-    never silently skipped (a false 'open' is safer than a false 'closed' — the
-    downstream screener is itself date-aware).
-    """
-    try:
-        import pandas_market_calendars as mcal
-        nyse = mcal.get_calendar("NYSE")
-        schedule = nyse.schedule(start_date=day.isoformat(), end_date=day.isoformat())
-        return not schedule.empty
-    except Exception as exc:
-        logger.warning("NYSE calendar unavailable (%s); falling back to weekday check", exc)
-        return day.weekday() < 5
 
 
 def load_portfolio() -> list:

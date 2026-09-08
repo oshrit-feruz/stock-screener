@@ -27,8 +27,12 @@ def test_is_trading_day_christmas_holiday():
     assert rd.is_trading_day(date(2025, 12, 25)) is False   # Christmas
 
 
-def test_is_trading_day_calendar_unavailable_falls_back_to_weekday(monkeypatch):
+def test_is_trading_day_calendar_unavailable_falls_back_to_rules(monkeypatch):
     # Force the pandas_market_calendars import to fail inside is_trading_day.
+    # The fallback is holiday-aware, not weekday-only: /api/screener counts
+    # its lookback window with this predicate, and a holiday wrongly called
+    # open costs it one of four chances to find a published result.
+    # The rules themselves are covered in tests/test_market_calendar.py.
     import builtins
     real_import = builtins.__import__
 
@@ -40,6 +44,7 @@ def test_is_trading_day_calendar_unavailable_falls_back_to_weekday(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert rd.is_trading_day(date(2025, 1, 2)) is True      # weekday → open
     assert rd.is_trading_day(date(2025, 1, 4)) is False     # weekend → closed
+    assert rd.is_trading_day(date(2025, 1, 1)) is False     # holiday → closed
 
 
 # ── skip path: no engine work on a closed day ───────────────────────────────

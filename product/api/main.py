@@ -45,6 +45,7 @@ from product.alerts.alert_templates import (  # noqa: E402
 from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
+from product.market_calendar import is_trading_day  # noqa: E402
 from product.satellite_policy import HOLD_TRADING_DAYS, SCHEMA_VERSION  # noqa: E402
 from product.screener.daily_screener import (  # noqa: E402
     ScreenerRow,
@@ -596,13 +597,47 @@ _DAILY_STATE_RAW_BASE = os.environ.get(
     "https://raw.githubusercontent.com/oshrit-feruz/stock-screener/automation/daily-state",
 )
 
-# How far back a published daily result may be and still be served. The daily
-# run fires weekdays at 11:30 UTC, so "today's file" does not exist on
-# weekends, holidays, or any weekday morning before ~11:35 UTC. 4 calendar
-# days covers a long weekend plus the Monday-morning gap. This is BOUNDED
-# staleness with provenance — the response carries computed_on so a client
-# showing Friday's scan on Sunday says so — not a silent fallback.
-_DAILY_STATE_LOOKBACK_DAYS = 4
+# How far back a published daily result may be and still be served, counted in
+# TRADING days. The daily run fires weekdays at 11:30 UTC and produces nothing
+# on a day the NYSE is closed, so "today's file" does not exist on weekends,
+# holidays, or any weekday morning before ~11:35 UTC.
+#
+# The unit is the point. Counting CALENDAR days spends the budget on days that
+# could never have carried a result: over the 2026 Labor Day weekend, Sat/Sun/
+# Mon ate three of four calendar days, the one weekday left in the window
+# happened to carry a superseded universe fingerprint, and /api/screener went
+# to 503 with two perfectly good results sitting just outside the window.
+# Counting in the same unit the producer emits in makes the window mean "the
+# last 4 chances to publish", which is what it was always meant to mean.
+#
+# This is BOUNDED staleness with provenance — the response carries computed_on
+# so a client showing Wednesday's scan on Tuesday says so — not a silent
+# fallback.
+_DAILY_STATE_LOOKBACK_TDAYS = 4
+
+# Hard stop on the calendar walk behind that budget. Only reachable if the NYSE
+# calendar starts calling every day a holiday; without it that is an unbounded
+# loop inside a request. 30 calendar days is far past any real market closure.
+_DAILY_STATE_MAX_CALENDAR_WALK = 30
+
+
+def _lookback_dates(today: date):
+    """Today, then the previous _DAILY_STATE_LOOKBACK_TDAYS trading days.
+
+    Today is always tried first, even when the market is closed: a file may
+    have been published for it (a manual dispatch, or a run that fired before
+    a mid-session closure), and if one exists it is the newest thing there is.
+    """
+    yield today
+    remaining = _DAILY_STATE_LOOKBACK_TDAYS
+    day = today
+    for _ in range(_DAILY_STATE_MAX_CALENDAR_WALK):
+        if remaining <= 0:
+            return
+        day -= timedelta(days=1)
+        if is_trading_day(day):
+            remaining -= 1
+            yield day
 
 
 def _fetch_published_daily_result(as_of: date) -> bool:
@@ -649,8 +684,7 @@ def _load_recent_published_result(universe_fp: str):
     branch per missing date. Fingerprint mismatches are discarded by
     _load_disk_cache — a result computed under a superseded universe is not
     'slightly stale', it is wrong."""
-    for delta in range(_DAILY_STATE_LOOKBACK_DAYS + 1):
-        d = date.today() - timedelta(days=delta)
+    for d in _lookback_dates(date.today()):
         try:
             cached = _load_disk_cache(d, universe_fp)
         except Exception:
@@ -723,9 +757,10 @@ def _get_screener_data() -> dict:
             _sc_warming = False
         raise ScreenerStateUnavailable(
             f"No published screener result within the last "
-            f"{_DAILY_STATE_LOOKBACK_DAYS} days, and this service does not scan "
-            "on demand. Results are produced by the daily screener workflow in "
-            "GitHub Actions and published to the automation/daily-state branch; "
+            f"{_DAILY_STATE_LOOKBACK_TDAYS} trading days, and this service does "
+            "not scan on demand. Results are produced by the daily screener "
+            "workflow in GitHub Actions and published to the "
+            "automation/daily-state branch; "
             "check that the workflow is running and pushing data/screener_cache. "
             "(If the repository is private, the raw-file fetch returns 404 for "
             "everything — that failure mode looks exactly like this.) "
