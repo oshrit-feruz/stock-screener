@@ -2,9 +2,15 @@
 
 pandas_market_calendars is the source of truth, but it is an optional import:
 when it is missing, is_trading_day answers from rules instead. Those rules are
-what these tests pin, so every test here forces the fallback path — running
-them against the real library would prove nothing about the code that runs when
-the library is gone.
+what these tests pin, in two layers.
+
+The nyse_holidays tests call the rule table directly. It does not consult the
+library at all, so there is nothing to force — the table either reproduces the
+exchange's published calendar or it does not.
+
+Every is_trading_day test forces the fallback path, because that function does
+prefer the library: run against it, those tests would pass on its answers and
+prove nothing about the code that runs when it is gone.
 
 The fallback used to be a plain weekday check. That was written for the daily
 run, where calling a holiday "open" costs nothing: the screener runs and is
