@@ -14,7 +14,6 @@ with research sign-off):
 """
 from __future__ import annotations
 
-import json
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -33,6 +32,7 @@ from product.alerts.alert_templates import (  # noqa: E402
     format_position_update,
 )
 from product.satellite_policy import HOLD_TRADING_DAYS  # noqa: E402
+from product.storage import positions as storage  # noqa: E402
 
 # Single source of truth shared with the screener's published satellite_policy.
 _EXIT_HOLD_DAYS  = HOLD_TRADING_DAYS
@@ -43,9 +43,10 @@ _REMINDER_DAYS   = 30  # advance-notice window before exit
 # (weekends/holidays) instead of an exact == match that can be missed.
 _REMINDER_WINDOW_START = _EXIT_HOLD_DAYS - _REMINDER_DAYS  # hold - 30
 
-_POSITIONS_DIR = Path(__file__).parent.parent.parent / "data" / "positions"
-_OPEN_FILE     = _POSITIONS_DIR / "open_positions.json"
-_CLOSED_FILE   = _POSITIONS_DIR / "closed_positions.json"
+# The book lives in product/storage/positions.py -- one store shared with the
+# web service, so a position opened in the app is the same row this tracker
+# reads. It used to be two JSON files per machine, which meant the app and the
+# tracker were never looking at the same positions at all.
 
 logger = logging.getLogger(__name__)
 
@@ -87,35 +88,6 @@ class ExitTrackerResult:
     open_positions: List[Position] = field(default_factory=list)
 
 
-def _load_json_list(path: Path) -> List[dict]:
-    if not path.exists():
-        return []
-    try:
-        with open(path) as fh:
-            data = json.load(fh)
-        return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Could not load %s: %s", path, exc)
-        return []
-
-
-def _save_json_list(path: Path, data: List[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as fh:
-        json.dump(data, fh, indent=2, default=str)
-
-
-def _pos_to_dict(p: Position) -> dict:
-    return {
-        "ticker":           p.ticker,
-        "entry_date":       p.entry_date.isoformat(),
-        "entry_price":      p.entry_price,
-        "signal_composite": p.signal_composite,
-        "signal_drawdown":  p.signal_drawdown,
-        "reminder_sent":    p.reminder_sent,
-    }
-
-
 def _dict_to_pos(d: dict) -> Position:
     return Position(
         ticker           = d["ticker"],
@@ -130,9 +102,9 @@ def _dict_to_pos(d: dict) -> Position:
 class ExitTracker:
     """Tracks open positions and fires exit alerts at HOLD_TRADING_DAYS.
 
-    Positions are persisted at:
-      data/positions/open_positions.json
-      data/positions/closed_positions.json
+    Reads and writes the book through product.storage.positions, which is
+    backed by Supabase in production and by data/positions/*.json when no
+    credentials are configured (tests, local development).
     """
 
     def open_position(
@@ -152,23 +124,17 @@ class ExitTracker:
             signal_composite: composite_score at entry (for reference).
             signal_drawdown:  drawdown_pct at entry (for reference).
         """
-        positions = [_dict_to_pos(d) for d in _load_json_list(_OPEN_FILE)]
-
-        # Idempotent: skip if same ticker+entry_date already recorded
-        for p in positions:
-            if p.ticker == ticker and p.entry_date == entry_date:
-                logger.info("Position %s %s already recorded", ticker, entry_date)
-                return
-
-        positions.append(Position(
+        # Idempotency is the store's job now: on Supabase it is a unique
+        # constraint on (ticker, entry_date), so two writers racing on the same
+        # signal cannot both insert. The old scan-then-append could, because
+        # both would have read the list before either wrote.
+        storage.open_position(
             ticker           = ticker,
             entry_date       = entry_date,
             entry_price      = entry_price,
             signal_composite = signal_composite,
             signal_drawdown  = signal_drawdown,
-        ))
-        _save_json_list(_OPEN_FILE, [_pos_to_dict(p) for p in positions])
-        logger.info("Opened position: %s at %.2f on %s", ticker, entry_price, entry_date)
+        )
 
     def check_exits(
         self,
@@ -178,7 +144,7 @@ class ExitTracker:
         """Check all open positions for exit eligibility.
 
         A position at >= _EXIT_HOLD_DAYS trading days generates an EXIT alert
-        and is moved to closed_positions.json. A position at or past
+        and is marked closed in the book. A position at or past
         (_EXIT_HOLD_DAYS - _REMINDER_DAYS) trading days generates a one-time
         REMINDER alert (tracked via the persisted reminder_sent flag so a
         skipped run does not miss it).
@@ -194,11 +160,9 @@ class ExitTracker:
         if current_prices is None:
             current_prices = {}
 
-        positions  = [_dict_to_pos(d) for d in _load_json_list(_OPEN_FILE)]
-        closed     = _load_json_list(_CLOSED_FILE)
+        positions = [_dict_to_pos(d) for d in storage.load_open()]
 
-        alerts:     List[ExitAlert]  = []
-        still_open: List[Position]   = []
+        alerts: List[ExitAlert] = []
 
         for pos in positions:
             days_held = self._count_trading_days(pos.entry_date, today)
@@ -213,31 +177,44 @@ class ExitTracker:
                     days_held       = days_held,
                     realized_return = ret,
                 )
-                alerts.append(ExitAlert(
-                    ticker            = pos.ticker,
-                    entry_date        = pos.entry_date,
-                    exit_date         = today,
-                    entry_price       = pos.entry_price,
-                    current_price     = cur_price,
-                    realized_return   = ret,
-                    days_held         = days_held,
-                    is_win            = ret > 0,
-                    alert_type        = "EXIT",
-                    formatted_message = f"{copy['body']}\n\n{copy['disclaimer']}",
-                ))
-                closed.append({
-                    "ticker":          pos.ticker,
-                    "entry_date":      pos.entry_date.isoformat(),
-                    "entry_price":     pos.entry_price,
-                    "exit_date":       today.isoformat(),
-                    "exit_price":      cur_price,
-                    "realized_return": ret,
-                    "days_held":       days_held,
-                })
+                # Close first, and alert only if this run is the one that did
+                # it. A concurrent run or an /api/positions/close in between
+                # leaves close_position returning False -- announcing an exit we
+                # did not perform would send the user a second exit notice for
+                # one position.
+                #
+                # One row moves open -> closed in place. The previous code
+                # rebuilt both lists and rewrote two files at the end, so a
+                # crash between the two writes could drop a position from the
+                # book entirely or leave it in both.
+                if storage.close_position(
+                    ticker          = pos.ticker,
+                    entry_date      = pos.entry_date,
+                    exit_date       = today,
+                    exit_price      = cur_price,
+                    realized_return = ret,
+                    days_held       = days_held,
+                ):
+                    alerts.append(ExitAlert(
+                        ticker            = pos.ticker,
+                        entry_date        = pos.entry_date,
+                        exit_date         = today,
+                        entry_price       = pos.entry_price,
+                        current_price     = cur_price,
+                        realized_return   = ret,
+                        days_held         = days_held,
+                        is_win            = ret > 0,
+                        alert_type        = "EXIT",
+                        formatted_message = f"{copy['body']}\n\n{copy['disclaimer']}",
+                    ))
             else:
-                still_open.append(pos)
-                if not pos.reminder_sent and days_held >= _REMINDER_WINDOW_START:
-                    pos.reminder_sent = True   # persisted via still_open below
+                # mark_reminder_sent is a claim, not a note: it flips the flag
+                # only if it was unset and says whether this caller is the one
+                # that flipped it. Two overlapping runs both read False, so
+                # without that only one of them may announce the notice.
+                if (not pos.reminder_sent
+                        and days_held >= _REMINDER_WINDOW_START
+                        and storage.mark_reminder_sent(pos.ticker, pos.entry_date)):
                     copy = format_position_update(
                         ticker            = pos.ticker,
                         entry_price       = pos.entry_price,
@@ -262,9 +239,6 @@ class ExitTracker:
                         ),
                     ))
 
-        _save_json_list(_OPEN_FILE,   [_pos_to_dict(p) for p in still_open])
-        _save_json_list(_CLOSED_FILE, closed)
-
         return alerts
 
     def get_position_update(
@@ -283,7 +257,7 @@ class ExitTracker:
             unrealized_return, expected_return, pct_rank, context_copy.
             Returns None if ticker is not in open positions.
         """
-        open_raw = _load_json_list(_OPEN_FILE)
+        open_raw = storage.load_open()
         for d in open_raw:
             pos = _dict_to_pos(d)
             if pos.ticker.upper() == ticker.upper():

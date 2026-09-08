@@ -23,7 +23,7 @@ from typing import List, Literal, Optional
 import numpy as np
 import requests
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -53,6 +53,7 @@ from product.screener.daily_screener import (  # noqa: E402
     run_screener,
 )
 from product.screener.universe_list import UniverseListError, load_universe_list  # noqa: E402
+from product.storage import positions as positions_store  # noqa: E402
 from scripts.fetch_release_cache import fetch_and_extract as _fetch_release_cache  # noqa: E402
 from scripts.seed_cache import seed as _seed_cache  # noqa: E402
 
@@ -306,8 +307,6 @@ app.add_middleware(
 
 _DATA_DIR      = _ROOT / "data"
 _ALERTS_DIR    = _DATA_DIR / "alerts"
-_OPEN_FILE     = _DATA_DIR / "positions" / "open_positions.json"
-_CLOSED_FILE   = _DATA_DIR / "positions" / "closed_positions.json"
 _PORTFOLIO_FILE = _DATA_DIR / "portfolio" / "portfolio.json"
 _WEB_DIR       = Path(__file__).parent.parent / "web"
 # The internal console lives OUTSIDE _WEB_DIR on purpose: everything under
@@ -526,24 +525,19 @@ def _context_msg(ret: float) -> str:
 
 
 def _load_open_positions(raise_on_corrupt: bool = False) -> list:
-    """Read open positions, tolerating a missing file.
+    """Read open positions from the shared book.
 
-    If raise_on_corrupt=True, raises an exception for unreadable/corrupt files
-    instead of returning an empty list (useful for close_position).
+    Read paths that only display positions pass raise_on_corrupt=False and get
+    an empty list if the store is unreachable, so one failing panel does not
+    take the whole page down. close_position passes True: a write must not be
+    built on top of a read that silently returned nothing.
     """
-    if not _OPEN_FILE.exists():
-        return []
     try:
-        data = json.loads(_OPEN_FILE.read_text())
-        if not isinstance(data, list):
-            if raise_on_corrupt:
-                raise ValueError("Storage file is not a valid list")
-            return []
-        return data
-    except Exception as exc:
+        return positions_store.load_open()
+    except positions_store.StorageError as exc:
         if raise_on_corrupt:
             raise
-        print(f"[WARN] failed to read {_OPEN_FILE}: {exc}")
+        print(f"[WARN] could not read the position book: {exc}")
         return []
 
 
@@ -1065,25 +1059,46 @@ def beta_dashboard() -> dict:
         ) from exc
 
 
-@app.post("/api/positions/open", dependencies=[Depends(require_admin)])
+@app.post(
+    "/api/positions/open",
+    dependencies=[Depends(require_admin)],
+    responses={503: {"description": "The position book is unreachable; nothing was recorded."}},
+)
 def open_position(body: OpenPositionIn) -> dict:
     tracker    = ExitTracker()
     entry_date = date.fromisoformat(body.entry_date) if body.entry_date else date.today()
-    tracker.open_position(
-        ticker      = body.ticker.upper(),
-        entry_date  = entry_date,
-        entry_price = body.entry_price,
-    )
+    try:
+        tracker.open_position(
+            ticker      = body.ticker.upper(),
+            entry_date  = entry_date,
+            entry_price = body.entry_price,
+        )
+    except positions_store.StorageError as exc:
+        raise HTTPException(status_code=503, detail=f"Storage error: {exc}") from exc
     return {"success": True}
 
 
-@app.post("/api/positions/close", dependencies=[Depends(require_admin)])
+@app.post(
+    "/api/positions/close",
+    dependencies=[Depends(require_admin)],
+    responses={
+        404: {"description": "No such open position."},
+        500: {"description": "The position book could not be read."},
+        503: {"description": "The position book is unreachable; nothing was closed."},
+    },
+)
 def close_position(body: ClosePositionIn) -> dict:
     ticker   = body.ticker.upper()
     try:
         open_raw = _load_open_positions(raise_on_corrupt=True)
+    except positions_store.StorageError as exc:
+        # Same failure as the close below, so the same code: an outage is
+        # retryable and 503 says so. Reporting 500 here and 503 four lines
+        # down would have told a client two different things about one
+        # Supabase outage, in one request.
+        raise HTTPException(status_code=503, detail=f"Storage error: {exc}") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Storage error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Storage error: {exc}") from exc
     pos      = next((p for p in open_raw if p["ticker"] == ticker), None)
     if not pos:
         raise HTTPException(status_code=404, detail=f"Position {ticker} not found")
@@ -1096,17 +1111,22 @@ def close_position(body: ClosePositionIn) -> dict:
     days_held   = int(np.busday_count(entry_date.isoformat(), today.isoformat()))
     final_ret   = cur_price / entry_price - 1
 
-    closed = json.loads(_CLOSED_FILE.read_text()) if _CLOSED_FILE.exists() else []
-    closed.append({
-        **pos,
-        "exit_date":       today.isoformat(),
-        "exit_price":      cur_price,
-        "realized_return": final_ret,
-        "days_held":       days_held,
-    })
-    remaining = [p for p in open_raw if p["ticker"] != ticker]
-    _OPEN_FILE.write_text(json.dumps(remaining, indent=2))
-    _CLOSED_FILE.write_text(json.dumps(closed, indent=2))
+    try:
+        closed = positions_store.close_position(
+            ticker          = ticker,
+            entry_date      = entry_date,
+            exit_date       = today,
+            exit_price      = cur_price,
+            realized_return = final_ret,
+            days_held       = days_held,
+        )
+    except positions_store.StorageError as exc:
+        raise HTTPException(status_code=503, detail=f"Storage error: {exc}") from exc
+    if not closed:
+        # It was open when we read it a moment ago, so something else closed it
+        # in between. Saying "not found" is more honest than reporting a close
+        # this request did not perform.
+        raise HTTPException(status_code=404, detail=f"Position {ticker} not found")
     return {"success": True, "final_return_pct": round(final_ret * 100, 1)}
 
 

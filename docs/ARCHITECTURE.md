@@ -78,9 +78,38 @@ Three separate things kept it invisible:
 | Artifact | Produced by | Consumed by | Transport |
 |---|---|---|---|
 | Monthly Top-100 universe | `scripts/build_universe_list.py` via `.github/workflows/monthly-universe.yml` | daily screener, `/api/screener` | `data/universe/current.json`, **committed to main** |
-| Daily screening state, positions, alerts | `.github/workflows/daily-screener.yml` | — | `automation/daily-state` branch |
+| Daily screening state, alerts | `.github/workflows/daily-screener.yml` | — | `automation/daily-state` branch |
+| The position book | `/api/positions/*` (Render) **and** the daily exit tracker (Actions) | both of those, plus the beta report | Supabase `public.bot_positions` |
 | Daily screener result (`data/screener_cache/<date>.json`) | `.github/workflows/daily-screener.yml` | `/api/screener` (raw-file fetch, 4-day lookback, `computed_on` provenance) | `automation/daily-state` branch |
 | Prebuilt PIT grid + price cache | `scripts/build_full_cache.py` (manual) | Simulator/backtest | GitHub Release asset → `scripts/fetch_release_cache.py` |
+
+### The position book is the one thing both halves write
+
+Everything else in the table has a single writer. The position book has two —
+the app, when you press Open or Close, and the daily run, when a position
+reaches its exit — and they run on different machines. That is why it is the
+one artifact in Postgres rather than in git.
+
+It used to be `data/positions/*.json`, and that could not work. Actions
+committed those files to `automation/daily-state`; Render read the same paths
+from its own checkout of main, which holds `[]`, wrote back to a container
+filesystem that is discarded on restart, and fetched only `data/screener_cache`
+from that branch. So a position opened in the app was invisible to the exit
+tracker — nothing would ever fire its exit — and was gone at the next restart.
+Neither side was wrong on its own; they were never looking at the same bytes.
+
+All reads and writes now go through `product/storage/positions.py`. It talks to
+Supabase when `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are both set, and falls
+back to the JSON files otherwise, which is what lets the test suite and local
+development run with no credentials and no network. The fallback is not an
+error handler: if Supabase is configured but unreachable the module raises,
+because silently writing to a file nobody reads is the failure it exists to
+prevent.
+
+Access is service-role only. RLS is enabled on `bot_positions` with **no
+policies**, so the anon key — which is public and ships in the browser — can
+neither read nor write it; the service role bypasses RLS. `SUPABASE_SERVICE_KEY`
+is server-side only: never in `product/web/`, never in a URL.
 
 The universe list is the one artifact committed to **main**, deliberately: it
 must reach the Render web service, and a Render redeploy once a month is the

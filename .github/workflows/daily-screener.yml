@@ -41,12 +41,18 @@ concurrency:
 env:
   STATE_BRANCH: automation/daily-state
   # The small state that must persist run-to-run (all git-tracked, not ignored):
-  # positions, screener state, daily alerts, and the beta-tracking report.
+  # screener state, daily alerts, and the beta-tracking report.
   # data/screener_cache is also PUBLISHED here: the Render web service fetches
   # data/screener_cache/<date>.json from this branch over raw.githubusercontent
   # and serves it — it never runs the 100-ticker scan itself (512MB tier; see
   # docs/ARCHITECTURE.md "Actions computes, Render reads"). Removing it from
   # this list silently takes /api/screener back to permanent 503.
+  #
+  # data/positions is still listed, but only as a safety net for the window
+  # before SUPABASE_URL/SUPABASE_SERVICE_KEY are configured: until then the run
+  # falls back to the JSON files, and dropping them from this list would throw
+  # that fallback away every run. Once the book is in Supabase these files stop
+  # changing and persisting them is a no-op. Remove it then, not before.
   STATE_PATHS: data/positions data/screener_state data/alerts data/beta_tracking data/screener_cache
 
 jobs:
@@ -121,6 +127,15 @@ jobs:
           # PriceData as the web service; without this secret every fetch returns
           # empty and the run produces no signals. Add it as a repo Actions secret.
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          # The position book. Both must be set for the run to read and write
+          # the same book the web service uses; with either missing the run
+          # silently falls back to data/positions/*.json, which is the split
+          # that made positions opened in the app invisible here.
+          # SUPABASE_SERVICE_KEY is the service_role key -- it bypasses RLS and
+          # is the only way into bot_positions. Repo Actions secrets, never
+          # printed: the run logs are public if the repo is.
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         # run_daily.py exits non-zero on any unhandled error (sys.exit(main());
         # main() returns 1 and logs a full traceback), so a failed run fails the
         # step — and therefore the workflow — visibly. No extra handling needed.

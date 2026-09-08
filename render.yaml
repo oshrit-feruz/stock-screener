@@ -30,6 +30,7 @@ services:
       # exposes nothing. Set a long random value in the Render dashboard and
       # open the console once as /internal/?k=<value>; it stores a cookie.
       - key: INTERNAL_CONSOLE_TOKEN
+        generateValue: true
       # Required for the mutating endpoints (/api/positions/open, /api/positions/
       # close, POST /api/portfolio). Writes FAIL CLOSED without it: leave this
       # unset and every write is refused, so a misconfigured deploy stops the
@@ -41,6 +42,20 @@ services:
       # the platform access log, and this token can trade the tracked book.
       - key: ADMIN_TOKEN
         generateValue: true
+      # The position book (product/storage/positions.py). Both of these must be
+      # set for the book to live in Supabase; with either one missing the code
+      # falls back to data/positions/*.json, which on Render means a container
+      # disk that is discarded on restart and that the daily run cannot see —
+      # the exact split that made positions vanish before.
+      #
+      # SUPABASE_SERVICE_KEY is the service_role key, not the anon key. It
+      # bypasses RLS, and RLS on bot_positions has no policies, so this key is
+      # the only way in. It must never reach a browser: server-side only, never
+      # in product/web/, never in a URL.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
 
   # The daily scheduled run has moved to GitHub Actions (free tier) —
   # see .github/workflows/daily-screener.yml. Only the web service runs on Render.

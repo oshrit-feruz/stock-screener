@@ -35,8 +35,11 @@ def _stub_market(monkeypatch):
 
 
 def _set_positions(monkeypatch, open_rows, closed_rows):
-    monkeypatch.setattr(bt, "_load",
-                        lambda path: open_rows if "open" in path.name else closed_rows)
+    # The report reads the book through product.storage.positions, so inject at
+    # that seam rather than at a file path -- the same stub then holds whether
+    # the store is backed by Supabase or by the local JSON fallback.
+    monkeypatch.setattr(bt.storage, "load_open",   lambda: open_rows)
+    monkeypatch.setattr(bt.storage, "load_closed", lambda: closed_rows)
 
 
 # ── no-positions state ──────────────────────────────────────────────────────

@@ -29,10 +29,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from product.alerts.alert_engine import Alert, AlertEngine, PortfolioAlert
 from product.exit.exit_tracker import ExitAlert, ExitTracker
+from product.storage import positions as positions_store
 
 _ALERTS_DIR      = Path(__file__).parent.parent / "data" / "alerts"
 _PORTFOLIO_FILE  = Path(__file__).parent.parent / "data" / "portfolio" / "portfolio.json"
-_OPEN_POS_FILE   = Path(__file__).parent.parent / "data" / "positions" / "open_positions.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("run_daily")
@@ -221,8 +221,10 @@ def run(today: date) -> int:
 
     # Step 7: Structured end summary
     try:
-        open_count = len(json.loads(_OPEN_POS_FILE.read_text())) if _OPEN_POS_FILE.exists() else 0
+        open_count = positions_store.count_open()
     except Exception:
+        # The summary line is cosmetic; a store hiccup must not fail the run
+        # after the screener and alerts have already done their work.
         open_count = 0
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
