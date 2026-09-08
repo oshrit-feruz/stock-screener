@@ -16,6 +16,14 @@ var _portfolio = []; // [{ticker, entry_price, alert_up_pct, alert_down_pct}]
 // "Unexpected end of JSON input" at the user. Read the body as text first so
 // an empty/garbage body becomes a friendly, retryable error instead. A non-ok
 // status with a JSON {detail} still surfaces that detail.
+// The server's own message when there is one, else the caller's wording.
+// Matters for the write endpoints: a 403 from the admin gate says how to sign
+// in, and a generic "try again" would hide that behind a retry loop.
+function errText(e, fallback) {
+  var msg = e ? e.message : null;
+  return msg || fallback;
+}
+
 function parseJson(r) {
   return r.text().then(function (text) {
     var data = null;
@@ -409,7 +417,7 @@ function trackPosition(ticker) {
         showToast('Failed to track. Try again.');
       }
     })
-    .catch(function () { showToast('Failed to track. Try again.'); });
+    .catch(function (e) { showToast(errText(e, 'Failed to track. Try again.')); });
 }
 
 // ── Positions ──────────────────────────────────────────────────────────────────
@@ -489,7 +497,7 @@ function closePosition(ticker) {
         showToast('Failed to close position.');
       }
     })
-    .catch(function () { showToast('Failed to close position.'); });
+    .catch(function (e) { showToast(errText(e, 'Failed to close position.')); });
 }
 
 // ── Beta tracking ────────────────────────────────────────────────────────────────
