@@ -224,7 +224,10 @@ def test_old_format_cache_file_still_loads(screener, tmp_path):
     The ranking has to cover the stubbed two-ticker universe: _load_disk_cache
     also refuses a file whose ranking is too thin to trust, and an EMPTY
     ranking is exactly the shape it refuses. The rows are old-format on
-    purpose — no active/target fields — which is what this test is about."""
+    purpose — no active/target fields — which is what this test is about.
+    They are also the universe's OWN tickers: a fixture that stamps the
+    fingerprint for {AAA, BBB} and then lists some other name is not a cache
+    that universe could ever have produced."""
     _old_row = lambda t: {  # noqa: E731 — a one-line row factory reads better inline
         "ticker": t, "current_price": 1.0, "high_52w": 2.0, "drawdown_pct": 0.5,
         "dip_score": 1.0, "momentum_score": 1.0, "volume_score": 1.0,
@@ -233,8 +236,8 @@ def test_old_format_cache_file_still_loads(screener, tmp_path):
     old = {
         "as_of_date": "2024-03-01",
         "universe_fingerprint": ds._universe_fingerprint(ds.load_universe_list()),
-        "buy_signals": [_old_row("OLD")],
-        "full_ranking": [_old_row("OLD"), _old_row("BBB")],
+        "buy_signals": [_old_row("AAA")],
+        "full_ranking": [_old_row("AAA"), _old_row("BBB")],
     }
     (tmp_path / "2024-03-01.json").write_text(json.dumps(old))
     res = ds.run_screener(as_of_date=date(2024, 3, 1), prices=_Prices())
