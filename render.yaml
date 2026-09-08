@@ -24,6 +24,12 @@ services:
       # release assets download without one; leave unset in that case.
       - key: GITHUB_TOKEN
         sync: false
+      # Shared token gating the internal console at /internal/ (see
+      # product/api/main.py::internal_console). Leave it unset and the page
+      # does not exist — the gate fails closed, so forgetting this variable
+      # exposes nothing. Set a long random value in the Render dashboard and
+      # open the console once as /internal/?k=<value>; it stores a cookie.
+      - key: INTERNAL_CONSOLE_TOKEN
       # Required for the mutating endpoints (/api/positions/open, /api/positions/
       # close, POST /api/portfolio). Writes FAIL CLOSED without it: leave this
       # unset and every write is refused, so a misconfigured deploy stops the
