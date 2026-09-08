@@ -34,8 +34,13 @@ def test_report_returns_latest_annual_with_yoy(ef):
         ("2023-12-31", "2024-02-15", 1000.0),
     ]))
     r = ef.get_revenue_report("FAKE")
-    assert r == {"revenue": 1100.0, "period_end": "2024-12-31",
-                 "filed": "2025-02-15", "form": "10-K", "yoy_pct": 10.0}
+    assert {"revenue": r["revenue"], "period_end": r["period_end"],
+            "filed": r["filed"], "form": r["form"], "yoy_pct": r["yoy_pct"]} == {
+        "revenue": 1100.0, "period_end": "2024-12-31",
+        "filed": "2025-02-15", "form": "10-K", "yoy_pct": 10.0,
+    }
+    assert r["history"][0] == {"revenue": 1100.0, "period_end": "2024-12-31",
+                                "filed": "2025-02-15", "form": "10-K", "yoy_pct": 10.0}
 
 
 def test_no_lag_newest_filing_is_visible(ef):
@@ -56,6 +61,51 @@ def test_no_facts_returns_none(ef):
     assert ef.get_revenue_report("FAKE") is None
 
 
+def test_history_includes_every_annual_entry_newest_first(ef):
+    ef._facts_mem["FAKE"] = (time.time(), _facts([
+        ("2024-12-31", "2025-02-15", 1100.0),
+        ("2023-12-31", "2024-02-15", 1000.0),
+        ("2022-12-31", "2023-02-15", 900.0),
+    ]))
+    r = ef.get_revenue_report("FAKE")
+    assert [h["period_end"] for h in r["history"]] == [
+        "2024-12-31", "2023-12-31", "2022-12-31"]
+    assert [h["yoy_pct"] for h in r["history"]] == [10.0, pytest.approx(11.1), None]
+    assert r["history"][0] == r["history"][0] | {  # sanity: top-level mirrors history[0]
+        "revenue": r["revenue"], "period_end": r["period_end"],
+        "filed": r["filed"], "form": r["form"], "yoy_pct": r["yoy_pct"],
+    }
+
+
+def test_history_capped_at_ten_years_but_yoy_uses_the_eleventh(ef):
+    """The 10th-kept year's yoy_pct still needs the (dropped) 11th year as its
+    prior — cap AFTER computing yoy, not by slicing the source list first."""
+    vals = [(f"{2024-i}-12-31", f"{2025-i}-02-15", 1000.0 + i) for i in range(12)]
+    ef._facts_mem["FAKE"] = (time.time(), _facts(vals))
+    r = ef.get_revenue_report("FAKE")
+    assert len(r["history"]) == 10
+    assert r["history"][-1]["period_end"] == "2015-12-31"
+    assert r["history"][-1]["yoy_pct"] is not None, \
+        "the oldest KEPT year must still get yoy vs the 11th (dropped) year"
+
+
+def test_history_yoy_gap_is_none_not_a_multiyear_delta(ef):
+    """A missing fiscal year (tag change, restatement) must not let yoy_pct
+    silently compare across two years and read like a one-year change."""
+    ef._facts_mem["FAKE"] = (time.time(), _facts([
+        ("2024-12-31", "2025-02-15", 1100.0),
+        # 2023 missing
+        ("2022-12-31", "2023-02-15", 900.0),
+    ]))
+    r = ef.get_revenue_report("FAKE")
+    assert r["history"][0]["yoy_pct"] is None
+
+
+def test_history_empty_returns_none_not_padded(ef):
+    ef._facts_mem["FAKE"] = None
+    assert ef.get_revenue_report("FAKE") is None
+
+
 # ── endpoint contract ─────────────────────────────────────────────────────────
 
 def _with_report(monkeypatch, report):
@@ -65,16 +115,34 @@ def _with_report(monkeypatch, report):
     monkeypatch.setattr(m, "_get_edgar_report_client", lambda: _Stub())
 
 
+_H2024 = {"revenue": 1100.0, "period_end": "2024-12-31",
+          "filed": "2025-02-15", "form": "10-K", "yoy_pct": 10.0}
+_H2023 = {"revenue": 1000.0, "period_end": "2023-12-31",
+          "filed": "2024-02-15", "form": "10-K", "yoy_pct": None}
+
+
 def test_endpoint_ok_shape(monkeypatch):
-    _with_report(monkeypatch, {"revenue": 1100.0, "period_end": "2024-12-31",
-                               "filed": "2025-02-15", "form": "10-K", "yoy_pct": 10.0})
+    _with_report(monkeypatch, {**_H2024, "history": [_H2024, _H2023]})
     out = m.stock_fundamentals("aapl")
     assert out == {
         "ticker": "AAPL", "status": "ok",
         "revenue": {"value": 1100.0, "period_end": "2024-12-31", "yoy_pct": 10.0},
         "filing": {"filed": "2025-02-15", "form": "10-K"},
+        "history": [_H2024, _H2023],
         "source": "SEC EDGAR companyfacts",
     }
+
+
+def test_endpoint_history_newest_first_and_matches_latest(monkeypatch):
+    _with_report(monkeypatch, {**_H2024, "history": [_H2024, _H2023]})
+    out = m.stock_fundamentals("AAPL")
+    assert [h["period_end"] for h in out["history"]] == ["2024-12-31", "2023-12-31"]
+    newest = out["history"][0]
+    assert newest["revenue"] == out["revenue"]["value"]
+    assert newest["period_end"] == out["revenue"]["period_end"]
+    assert newest["yoy_pct"] == out["revenue"]["yoy_pct"]
+    assert newest["filed"] == out["filing"]["filed"]
+    assert newest["form"] == out["filing"]["form"]
 
 
 def test_endpoint_unavailable_when_no_data(monkeypatch):
