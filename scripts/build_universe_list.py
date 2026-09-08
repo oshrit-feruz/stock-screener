@@ -79,8 +79,8 @@ def _first_trading_day(year: int, month: int) -> date | None:
     return spy.index.min().date()
 
 
-def _already_published(as_of: date) -> bool:
-    """True if a list for `as_of` is already committed.
+def _already_published(as_of: date, top_n: int) -> bool:
+    """True if a USABLE list for `as_of` is already committed.
 
     The workflow runs on days 1-5 so a single failed run self-heals. Those extra
     days are retries for a FAILED run — not a re-rank. Once a month's list is
@@ -99,6 +99,11 @@ def _already_published(as_of: date) -> bool:
     short ranking all abort before the write), so a list that exists for this
     as_of was produced by a run that passed every check. Re-ranking it daily can
     only churn. `--force` is the deliberate override.
+
+    What it validates is deliberately structural — shape, as_of, size — and
+    never the freshly computed membership. That distinction is the whole fix:
+    comparing membership is exactly what let a transient data problem reopen a
+    published month.
     """
     if not _OUT.exists():
         return False
@@ -106,7 +111,23 @@ def _already_published(as_of: date) -> bool:
         cur = json.loads(_OUT.read_text())
     except Exception:
         return False
-    return cur.get("as_of") == as_of.isoformat()
+    # Valid JSON is not a valid artifact. A list or a string here would make
+    # .get() raise and fail the job outright, and an artifact carrying the right
+    # as_of but no usable tickers would be SEALED for the month — write-once
+    # turns "today's file is wrong" from self-healing into permanent. So accept
+    # a published month only when the file is one the consumer would accept:
+    # the checks below mirror product/screener/universe_list.load_universe_list.
+    if not isinstance(cur, dict):
+        return False
+    if cur.get("as_of") != as_of.isoformat():
+        return False
+    tickers = cur.get("tickers")
+    # Size is part of the contract too. A hand-run `--top-n 1` writes a
+    # one-ticker file; without this, the scheduled Top-100 run would see the
+    # month as published and leave it that way until the next month.
+    if not isinstance(tickers, list) or len(tickers) != top_n:
+        return False
+    return all(isinstance(t, str) and t for t in tickers)
 
 
 def _atomic_write_pickle(target: Path, obj) -> None:
@@ -459,7 +480,7 @@ def main() -> int:
     # fingerprint — so this exits before ~500 ticker fetches, not after them.
     # --dry-run is exempt: its whole purpose is to show what this month WOULD
     # rank, which an early return would hide.
-    if _already_published(as_of) and not (args.force or args.dry_run):
+    if _already_published(as_of, args.top_n) and not (args.force or args.dry_run):
         print(f"Universe list already published for {as_of} — nothing to do. "
               f"(Pass --force to re-rank and rewrite; that changes the "
               f"fingerprint and invalidates published screener results.)")

@@ -366,27 +366,31 @@ def _publish(tmp_path, monkeypatch, as_of: str, tickers: list[str]) -> Path:
 
 def test_a_published_month_is_not_republished(tmp_path, monkeypatch):
     _publish(tmp_path, monkeypatch, "2026-09-01", ["AAPL", "MSFT"])
-    assert bul._already_published(_AS_OF) is True
+    assert bul._already_published(_AS_OF, 2) is True
 
 
 def test_the_decision_cannot_depend_on_the_ranking():
     """The regression, pinned where it cannot be faked. The guard used to take
     the freshly computed tickers and require them to match; that is precisely
     how a transient data problem reopened a published month and churned the
-    fingerprint. Taking only the as-of date makes that impossible by
-    construction, so the signature is the assertion."""
+    fingerprint. It takes the as-of date and the requested size — both known
+    before any ranking runs — and no computed membership, which makes the
+    churn impossible by construction. The signature is the assertion."""
     import inspect
-    assert list(inspect.signature(bul._already_published).parameters) == ["as_of"]
+    params = list(inspect.signature(bul._already_published).parameters)
+    assert params == ["as_of", "top_n"]
+    assert "tickers" not in params, \
+        "a computed ticker list must never reach this decision"
 
 
 def test_a_different_month_is_not_yet_published(tmp_path, monkeypatch):
     _publish(tmp_path, monkeypatch, "2026-08-03", ["AAPL", "MSFT"])
-    assert bul._already_published(_AS_OF) is False
+    assert bul._already_published(_AS_OF, 2) is False
 
 
 def test_no_file_means_not_published(tmp_path, monkeypatch):
     monkeypatch.setattr(bul, "_OUT", tmp_path / "nothing.json")
-    assert bul._already_published(_AS_OF) is False
+    assert bul._already_published(_AS_OF, 2) is False
 
 
 def test_an_unreadable_file_means_not_published(tmp_path, monkeypatch):
@@ -395,7 +399,7 @@ def test_an_unreadable_file_means_not_published(tmp_path, monkeypatch):
     out = tmp_path / "current.json"
     out.write_text("{ not json")
     monkeypatch.setattr(bul, "_OUT", out)
-    assert bul._already_published(_AS_OF) is False
+    assert bul._already_published(_AS_OF, 2) is False
 
 
 # ── unrankable members: the silent substitution ─────────────────────────────
@@ -502,3 +506,65 @@ def test_a_past_month_with_no_trading_day_is_an_error(monkeypatch):
     SPY's calendar could not be read, which is a real failure."""
     monkeypatch.setattr(bul, "_first_trading_day", lambda y, m: None)
     assert bul._resolve_as_of("2020-01") == (None, 1)
+
+
+# ── a published month must be a USABLE month ────────────────────────────────
+#
+# Write-once turns "today's file is wrong" from self-healing into permanent, so
+# the guard has to check that what is already there is worth keeping. It accepts
+# only a file the consumer would accept — the checks mirror
+# product/screener/universe_list.load_universe_list — plus the requested size.
+
+def _write(tmp_path, monkeypatch, text: str) -> None:
+    out = tmp_path / "current.json"
+    out.write_text(text)
+    monkeypatch.setattr(bul, "_OUT", out)
+
+
+def test_valid_json_that_is_not_an_object_is_not_published(tmp_path, monkeypatch):
+    """A JSON list used to reach .get() and raise AttributeError, failing the
+    job outright rather than rebuilding."""
+    _write(tmp_path, monkeypatch, '["AAPL", "MSFT"]')
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_a_json_string_is_not_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, '"2026-09-01"')
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_the_right_month_with_no_tickers_is_not_published(tmp_path, monkeypatch):
+    """The dangerous case: as_of matches, so the month would be sealed around an
+    artifact the screener refuses to load."""
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01"}))
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_an_empty_ticker_list_is_not_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": []}))
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_a_short_list_is_not_published(tmp_path, monkeypatch):
+    """A hand-run `--top-n 1` writes a one-ticker file. Without the size check
+    the scheduled Top-100 run would call the month done and leave it that way
+    until October."""
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": ["AAPL"]}))
+    assert bul._already_published(_AS_OF, 100) is False
+
+
+def test_a_list_of_the_requested_size_is_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch,
+           json.dumps({"as_of": "2026-09-01", "tickers": [f"T{i}" for i in range(100)]}))
+    assert bul._already_published(_AS_OF, 100) is True
+
+
+def test_non_string_tickers_are_not_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": ["AAPL", 7]}))
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_an_empty_ticker_string_is_not_published(tmp_path, monkeypatch):
+    """The consumer requires every entry to be a non-empty string; so does this."""
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": ["AAPL", ""]}))
+    assert bul._already_published(_AS_OF, 2) is False
