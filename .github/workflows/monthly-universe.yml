@@ -16,9 +16,15 @@ name: Monthly universe
 on:
   schedule:
     # 06:00 UTC on the 1st-5th. The script targets the month's FIRST TRADING DAY
-    # and is idempotent: it exits without writing once the committed list already
-    # matches, so the extra days are free retries if one run fails, not repeat
-    # commits. Days 1-2 may fall on a weekend, which the script skips cleanly.
+    # and writes that month's list exactly ONCE: it exits before any provider
+    # work once a list for that as-of date is committed, so the extra days are
+    # retries for a FAILED run, not four more chances to re-rank. Days 1-2 may
+    # fall on a weekend, which the script skips cleanly.
+    #
+    # Write-once is load-bearing, not tidiness. A rewrite changes the universe
+    # fingerprint, and /api/screener discards every published result computed
+    # under a superseded one. September 2026 rewrote the same as-of date four
+    # times and took the endpoint to 503.
     - cron: "0 6 1-5 * *"
   workflow_dispatch: {}
 

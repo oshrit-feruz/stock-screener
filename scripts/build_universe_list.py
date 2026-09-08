@@ -23,6 +23,11 @@ universe is computed identically to that month's backtest universe.
     EODHD_API_KEY=... python scripts/build_universe_list.py
     EODHD_API_KEY=... python scripts/build_universe_list.py --month 2026-09
     EODHD_API_KEY=... python scripts/build_universe_list.py --dry-run
+
+A month's list is written ONCE. The workflow runs on days 1-5 so a failed run
+self-heals, but a run that already published is final for that month: re-ranking
+changes the universe fingerprint, and /api/screener discards every published
+result computed under a superseded one. `--force` overrides, deliberately.
 """
 from __future__ import annotations
 
@@ -74,21 +79,62 @@ def _first_trading_day(year: int, month: int) -> date | None:
     return spy.index.min().date()
 
 
-def _already_current(as_of: date, tickers: list[str]) -> bool:
-    """True if the committed list already matches this ranking.
+def _already_published(as_of: date, top_n: int) -> bool:
+    """True if a USABLE list for `as_of` is already committed.
 
-    Keeps the job idempotent: the workflow runs on several days at the start of
-    each month so a single failure self-heals, and without this check every one
-    of those runs would rewrite `generated_at` and push a no-op commit (each of
-    which redeploys Render).
+    The workflow runs on days 1-5 so a single failed run self-heals. Those extra
+    days are retries for a FAILED run — not a re-rank. Once a month's list is
+    published it is final, and this returns True for the rest of the window.
+
+    Keyed on `as_of` alone, deliberately. It used to also require the freshly
+    computed tickers to match, which inverted the intent: any difference at all
+    — including one caused by a transient data problem — was read as "not yet
+    current" and rewrote the file. September 2026 was rewritten four times for
+    the same as_of, and because a universe rewrite changes the fingerprint that
+    /api/screener validates against, each rewrite invalidated every result
+    published before it. Four days of the lookback window were spent on results
+    the service then refused to serve.
+
+    The publish path is guarded (an incomplete pool, an unrankable member or a
+    short ranking all abort before the write), so a list that exists for this
+    as_of was produced by a run that passed every check. Re-ranking it daily can
+    only churn. `--force` is the deliberate override.
+
+    What it validates is deliberately structural — shape, as_of, size — and
+    never the freshly computed membership. That distinction is the whole fix:
+    comparing membership is exactly what let a transient data problem reopen a
+    published month.
     """
+    # A non-positive size makes every check below vacuous: an empty tickers list
+    # has len() == 0, so it would match a requested 0, and all([]) is True. The
+    # month would be sealed around exactly the artifact this guard exists to
+    # refuse. main() rejects the flag outright, but this function is called
+    # directly too and must not rely on its caller having validated the size.
+    if top_n <= 0:
+        return False
     if not _OUT.exists():
         return False
     try:
         cur = json.loads(_OUT.read_text())
     except Exception:
         return False
-    return cur.get("as_of") == as_of.isoformat() and cur.get("tickers") == tickers
+    # Valid JSON is not a valid artifact. A list or a string here would make
+    # .get() raise and fail the job outright, and an artifact carrying the right
+    # as_of but no usable tickers would be SEALED for the month — write-once
+    # turns "today's file is wrong" from self-healing into permanent. So accept
+    # a published month only when the file is one the consumer would accept:
+    # the checks below mirror product/screener/universe_list.load_universe_list.
+    if not isinstance(cur, dict):
+        return False
+    if cur.get("as_of") != as_of.isoformat():
+        return False
+    tickers = cur.get("tickers")
+    # Size is part of the contract too. A hand-run `--top-n 1` writes a
+    # one-ticker file; without this, the scheduled Top-100 run would see the
+    # month as published and leave it that way until the next month.
+    if not isinstance(tickers, list) or len(tickers) != top_n:
+        return False
+    return all(isinstance(t, str) and t for t in tickers)
 
 
 def _atomic_write_pickle(target: Path, obj) -> None:
@@ -125,6 +171,58 @@ def _frame_reaches(df, as_of: date) -> bool:
     if df is None or getattr(df, "empty", True):
         return False
     return df.index.max().date() >= as_of
+
+
+def _unrankable(pool: list[str], as_of: date) -> list[str]:
+    """Pool members that cannot produce a dollar-volume for `as_of`.
+
+    Reaching as_of is not enough to rank. The ranking is a trailing median over
+    `_DV_WINDOW` sessions ENDING at as_of, so a frame that is current but
+    shallow — a partial provider response, a history truncated by an earlier
+    refresh, a stretch with no volume — yields None and the member silently
+    vanishes from the ranking.
+
+    That vanishing is invisible downstream. The Top-N is drawn from ~500
+    members, so the name at rank N+1 slides up and the list still comes out at
+    exactly N: the `len(tickers) < top_n` guard never fires, and the universe
+    changes membership for a data reason rather than a market one. It is the
+    same silent-degradation class `_covers` and `_classify_stale` guard against,
+    one step further down the pipeline — recency was checked, depth never was.
+
+    Not hypothetical: on 2026-09-04 the published Top-100 lost HON from rank 97
+    and gained ON at 100, then reverted the next day. Rank 97 is not a boundary
+    name; it dropped out because it produced no dollar-volume at all. Each
+    rewrite changed the universe fingerprint, invalidating every published
+    screener result, which is what took /api/screener to 503 after the Labor
+    Day weekend.
+
+    Asks the ranking's own question rather than re-deriving it, so the two can
+    never drift apart. Free: pit_dollar_volume is cached, so the ranking that
+    follows reuses every value computed here.
+    """
+    return [t for t in pool if u.pit_dollar_volume(t, as_of.isoformat()) is None]
+
+
+def _unrankable_error(pool: list[str], as_of: date, allowed: set[str],
+                      top_n: int) -> str | None:
+    """The abort message if any member outside `allowed` cannot be ranked.
+
+    Returns None when the pool is clean. Kept out of main() so the guard reads
+    as one decision there rather than four branches.
+    """
+    offenders = sorted(t for t in _unrankable(pool, as_of) if t not in allowed)
+    if not offenders:
+        return None
+    shown = ", ".join(offenders[:20])
+    more = " …" if len(offenders) > 20 else ""
+    return (
+        f"ERROR: {len(offenders)} pool member(s) have a raw price reaching {as_of} "
+        f"but cannot produce a dollar-volume — most likely fewer than "
+        f"{u._DV_WINDOW} sessions of volume on/before that date: {shown}{more}. "
+        f"Ranking now would drop them and silently promote whoever sits at rank "
+        f"{top_n + 1}. Re-run once the provider recovers, or pass "
+        f"--allow-unrankable for a name that is genuinely too young to rank."
+    )
 
 
 def _covers(path: Path, as_of: date) -> bool:
@@ -321,6 +419,38 @@ def _diagnose_empty_ranking(pool: list[str], as_of: date, sample: int = 5) -> st
     return "; ".join(parts)
 
 
+def _resolve_as_of(month_arg: str | None) -> tuple[date | None, int]:
+    """Resolve the target month to its first trading day.
+
+    Returns (as_of, exit_code). `as_of` is None when the job should stop, and
+    the code says whether that is success — the current month simply has no
+    trading day yet, which is normal on the 1st — or a real failure to read
+    SPY's calendar.
+
+    Lives outside main() so its four branches do not count against the one
+    decision main is actually making. Extracted when the unrankable guard
+    pushed main's cognitive complexity past the limit (SonarCloud S3776).
+    """
+    if month_arg:
+        year, month = (int(x) for x in month_arg.split("-"))
+    else:
+        today = date.today()
+        year, month = today.year, today.month
+
+    as_of = _first_trading_day(year, month)
+    if as_of is not None:
+        print(f"Target month {year}-{month:02d} → as_of (first trading day) {as_of}")
+        return as_of, 0
+
+    today = date.today()
+    if (year, month) == (today.year, today.month):
+        print(f"{year}-{month:02d} has no trading day yet — nothing to do.")
+        return None, 0
+    print(f"ERROR: no SPY data for {year}-{month:02d}; cannot determine its "
+          f"first trading day.", file=sys.stderr)
+    return None, 1
+
+
 def main() -> int:
     # Without this the module loggers have no handler configured and the EDGAR /
     # EODHD diagnostics fall back to Python's bare lastResort output. This job's
@@ -333,24 +463,40 @@ def main() -> int:
     ap.add_argument("--month", help="Target month YYYY-MM (default: current month)")
     ap.add_argument("--top-n", type=int, default=TOP_N)
     ap.add_argument("--dry-run", action="store_true", help="Rank but do not write the file")
+    ap.add_argument(
+        "--force", action="store_true",
+        help="Re-rank and rewrite even if a list for this month's as-of date is "
+             "already published. Changes the universe fingerprint, which "
+             "invalidates every screener result published under the old one.",
+    )
+    ap.add_argument(
+        "--allow-unrankable", default="",
+        help="Comma-separated tickers permitted to have no dollar-volume, e.g. a "
+             "genuine recent spin-off with under a quarter of trading history. "
+             "Excluded from the pool instead of aborting the build. Use only "
+             "after confirming the name really is too young to rank.",
+    )
     args = ap.parse_args()
+    # argparse only checks that this parses as an int. `--top-n 0` would sail
+    # past the degraded-list guard below (len(tickers) < 0 is never true) and
+    # publish an empty universe, which the screener then refuses to load.
+    if args.top_n <= 0:
+        ap.error("--top-n must be greater than zero")
 
-    if args.month:
-        year, month = (int(x) for x in args.month.split("-"))
-    else:
-        today = date.today()
-        year, month = today.year, today.month
-
-    as_of = _first_trading_day(year, month)
+    as_of, code = _resolve_as_of(args.month)
     if as_of is None:
-        today = date.today()
-        if (year, month) == (today.year, today.month):
-            print(f"{year}-{month:02d} has no trading day yet — nothing to do.")
-            return 0
-        print(f"ERROR: no SPY data for {year}-{month:02d}; cannot determine its "
-              f"first trading day.", file=sys.stderr)
-        return 1
-    print(f"Target month {year}-{month:02d} → as_of (first trading day) {as_of}")
+        return code
+
+    # Before any provider work. The days 1-5 schedule means most invocations
+    # land here, and re-ranking an already-published month can only churn the
+    # fingerprint — so this exits before ~500 ticker fetches, not after them.
+    # --dry-run is exempt: its whole purpose is to show what this month WOULD
+    # rank, which an early return would hide.
+    if _already_published(as_of, args.top_n) and not (args.force or args.dry_run):
+        print(f"Universe list already published for {as_of} — nothing to do. "
+              f"(Pass --force to re-rank and rewrite; that changes the "
+              f"fingerprint and invalidates published screener results.)")
+        return 0
 
     pool = sorted(u.get_universe(as_of.isoformat()))
     print(f"Ranking pool: {len(pool)} S&P 500 members")
@@ -384,10 +530,22 @@ def main() -> int:
         )
         return 1
 
+    # Every remaining member must be able to produce a dollar-volume. A member
+    # that cannot is dropped silently by the ranking while rank N+1 slides up,
+    # so the list still comes out at exactly N and the length guard below never
+    # fires — see _unrankable for the September 2026 case this caught.
+    allowed = {t.strip().upper() for t in args.allow_unrankable.split(",") if t.strip()}
+    problem = _unrankable_error(pool, as_of, allowed, args.top_n)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
+    pool = [t for t in pool if t not in allowed]
+
     # The ranking re-reads the membership itself, so the delisted names must be
     # passed through explicitly: a cached raw file from before a name's final
     # print would otherwise still give it a trailing dollar-volume and a slot.
-    tickers = u.get_universe_top_n(as_of.isoformat(), args.top_n, exclude=set(delisted))
+    tickers = u.get_universe_top_n(as_of.isoformat(), args.top_n,
+                                   exclude=set(delisted) | allowed)
     print(f"Ranked Top-{args.top_n}: {len(tickers)} tickers")
 
     # Refuse to publish a degraded list. A short list means dollar-volumes could
@@ -403,10 +561,6 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-
-    if _already_current(as_of, tickers):
-        print(f"Universe list already current for {as_of} — nothing to write.")
-        return 0
 
     payload = {
         "as_of": as_of.isoformat(),

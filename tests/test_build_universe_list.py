@@ -15,7 +15,9 @@ Two behaviours are pinned here:
 """
 from __future__ import annotations
 
+import json
 import pickle
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -343,3 +345,253 @@ def test_duplicates_removed_after_replace_keeping_target(tmp_path):
 
     assert sorted(p.name for p in tmp_path.glob("AAPL_*.pkl")) == ["AAPL_2025-09-01.pkl"]
     assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is True
+
+
+# ── write-once: the retry window is for failures, not re-ranks ───────────────
+#
+# The workflow runs on days 1-5 of each month. Those days are retries for a run
+# that FAILED, not four extra chances to re-rank. The guard used to also require
+# the freshly computed tickers to match the committed ones, which inverted the
+# intent: any difference — including one caused by a transient data problem —
+# read as "not current" and rewrote the file. September 2026 was rewritten four
+# times for the same as-of date, and since a universe rewrite changes the
+# fingerprint /api/screener validates against, each rewrite invalidated every
+# result published before it.
+
+def _publish(tmp_path, monkeypatch, as_of: str, tickers: list[str]) -> Path:
+    out = tmp_path / "current.json"
+    out.write_text(json.dumps({"as_of": as_of, "n": len(tickers), "tickers": tickers}))
+    monkeypatch.setattr(bul, "_OUT", out)
+    return out
+
+
+def test_a_published_month_is_not_republished(tmp_path, monkeypatch):
+    _publish(tmp_path, monkeypatch, "2026-09-01", ["AAPL", "MSFT"])
+    assert bul._already_published(_AS_OF, 2) is True
+
+
+def test_the_decision_cannot_depend_on_the_ranking():
+    """The regression, pinned where it cannot be faked. The guard used to take
+    the freshly computed tickers and require them to match; that is precisely
+    how a transient data problem reopened a published month and churned the
+    fingerprint. It takes the as-of date and the requested size — both known
+    before any ranking runs — and no computed membership, which makes the
+    churn impossible by construction. The signature is the assertion."""
+    import inspect
+    params = list(inspect.signature(bul._already_published).parameters)
+    assert params == ["as_of", "top_n"]
+    assert "tickers" not in params, \
+        "a computed ticker list must never reach this decision"
+
+
+def test_a_different_month_is_not_yet_published(tmp_path, monkeypatch):
+    _publish(tmp_path, monkeypatch, "2026-08-03", ["AAPL", "MSFT"])
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_no_file_means_not_published(tmp_path, monkeypatch):
+    monkeypatch.setattr(bul, "_OUT", tmp_path / "nothing.json")
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_an_unreadable_file_means_not_published(tmp_path, monkeypatch):
+    """A corrupt list must not wedge the month — the retry has to be able to
+    rebuild it."""
+    out = tmp_path / "current.json"
+    out.write_text("{ not json")
+    monkeypatch.setattr(bul, "_OUT", out)
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+# ── unrankable members: the silent substitution ─────────────────────────────
+#
+# Reaching the as-of date is not enough to rank: the ranking is a trailing
+# median over _DV_WINDOW sessions ENDING there. A member that is current but
+# shallow yields no dollar-volume and vanishes — while rank N+1 slides up, so
+# the list still comes out at exactly N and the length guard never fires.
+#
+# This is what happened on 2026-09-04: the published Top-100 lost HON from rank
+# 97 and gained ON at 100, then reverted the next day. Rank 97 is not a boundary
+# name.
+
+def test_a_member_with_no_dollar_volume_is_reported(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: None if t == "HON" else 1.0)
+    assert bul._unrankable(["AAPL", "HON", "MSFT"], _AS_OF) == ["HON"]
+
+
+def test_a_fully_rankable_pool_reports_nothing(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume", lambda t, d: 1.0)
+    assert bul._unrankable(["AAPL", "HON", "MSFT"], _AS_OF) == []
+
+
+def test_a_zero_dollar_volume_is_rankable_and_not_reported(monkeypatch):
+    """Only None means "cannot be computed". A real zero is the ranking's own
+    business — get_universe_top_n drops it, and that is a market fact, not a
+    data failure this guard should abort on."""
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: 0.0 if t == "HON" else 1.0)
+    assert bul._unrankable(["AAPL", "HON", "MSFT"], _AS_OF) == []
+
+
+def test_the_check_asks_the_ranking_its_own_question(monkeypatch):
+    """Pins that it goes through pit_dollar_volume rather than re-deriving
+    rankability: the two must not be able to drift apart, and the cached values
+    are what makes the check free."""
+    seen = []
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: seen.append((t, d)) or 1.0)
+    bul._unrankable(["AAPL", "MSFT"], _AS_OF)
+    assert seen == [("AAPL", "2026-09-01"), ("MSFT", "2026-09-01")]
+
+
+# ── the abort decision ──────────────────────────────────────────────────────
+
+def test_no_error_when_every_member_ranks(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume", lambda t, d: 1.0)
+    assert bul._unrankable_error(["AAPL", "HON"], _AS_OF, set(), 100) is None
+
+
+def test_the_error_names_the_offender(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: None if t == "HON" else 1.0)
+    msg = bul._unrankable_error(["AAPL", "HON"], _AS_OF, set(), 100)
+    assert msg is not None
+    assert "HON" in msg
+    assert "101" in msg, "the message must say which rank would silently be promoted"
+
+
+def test_an_allowed_name_does_not_abort(monkeypatch):
+    """--allow-unrankable is the escape hatch for a genuine recent spin-off, so
+    a real one cannot wedge the build for the whole month."""
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: None if t == "SPIN" else 1.0)
+    assert bul._unrankable_error(["AAPL", "SPIN"], _AS_OF, {"SPIN"}, 100) is None
+
+
+def test_allowing_one_name_does_not_excuse_another(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: None if t in ("SPIN", "HON") else 1.0)
+    msg = bul._unrankable_error(["AAPL", "SPIN", "HON"], _AS_OF, {"SPIN"}, 100)
+    assert msg is not None, "HON is still unrankable, so the build must abort"
+    assert "HON" in msg
+    assert "SPIN" not in msg, "the spared name must not be named as an offender"
+
+
+# ── resolving the target month ──────────────────────────────────────────────
+
+def test_an_explicit_month_resolves_to_its_first_trading_day(monkeypatch):
+    monkeypatch.setattr(bul, "_first_trading_day", lambda y, m: date(2026, 9, 1))
+    assert bul._resolve_as_of("2026-09") == (date(2026, 9, 1), 0)
+
+
+def test_no_month_argument_uses_today(monkeypatch):
+    seen = []
+    monkeypatch.setattr(bul, "_first_trading_day",
+                        lambda y, m: seen.append((y, m)) or date(2026, 9, 1))
+    bul._resolve_as_of(None)
+    today = date.today()
+    assert seen == [(today.year, today.month)]
+
+
+def test_the_current_month_with_no_trading_day_yet_is_not_an_error(monkeypatch):
+    """Normal on the 1st before the market has opened — exit 0, not a failure
+    the workflow should report."""
+    today = date.today()
+    monkeypatch.setattr(bul, "_first_trading_day", lambda y, m: None)
+    assert bul._resolve_as_of(f"{today.year}-{today.month:02d}") == (None, 0)
+
+
+def test_a_past_month_with_no_trading_day_is_an_error(monkeypatch):
+    """A month that is over must have had a trading day; not finding one means
+    SPY's calendar could not be read, which is a real failure."""
+    monkeypatch.setattr(bul, "_first_trading_day", lambda y, m: None)
+    assert bul._resolve_as_of("2020-01") == (None, 1)
+
+
+# ── a published month must be a USABLE month ────────────────────────────────
+#
+# Write-once turns "today's file is wrong" from self-healing into permanent, so
+# the guard has to check that what is already there is worth keeping. It accepts
+# only a file the consumer would accept — the checks mirror
+# product/screener/universe_list.load_universe_list — plus the requested size.
+
+def _write(tmp_path, monkeypatch, text: str) -> None:
+    out = tmp_path / "current.json"
+    out.write_text(text)
+    monkeypatch.setattr(bul, "_OUT", out)
+
+
+def test_valid_json_that_is_not_an_object_is_not_published(tmp_path, monkeypatch):
+    """A JSON list used to reach .get() and raise AttributeError, failing the
+    job outright rather than rebuilding."""
+    _write(tmp_path, monkeypatch, '["AAPL", "MSFT"]')
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_a_json_string_is_not_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, '"2026-09-01"')
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_the_right_month_with_no_tickers_is_not_published(tmp_path, monkeypatch):
+    """The dangerous case: as_of matches, so the month would be sealed around an
+    artifact the screener refuses to load."""
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01"}))
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_an_empty_ticker_list_is_not_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": []}))
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_a_short_list_is_not_published(tmp_path, monkeypatch):
+    """A hand-run `--top-n 1` writes a one-ticker file. Without the size check
+    the scheduled Top-100 run would call the month done and leave it that way
+    until October."""
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": ["AAPL"]}))
+    assert bul._already_published(_AS_OF, 100) is False
+
+
+def test_a_list_of_the_requested_size_is_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch,
+           json.dumps({"as_of": "2026-09-01", "tickers": [f"T{i}" for i in range(100)]}))
+    assert bul._already_published(_AS_OF, 100) is True
+
+
+def test_non_string_tickers_are_not_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": ["AAPL", 7]}))
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_an_empty_ticker_string_is_not_published(tmp_path, monkeypatch):
+    """The consumer requires every entry to be a non-empty string; so does this."""
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": ["AAPL", ""]}))
+    assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_a_zero_requested_size_is_never_published(tmp_path, monkeypatch):
+    """`--top-n 0` makes every other check vacuous: an empty list has len() == 0
+    so it matches the requested size, and all([]) is True. Without this the
+    month would be sealed around exactly the artifact the guard exists to
+    refuse — and the write path does not catch it either, since the
+    degraded-list check is `len(tickers) < top_n` and 0 < 0 is False."""
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": []}))
+    assert bul._already_published(_AS_OF, 0) is False
+
+
+def test_a_negative_requested_size_is_never_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch,
+           json.dumps({"as_of": "2026-09-01", "tickers": ["AAPL", "MSFT"]}))
+    assert bul._already_published(_AS_OF, -1) is False
+
+
+def test_main_refuses_a_non_positive_top_n(monkeypatch, capsys):
+    """Rejected at parse time, before anything can be written. argparse only
+    validates that the value is an int."""
+    monkeypatch.setattr(sys, "argv", ["build_universe_list.py", "--top-n", "0"])
+    with pytest.raises(SystemExit) as exc:
+        bul.main()
+    assert exc.value.code != 0
+    assert "--top-n must be greater than zero" in capsys.readouterr().err
