@@ -115,12 +115,27 @@ def _universe_fingerprint(ulist) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
-def _load_disk_cache(as_of: date, universe_fp: str) -> "ScreenerResult | None":
-    """Return today's cached result, but only if it was computed under the SAME
-    universe. Validating the list before the cache lookup is not sufficient on
-    its own: at a month boundary the daily run can cache a result under the old
-    list minutes before the new one lands, and every later read that day would
-    serve results for a superseded universe. A fingerprint mismatch recomputes.
+def _load_disk_cache(as_of: date, universe_fp: str,
+                     universe_size: int) -> "ScreenerResult | None":
+    """Return today's cached result, but only if it is one worth serving.
+
+    Two checks, both against the CURRENT universe rather than anything stored
+    in the file:
+
+    * Same universe. Validating the list before the cache lookup is not
+      sufficient on its own: at a month boundary the daily run can cache a
+      result under the old list minutes before the new one lands, and every
+      later read that day would serve results for a superseded universe. A
+      fingerprint mismatch recomputes.
+
+    * Enough of it. A file whose ranking covers under _MIN_SCAN_COVERAGE of
+      `universe_size` is skipped exactly as a mismatch is. This is the same
+      guard run_screener applies before SAVING, applied on READ — because this
+      function is the one chokepoint every reader shares: run_screener returns
+      a cached result before its own guard can run, and /api/screener's
+      published-result walk never goes through run_screener at all. A guard on
+      the producer alone leaves every consumer trusting whatever is on disk.
+      `universe_size` is required, not defaulted, so no caller can skip it.
     """
     path = _cache_path(as_of)
     if not path.exists():
@@ -134,6 +149,16 @@ def _load_disk_cache(as_of: date, universe_fp: str) -> "ScreenerResult | None":
                 "screener: discarding disk cache for %s — computed under a different "
                 "universe (cached %s, current %s); recomputing.",
                 as_of, cached_fp or "<none>", universe_fp,
+            )
+            return None
+        required = math.ceil(_MIN_SCAN_COVERAGE * universe_size)
+        n_rows = len(data.get("full_ranking") or [])
+        if n_rows < required:
+            logger.warning(
+                "screener: skipping disk cache for %s — it covers %d/%d tickers "
+                "(need %d). A scan this incomplete looks like a quiet market and "
+                "must not be served; treating it as absent.",
+                as_of, n_rows, universe_size, required,
             )
             return None
         def _row(d: dict) -> ScreenerRow:
@@ -287,7 +312,7 @@ def run_screener(
 
     # Return disk-cached result immediately if today's run already completed
     universe_fp = _universe_fingerprint(ulist)
-    cached = _load_disk_cache(as_of_date, universe_fp)
+    cached = _load_disk_cache(as_of_date, universe_fp, len(ulist.tickers))
     if cached is not None:
         logger.info("screener: returning disk-cached result for %s", as_of_date)
         return cached

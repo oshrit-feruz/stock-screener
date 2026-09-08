@@ -14,6 +14,7 @@ Same stubbing seam as test_daily_screener_veto.py; no network.
 """
 from __future__ import annotations
 
+import json
 import math
 from datetime import date
 
@@ -21,7 +22,12 @@ import pandas as pd
 import pytest
 
 import product.screener.daily_screener as ds
-from product.screener.daily_screener import ScreenerDegraded, run_screener
+from product.screener.daily_screener import (
+    ScreenerDegraded,
+    _load_disk_cache,
+    _universe_fingerprint,
+    run_screener,
+)
 from product.screener.universe_list import UniverseList
 
 _AS_OF = date(2024, 1, 3)
@@ -116,3 +122,71 @@ def test_the_message_says_where_to_look(tmp_path, monkeypatch):
     _wire(monkeypatch, tmp_path, universe, failing=set(universe))
     with pytest.raises(ScreenerDegraded, match="EODHD_API_KEY"):
         run_screener(as_of_date=_AS_OF, apply_8k_veto=False)
+
+
+# ── the cache is a second reader, and must apply the same bar ──────────────
+#
+# run_screener returns a disk-cached result BEFORE its own guard runs, and
+# /api/screener's published-result walk never goes through run_screener at
+# all. So the guard has to live in _load_disk_cache, the one chokepoint every
+# reader shares — a guard on the producer alone leaves every consumer trusting
+# whatever is on disk.
+
+
+def _write_cache(tmp_path, as_of: date, fp: str, n_rows: int) -> None:
+    rows = [{"ticker": f"T{i}", "current_price": 1.0, "high_52w": 2.0,
+             "drawdown_pct": 0.5, "dip_score": 0.5, "momentum_score": 0.5,
+             "volume_score": 0.5, "composite_score": 0.5, "gate": True,
+             "signal": "HOLD"} for i in range(n_rows)]
+    (tmp_path / f"{as_of.isoformat()}.json").write_text(json.dumps({
+        "as_of_date": as_of.isoformat(), "universe_fingerprint": fp,
+        "buy_signals": [], "full_ranking": rows,
+    }))
+
+
+def test_an_under_covered_cache_is_not_returned_by_run_screener(tmp_path, monkeypatch):
+    """CodeRabbit's regression: a cache file written by the OLD code with too
+    few rows, matching fingerprint, for today. run_screener must not hand it
+    back — it must fall through to a fresh scan, which here fails coverage too,
+    so ScreenerDegraded proves the scan actually ran."""
+    universe = ["A", "B", "C", "D", "E"]
+    _wire(monkeypatch, tmp_path, universe, failing=set(universe))
+    ulist = UniverseList(tickers=universe, as_of=date(2024, 1, 1), age_days=2, is_late=False)
+    _write_cache(tmp_path, _AS_OF, _universe_fingerprint(ulist), n_rows=1)
+
+    with pytest.raises(ScreenerDegraded):
+        run_screener(as_of_date=_AS_OF, apply_8k_veto=False)
+
+
+def test_a_full_cache_is_returned(tmp_path, monkeypatch):
+    monkeypatch.setattr(ds, "_CACHE_DIR", tmp_path)
+    _write_cache(tmp_path, _AS_OF, "fp", n_rows=100)
+    result = _load_disk_cache(_AS_OF, "fp", universe_size=100)
+    assert result is not None and len(result.full_ranking) == 100
+
+
+def test_an_under_covered_cache_reads_as_absent(tmp_path, monkeypatch):
+    """Skipped exactly as a fingerprint mismatch is — so the serving path walks
+    on to the next date rather than answering 200 with half a universe."""
+    monkeypatch.setattr(ds, "_CACHE_DIR", tmp_path)
+    _write_cache(tmp_path, _AS_OF, "fp", n_rows=50)
+    assert _load_disk_cache(_AS_OF, "fp", universe_size=100) is None
+
+
+def test_the_cache_bar_is_the_same_bar(tmp_path, monkeypatch):
+    """Not a second, softer rule: 80 of 100 passes, 79 does not — the same
+    ceiling the producer guard applies before saving."""
+    monkeypatch.setattr(ds, "_CACHE_DIR", tmp_path)
+    _write_cache(tmp_path, _AS_OF, "fp", n_rows=80)
+    assert _load_disk_cache(_AS_OF, "fp", universe_size=100) is not None
+    _write_cache(tmp_path, _AS_OF, "fp", n_rows=79)
+    assert _load_disk_cache(_AS_OF, "fp", universe_size=100) is None
+
+
+def test_the_denominator_is_the_current_universe_not_the_file(tmp_path, monkeypatch):
+    """An empty file written under the old code is judged against TODAY's
+    universe. That is what makes it fail: nothing in the file can vouch for
+    itself."""
+    monkeypatch.setattr(ds, "_CACHE_DIR", tmp_path)
+    _write_cache(tmp_path, _AS_OF, "fp", n_rows=0)
+    assert _load_disk_cache(_AS_OF, "fp", universe_size=100) is None

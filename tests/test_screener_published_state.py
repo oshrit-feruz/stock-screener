@@ -18,6 +18,7 @@ ARCHITECTURE.md — Actions computes, Render reads). Pinned here:
 from __future__ import annotations
 
 import json
+import types
 from dataclasses import asdict
 from datetime import date, timedelta
 
@@ -55,7 +56,8 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "_sc_warm_started", 0.0)
     monkeypatch.setattr(m, "_sc_universe_fp", None)
     monkeypatch.setattr(m, "_ALLOW_ONDEMAND_SCAN", False)
-    monkeypatch.setattr(m, "load_universe_list", lambda *a, **k: object())
+    monkeypatch.setattr(m, "load_universe_list",
+                        lambda *a, **k: types.SimpleNamespace(tickers=["AAPL"]))
     monkeypatch.setattr(m, "_universe_fingerprint", lambda _u: "fp-live")
     monkeypatch.setattr(
         m, "run_screener",
@@ -224,3 +226,19 @@ def test_lookback_terminates_if_the_calendar_calls_everything_a_holiday(monkeypa
     open day would otherwise spin forever inside a request."""
     monkeypatch.setattr(m, "is_trading_day", lambda d: False)
     assert list(m._lookback_dates(date(2026, 9, 8))) == [date(2026, 9, 8)]
+
+
+# ── the serving path applies the coverage bar too ───────────────────────────
+
+def test_a_published_result_that_scored_nothing_is_not_served(tmp_path, monkeypatch):
+    """The outage shape, on the consumer side: a file with the LIVE fingerprint
+    and an empty ranking. The serving walk never goes through run_screener, so
+    the only thing between this file and a 200 is _load_disk_cache's read-side
+    check. It must refuse, not serve a quiet day."""
+    payload = _payload(date.today(), "fp-live")
+    payload["full_ranking"] = []
+    payload["buy_signals"] = []
+    (tmp_path / f"{date.today().isoformat()}.json").write_text(json.dumps(payload))
+    monkeypatch.setattr(m, "_fetch_published_daily_result", lambda d: False)
+    with pytest.raises(m.ScreenerStateUnavailable):
+        m._get_screener_data()

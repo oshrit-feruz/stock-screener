@@ -75,7 +75,10 @@ def _fetch(url: str) -> tuple[int, Any, str]:
     last: Optional[Exception] = None
     for attempt in range(1, _ATTEMPTS + 1):
         try:
-            resp = requests.get(url, timeout=_TIMEOUT_SECONDS)
+            # No redirects: the probe must answer about THIS endpoint. A 301 to
+            # some other 200 would otherwise reach check() looking healthy, and
+            # "HTTP 301" is a clearer reason than whatever the body check said.
+            resp = requests.get(url, timeout=_TIMEOUT_SECONDS, allow_redirects=False)
             try:
                 body = resp.json()
             except ValueError:

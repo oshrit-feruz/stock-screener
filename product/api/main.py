@@ -679,21 +679,24 @@ def _screener_cache_dir():
     return _CACHE_DIR
 
 
-def _load_recent_published_result(universe_fp: str):
+def _load_recent_published_result(universe_fp: str, universe_size: int):
     """Newest usable result within the lookback window: (result, computed_on),
     or (None, None). Local disk first, then one fetch from the daily-state
-    branch per missing date. Fingerprint mismatches are discarded by
-    _load_disk_cache — a result computed under a superseded universe is not
-    'slightly stale', it is wrong."""
+    branch per missing date. Fingerprint mismatches and under-covered results
+    are both discarded by _load_disk_cache — a result computed under a
+    superseded universe is not 'slightly stale', it is wrong, and one that
+    scored a fraction of the universe is not a quiet day, it is a failed scan.
+    This walk never goes through run_screener, so the read-side check in
+    _load_disk_cache is the only guard between a bad file and a 200."""
     for d in _lookback_dates(date.today()):
         try:
-            cached = _load_disk_cache(d, universe_fp)
+            cached = _load_disk_cache(d, universe_fp, universe_size)
         except Exception:
             logger.exception("screener: disk-cache read failed for %s", d)
             cached = None
         if cached is None and _fetch_published_daily_result(d):
             try:
-                cached = _load_disk_cache(d, universe_fp)
+                cached = _load_disk_cache(d, universe_fp, universe_size)
             except Exception:
                 logger.exception("screener: fetched daily result unreadable for %s", d)
                 cached = None
@@ -738,7 +741,7 @@ def _get_screener_data() -> dict:
     # Prefer precomputed state. Local disk first, then the daily-state branch —
     # a JSON load / one small HTTP GET, fingerprint compare, no scan — safe on
     # the 512MB tier and the path the producer/consumer split intends.
-    cached, computed_on = _load_recent_published_result(universe_fp)
+    cached, computed_on = _load_recent_published_result(universe_fp, len(ulist.tickers))
     if cached is not None:
         if computed_on != date.today():
             logger.info("screener: serving result computed on %s (today is %s)",

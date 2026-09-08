@@ -87,3 +87,27 @@ def test_freshness_is_checked_only_after_the_ranking():
 @pytest.mark.parametrize("status", [301, 404, 500, 502])
 def test_any_non_200_is_a_failure(status):
     assert check(status, _good(), _TODAY, trading_day=True) is not None
+
+
+# ── the probe answers about THIS endpoint ───────────────────────────────────
+
+def test_the_probe_does_not_follow_redirects(monkeypatch):
+    """A 301 to some other 200 must reach check() as a 301, not as whatever
+    the redirect target said. Pins the kwarg rather than the behaviour so the
+    test needs no network."""
+    import scripts.screener_canary as canary
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+        text = "{}"
+        def json(self):
+            return {}
+
+    def fake_get(url, **kwargs):
+        seen.update(kwargs)
+        return _Resp()
+
+    monkeypatch.setattr(canary.requests, "get", fake_get)
+    canary._fetch("https://example.invalid/api/screener")
+    assert seen.get("allow_redirects") is False
