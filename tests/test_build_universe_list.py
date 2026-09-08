@@ -15,6 +15,7 @@ Two behaviours are pinned here:
 """
 from __future__ import annotations
 
+import json
 import pickle
 from datetime import date
 from pathlib import Path
@@ -343,3 +344,97 @@ def test_duplicates_removed_after_replace_keeping_target(tmp_path):
 
     assert sorted(p.name for p in tmp_path.glob("AAPL_*.pkl")) == ["AAPL_2025-09-01.pkl"]
     assert _ticker_is_current(tmp_path, "AAPL", _AS_OF) is True
+
+
+# ── write-once: the retry window is for failures, not re-ranks ───────────────
+#
+# The workflow runs on days 1-5 of each month. Those days are retries for a run
+# that FAILED, not four extra chances to re-rank. The guard used to also require
+# the freshly computed tickers to match the committed ones, which inverted the
+# intent: any difference — including one caused by a transient data problem —
+# read as "not current" and rewrote the file. September 2026 was rewritten four
+# times for the same as-of date, and since a universe rewrite changes the
+# fingerprint /api/screener validates against, each rewrite invalidated every
+# result published before it.
+
+def _publish(tmp_path, monkeypatch, as_of: str, tickers: list[str]) -> Path:
+    out = tmp_path / "current.json"
+    out.write_text(json.dumps({"as_of": as_of, "n": len(tickers), "tickers": tickers}))
+    monkeypatch.setattr(bul, "_OUT", out)
+    return out
+
+
+def test_a_published_month_is_not_republished(tmp_path, monkeypatch):
+    _publish(tmp_path, monkeypatch, "2026-09-01", ["AAPL", "MSFT"])
+    assert bul._already_published(_AS_OF) is True
+
+
+def test_the_decision_cannot_depend_on_the_ranking():
+    """The regression, pinned where it cannot be faked. The guard used to take
+    the freshly computed tickers and require them to match; that is precisely
+    how a transient data problem reopened a published month and churned the
+    fingerprint. Taking only the as-of date makes that impossible by
+    construction, so the signature is the assertion."""
+    import inspect
+    assert list(inspect.signature(bul._already_published).parameters) == ["as_of"]
+
+
+def test_a_different_month_is_not_yet_published(tmp_path, monkeypatch):
+    _publish(tmp_path, monkeypatch, "2026-08-03", ["AAPL", "MSFT"])
+    assert bul._already_published(_AS_OF) is False
+
+
+def test_no_file_means_not_published(tmp_path, monkeypatch):
+    monkeypatch.setattr(bul, "_OUT", tmp_path / "nothing.json")
+    assert bul._already_published(_AS_OF) is False
+
+
+def test_an_unreadable_file_means_not_published(tmp_path, monkeypatch):
+    """A corrupt list must not wedge the month — the retry has to be able to
+    rebuild it."""
+    out = tmp_path / "current.json"
+    out.write_text("{ not json")
+    monkeypatch.setattr(bul, "_OUT", out)
+    assert bul._already_published(_AS_OF) is False
+
+
+# ── unrankable members: the silent substitution ─────────────────────────────
+#
+# Reaching the as-of date is not enough to rank: the ranking is a trailing
+# median over _DV_WINDOW sessions ENDING there. A member that is current but
+# shallow yields no dollar-volume and vanishes — while rank N+1 slides up, so
+# the list still comes out at exactly N and the length guard never fires.
+#
+# This is what happened on 2026-09-04: the published Top-100 lost HON from rank
+# 97 and gained ON at 100, then reverted the next day. Rank 97 is not a boundary
+# name.
+
+def test_a_member_with_no_dollar_volume_is_reported(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: None if t == "HON" else 1.0)
+    assert bul._unrankable(["AAPL", "HON", "MSFT"], _AS_OF) == ["HON"]
+
+
+def test_a_fully_rankable_pool_reports_nothing(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume", lambda t, d: 1.0)
+    assert bul._unrankable(["AAPL", "HON", "MSFT"], _AS_OF) == []
+
+
+def test_a_zero_dollar_volume_is_rankable_and_not_reported(monkeypatch):
+    """Only None means "cannot be computed". A real zero is the ranking's own
+    business — get_universe_top_n drops it, and that is a market fact, not a
+    data failure this guard should abort on."""
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: 0.0 if t == "HON" else 1.0)
+    assert bul._unrankable(["AAPL", "HON", "MSFT"], _AS_OF) == []
+
+
+def test_the_check_asks_the_ranking_its_own_question(monkeypatch):
+    """Pins that it goes through pit_dollar_volume rather than re-deriving
+    rankability: the two must not be able to drift apart, and the cached values
+    are what makes the check free."""
+    seen = []
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: seen.append((t, d)) or 1.0)
+    bul._unrankable(["AAPL", "MSFT"], _AS_OF)
+    assert seen == [("AAPL", "2026-09-01"), ("MSFT", "2026-09-01")]

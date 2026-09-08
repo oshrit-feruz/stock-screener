@@ -83,6 +83,32 @@ Three separate things kept it invisible:
 | Daily screener result (`data/screener_cache/<date>.json`) | `.github/workflows/daily-screener.yml` | `/api/screener` (raw-file fetch, 4-day lookback, `computed_on` provenance) | `automation/daily-state` branch |
 | Prebuilt PIT grid + price cache | `scripts/build_full_cache.py` (manual) | Simulator/backtest | GitHub Release asset → `scripts/fetch_release_cache.py` |
 
+### A month's universe is written once
+
+The Top-100 list is the fingerprint every published screener result is
+validated against, so rewriting it is not a refresh — it retroactively
+invalidates every result computed under the old one. `/api/screener` then
+discards them as wrong rather than stale, which is correct and also exactly how
+a rewrite turns into a 503.
+
+The monthly workflow runs on days 1-5 so a failed run self-heals. Those extra
+days are retries for a *failure*; a run that published is final for that month.
+The guard used to require the freshly computed tickers to match as well, which
+inverted the intent — any difference, including one caused by a transient data
+problem, read as "not yet current" and rewrote the file.
+
+September 2026 rewrote the same as-of date four times. On the 4th the list lost
+HON from rank 97 and gained ON at 100, then reverted on the 5th. Rank 97 is not
+a boundary name: it dropped out because it produced no dollar-volume at all, and
+the ranking drops such a member silently while rank 101 slides up — so the list
+still came out at exactly 100 and the length guard never fired. Two of the four
+days in `/api/screener`'s lookback window were spent on results the service then
+refused to serve.
+
+Both halves are now guarded: the build exits before any provider work once the
+month is published, and refuses to rank at all while any pool member cannot
+produce a dollar-volume, naming it.
+
 ### The position book is the one thing both halves write
 
 Everything else in the table has a single writer. The position book has two —
