@@ -105,6 +105,13 @@ def _already_published(as_of: date, top_n: int) -> bool:
     comparing membership is exactly what let a transient data problem reopen a
     published month.
     """
+    # A non-positive size makes every check below vacuous: an empty tickers list
+    # has len() == 0, so it would match a requested 0, and all([]) is True. The
+    # month would be sealed around exactly the artifact this guard exists to
+    # refuse. main() rejects the flag outright, but this function is called
+    # directly too and must not rely on its caller having validated the size.
+    if top_n <= 0:
+        return False
     if not _OUT.exists():
         return False
     try:
@@ -470,6 +477,11 @@ def main() -> int:
              "after confirming the name really is too young to rank.",
     )
     args = ap.parse_args()
+    # argparse only checks that this parses as an int. `--top-n 0` would sail
+    # past the degraded-list guard below (len(tickers) < 0 is never true) and
+    # publish an empty universe, which the screener then refuses to load.
+    if args.top_n <= 0:
+        ap.error("--top-n must be greater than zero")
 
     as_of, code = _resolve_as_of(args.month)
     if as_of is None:

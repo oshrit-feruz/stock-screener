@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -568,3 +569,29 @@ def test_an_empty_ticker_string_is_not_published(tmp_path, monkeypatch):
     """The consumer requires every entry to be a non-empty string; so does this."""
     _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": ["AAPL", ""]}))
     assert bul._already_published(_AS_OF, 2) is False
+
+
+def test_a_zero_requested_size_is_never_published(tmp_path, monkeypatch):
+    """`--top-n 0` makes every other check vacuous: an empty list has len() == 0
+    so it matches the requested size, and all([]) is True. Without this the
+    month would be sealed around exactly the artifact the guard exists to
+    refuse — and the write path does not catch it either, since the
+    degraded-list check is `len(tickers) < top_n` and 0 < 0 is False."""
+    _write(tmp_path, monkeypatch, json.dumps({"as_of": "2026-09-01", "tickers": []}))
+    assert bul._already_published(_AS_OF, 0) is False
+
+
+def test_a_negative_requested_size_is_never_published(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch,
+           json.dumps({"as_of": "2026-09-01", "tickers": ["AAPL", "MSFT"]}))
+    assert bul._already_published(_AS_OF, -1) is False
+
+
+def test_main_refuses_a_non_positive_top_n(monkeypatch, capsys):
+    """Rejected at parse time, before anything can be written. argparse only
+    validates that the value is an int."""
+    monkeypatch.setattr(sys, "argv", ["build_universe_list.py", "--top-n", "0"])
+    with pytest.raises(SystemExit) as exc:
+        bul.main()
+    assert exc.value.code != 0
+    assert "--top-n must be greater than zero" in capsys.readouterr().err
