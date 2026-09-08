@@ -156,6 +156,26 @@ def _book_path(which: str) -> Path:
     raise ValueError(f"Unknown book: {which!r}")
 
 
+def _sound_row(row: Any) -> Optional[dict]:
+    """A row from the file, or None if it is not one.
+
+    The file is ordinary JSON on disk: it can be hand-edited, half-written by an
+    older build, or restored from a stale copy. Whatever comes back flows on
+    into the API responses and, once the migration is live, into Supabase
+    writes -- so it is checked here rather than trusted for having been ours
+    once. Only the two fields every caller depends on are required; the rest
+    are optional and pass through.
+    """
+    if not isinstance(row, dict):
+        return None
+    try:
+        ticker = _clean_ticker(row.get("ticker", ""))
+        date.fromisoformat(str(row.get("entry_date", "")))
+    except (ValueError, TypeError):
+        return None
+    return {**row, "ticker": ticker}
+
+
 def _read_file(which: str) -> List[dict]:
     path = _book_path(which)
     if not path.exists():
@@ -165,7 +185,13 @@ def _read_file(which: str) -> List[dict]:
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Could not read %s: %s", path, exc)
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    rows = [r for r in (_sound_row(r) for r in data) if r is not None]
+    if len(rows) != len(data):
+        logger.warning("Dropped %d unreadable row(s) from the %s book",
+                       len(data) - len(rows), which)
+    return rows
 
 
 def _write_file(which: str, rows: List[dict]) -> None:

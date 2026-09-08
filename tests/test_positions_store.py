@@ -151,6 +151,24 @@ def test_a_corrupt_file_reads_as_empty_rather_than_crashing(monkeypatch, tmp_pat
     assert store.load_open() == []
 
 
+def test_rows_the_file_should_not_contain_are_dropped(monkeypatch, tmp_path):
+    """The book is plain JSON on disk: hand-editable, restorable from a stale
+    copy, writable by an older build. What comes back flows into the API
+    responses and into Supabase writes, so a row that is not a position must not
+    be carried along just because it was in the file."""
+    book = tmp_path / "open_positions.json"
+    book.write_text(json.dumps([
+        {"ticker": "AAPL", "entry_date": "2026-01-05", "entry_price": 100.0},
+        {"ticker": "AAPL&or=(status.eq.closed)", "entry_date": "2026-01-05"},
+        {"ticker": "MSFT", "entry_date": "not-a-date"},
+        {"entry_date": "2026-01-05"},
+        "not even a row",
+        None,
+    ]))
+    monkeypatch.setattr(store, "_OPEN_FILE", book)
+    assert [r["ticker"] for r in store.load_open()] == ["AAPL"]
+
+
 def test_a_write_cannot_truncate_the_book(monkeypatch):
     """Writes go through a temp file and a rename, so a crash mid-write leaves
     the previous book intact instead of a half-written one."""
