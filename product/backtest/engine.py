@@ -235,6 +235,36 @@ def _load_backtest_data(end_date: date, quality_start_year: int, quality_end_yea
     }
 
 
+def _ui_exit_reason(exit_mode: str, hold: int, hold_days: int,
+                    comp: Optional[float], exit_threshold: float) -> Optional[str]:
+    """Why this position closes today under a Simulator exit mode, or None.
+
+    Lifted out of run_backtest so the dispatch can be exercised without a full
+    backtest. Note that an unrecognised exit_mode matches nothing and returns
+    None forever — a run with no exit rule at all — which is why the API
+    constrains exit_mode rather than passing a bare string through.
+    """
+    if exit_mode == "hold_only":
+        return f"{hold_days}d" if hold >= hold_days else None
+
+    if exit_mode == "threshold_or_hold":
+        if hold >= hold_days:
+            return f"{hold_days}d"
+        return "threshold" if comp is not None and comp < exit_threshold else None
+
+    if exit_mode == "threshold_only":
+        # No time limit from the threshold itself, but two caps apply: never
+        # carry a sleeve past the point the research covers, and never past
+        # what the caller asked for. min() keeps both, and the reason names
+        # whichever actually bound the trade.
+        cap = min(hold_days, HOLD_TRADING_DAYS)
+        if hold >= cap:
+            return f"{cap}d_cap"
+        return "threshold" if comp is not None and comp < exit_threshold else None
+
+    return None
+
+
 def _simulate(preloaded: dict, params: dict) -> dict:
     """Run portfolio simulation with pre-loaded data.
 
@@ -484,21 +514,8 @@ def _simulate(preloaded: dict, params: dict) -> dict:
                 elif exit_rule == "B" and gain <= -0.40:
                     reason = "stop_loss"
             else:
-                if exit_mode == "hold_only":
-                    if hold >= hold_days:
-                        reason = f"{hold_days}d"
-                elif exit_mode == "threshold_or_hold":
-                    if hold >= hold_days:
-                        reason = f"{hold_days}d"
-                    elif comp is not None and comp < exit_threshold:
-                        reason = "threshold"
-                elif exit_mode == "threshold_only":
-                    # No time limit, but never carry a sleeve past the point the
-                    # research covers — the cap is the policy hold, not a literal.
-                    if hold >= HOLD_TRADING_DAYS:
-                        reason = f"{HOLD_TRADING_DAYS}d_cap"
-                    elif comp is not None and comp < exit_threshold:
-                        reason = "threshold"
+                reason = _ui_exit_reason(exit_mode, hold, hold_days,
+                                         comp, exit_threshold)
 
             if reason is not None:
                 to_close.append((tkr, cp, hold, reason))

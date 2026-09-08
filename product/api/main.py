@@ -18,14 +18,14 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import numpy as np
 import requests
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -377,6 +377,22 @@ class PortfolioHolding(BaseModel):
 class PortfolioIn(BaseModel):
     holdings: List[PortfolioHolding]
 
+_SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
+# Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and
+# the UI date-picker's max in product/web/index.html). Requests past this have no
+# cached prices for the tail, so every universe ticker would live-refetch its
+# entire history — the exact slow "still running for minutes" path the cache
+# exists to avoid. The UI already caps the picker here; this server-side guard
+# makes the boundary real for stale clients / direct API callers, returning a
+# clean 400 instead of a silent slow refetch. Bump this (and the UI max, and the
+# cache) together whenever the prebuilt cache is extended.
+_SIM_MAX_END = date(2026, 6, 30)
+# Trading days in the widest window the simulator will accept, at the usual 252
+# a year. The ceiling on hold_days: past this no permitted run can complete a
+# single trade.
+_MAX_HOLD_DAYS = int((_SIM_MAX_END - _SIM_MIN_START).days * 252 / 365.25)
+
+
 class BacktestParams(BaseModel):
     # Default matches the production BUY_THRESHOLD so a default backtest
     # replicates live screener behavior (imported to prevent future drift).
@@ -385,10 +401,31 @@ class BacktestParams(BaseModel):
     # Holding period in trading days. Defaults to the validated policy hold so
     # a default Simulator run reproduces what the exit tracker enforces; the
     # UI offers 252 / 378 / 504 for comparison.
-    hold_days:        int   = HOLD_TRADING_DAYS
-    # "hold_only" | "threshold_or_hold" | "threshold_only". The old spellings
-    # ("252d_only", "threshold_or_252d") are still accepted by the engine.
-    exit_mode:        str   = "hold_only"
+    # ge=1 rather than leaving it to the engine: without it a 0 is accepted
+    # here, a job is created and returns 202, and the ValueError surfaces later
+    # as "Internal error" on a poll — a client mistake reported as a server one.
+    #
+    # The upper bound is the simulator's own widest window, NOT the policy hold.
+    # Capping at 504 would forbid the one question the holding-period study
+    # itself leaves open: it compared 252 / 378 / 504, found the upper tail grows
+    # monotonically with holding time, and flagged that the 504 edge rests on
+    # only 21 completed trades. Asking whether a longer hold helps or just runs
+    # out of trades is what this tool is for. Past _MAX_HOLD_DAYS, though, no
+    # permitted window can complete a single trade, so the run would report zero
+    # trades — which reads as "the strategy did nothing" rather than "your hold
+    # is longer than the data".
+    hold_days:        int   = Field(default=HOLD_TRADING_DAYS, ge=1,
+                                    le=_MAX_HOLD_DAYS)
+    # Constrained rather than a bare str: the engine matches these by equality,
+    # so an unrecognised spelling falls through every branch and runs a backtest
+    # with no exit rule at all, silently. The old spellings stay accepted.
+    exit_mode: Literal[
+        "hold_only",
+        "threshold_or_hold",
+        "threshold_only",
+        "252d_only",
+        "threshold_or_252d",
+    ] = "hold_only"
     take_profit_pct:  float = 0.0           # 0 = disabled; e.g. 30 = exit at +30%
     stop_loss_pct:    float = 0.0           # 0 = disabled; e.g. 20 = exit at -20%
     trailing_stop_pct: float = 0.0         # 0 = disabled; e.g. 25 = exit 25% below peak
@@ -459,6 +496,12 @@ def _current_price(ticker: str, prices: PriceData) -> Optional[float]:
 
 
 def _context_msg(ret: float) -> str:
+    """Positional context for an open position, keyed on unrealized return.
+
+    The last branch names the exit day, which must be the policy hold: this
+    string ships alongside days_remaining in the same object, and the two
+    disagreeing is how a reader learns two different exit dates.
+    """
     if ret < -0.20:
         return (
             "You are in the bottom quartile. This happens to 25% of entries. "
@@ -478,7 +521,7 @@ def _context_msg(ret: float) -> str:
     return (
         "You are ahead of 80% of historical entries at this stage. "
         "Average at 12 months is +49.2%. "
-        "Consider your exit plan as you approach day 252."
+        f"Consider your exit plan as you approach day {HOLD_TRADING_DAYS}."
     )
 
 
@@ -1211,16 +1254,6 @@ def portfolio_alerts() -> dict:
 # hangs). POST kicks off the run in a background thread and returns a job_id
 # immediately (202); the client polls GET .../{job_id} for the result.
 
-_SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
-# Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and
-# the UI date-picker's max in product/web/index.html). Requests past this have no
-# cached prices for the tail, so every universe ticker would live-refetch its
-# entire history — the exact slow "still running for minutes" path the cache
-# exists to avoid. The UI already caps the picker here; this server-side guard
-# makes the boundary real for stale clients / direct API callers, returning a
-# clean 400 instead of a silent slow refetch. Bump this (and the UI max, and the
-# cache) together whenever the prebuilt cache is extended.
-_SIM_MAX_END = date(2026, 6, 30)
 
 
 def _prune_old_jobs(now: float) -> None:
@@ -1363,15 +1396,6 @@ def backtest_status(job_id: str) -> dict:
         return {"job_id": job_id, "status": "running"}
 
 
-# ── Internal console ──────────────────────────────────────────────────────────
-# Gated by a shared token in INTERNAL_CONSOLE_TOKEN. Fails CLOSED: with the
-# variable unset the page does not exist, so a deploy that forgets it exposes
-# nothing rather than everything.
-#
-# Scope, stated plainly: this protects the PAGE. The /api/* endpoints it reads
-# stay public, because the client PWA served at / depends on them — so the data
-# is still reachable by anyone who knows those URLs. The gate stops the console
-# being stumbled upon and read at a glance; it is not a data boundary.
 _INTERNAL_TOKEN  = os.environ.get("INTERNAL_CONSOLE_TOKEN", "").strip()
 _INTERNAL_COOKIE = "internal_console"
 # 30 days. This is a console the owner opens from a handful of browsers, not
@@ -1395,9 +1419,124 @@ def _token_ok(supplied: str) -> bool:
                                   _INTERNAL_TOKEN.encode("utf-8"))
 
 
+def require_console_token(request: Request) -> None:
+    """Gate a route behind the internal-console token.
+
+    Accepts the cookie the console page already holds — its own fetches are
+    same-origin, so they carry it without any change — or an
+    X-Internal-Token header for curl.
+
+    404, not 401/403, and fail-closed when no token is configured: the same
+    rule the console page itself follows, so a caller learns nothing about
+    whether the path exists.
+    """
+    supplied = (request.headers.get("X-Internal-Token", "")
+                or request.cookies.get(_INTERNAL_COOKIE, ""))
+    if not _token_ok(supplied):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+# ── Research reports ──────────────────────────────────────────────────────────
+# The already-run studies: every sweep and backtest the policy rests on, with
+# their tables. They are committed markdown, so they ship with the service and
+# need no engine run to read — the point is to see results that exist, not to
+# compute new ones.
+#
+# The id-to-path map is built once at import from a fixed pair of directories,
+# and lookups only ever hit that dict, so a caller cannot reach a path the map
+# does not already contain.
+_RESEARCH_DIRS = (_ROOT / "validation", _ROOT / "results" / "research")
+
+
+def _research_index() -> dict:
+    """Map report id -> path, for every committed report. Ids are unique across
+    both directories; a collision would be a repo mistake, so it is surfaced
+    rather than silently shadowed."""
+    index: dict[str, Path] = {}
+    for directory in _RESEARCH_DIRS:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.md")):
+            key = path.stem
+            if key in index:
+                key = f"{directory.name}_{path.stem}"
+            index[key] = path
+    return index
+
+
+_RESEARCH_INDEX = _research_index()
+
+
+def _research_meta(path: Path) -> dict:
+    """Title and lead paragraph, read from the file's own first heading and the
+    first prose line under it, so the listing never drifts from the report."""
+    title, lead = path.stem.replace("_", " "), ""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {"title": title, "lead": ""}
+    for line in lines:
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+    started = False
+    for line in lines:
+        if line.startswith("# "):
+            started = True
+            continue
+        if started and line.strip() and not line.startswith(("#", "|", "-", "*")):
+            lead = line.strip()
+            break
+    return {"title": title, "lead": lead}
+
+
+@app.get("/api/research", dependencies=[Depends(require_console_token)])
+def research_index() -> dict:
+    """List the available research reports, newest-looking first by group."""
+    reports = []
+    for key, path in _RESEARCH_INDEX.items():
+        meta = _research_meta(path)
+        reports.append({
+            "id": key,
+            "group": path.parent.name,
+            "title": meta["title"],
+            "lead": meta["lead"],
+            "tables": sum(1 for ln in path.read_text(encoding="utf-8").splitlines()
+                          if ln.startswith("|")),
+        })
+    reports.sort(key=lambda r: (r["group"], r["title"]))
+    return {"reports": reports}
+
+
+@app.get("/api/research/{report_id}",
+         dependencies=[Depends(require_console_token)],
+         responses={404: {"description": "No report with that id, or no token"}})
+def research_report(report_id: str) -> dict:
+    """One report's markdown, verbatim."""
+    path = _RESEARCH_INDEX.get(report_id)
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"No such report: {report_id}")
+    meta = _research_meta(path)
+    return {
+        "id": report_id,
+        "group": path.parent.name,
+        "title": meta["title"],
+        "markdown": path.read_text(encoding="utf-8"),
+    }
+
+
+# ── Internal console ──────────────────────────────────────────────────────────
+# Gated by a shared token in INTERNAL_CONSOLE_TOKEN. Fails CLOSED: with the
+# variable unset the page does not exist, so a deploy that forgets it exposes
+# nothing rather than everything.
+#
+# Scope, stated plainly: this protects the PAGE. The /api/* endpoints it reads
+# stay public, because the client PWA served at / depends on them — so the data
+# is still reachable by anyone who knows those URLs. The gate stops the console
+# being stumbled upon and read at a glance; it is not a data boundary.
 @app.get("/internal", include_in_schema=False)
 @app.get("/internal/", include_in_schema=False)
-def internal_console(request: Request, k: str = "") -> FileResponse:
+def internal_console(request: Request, k: str = "") -> Response:
     """Serve the internal console to a caller holding the token.
 
     Accepts it as ?k= once and then as a cookie, so the page can refresh
@@ -1410,10 +1549,18 @@ def internal_console(request: Request, k: str = "") -> FileResponse:
     page = _INTERNAL_DIR / "index.html"
     if not _token_ok(supplied) or not page.is_file():
         raise HTTPException(status_code=404, detail="Not Found")
-    resp = FileResponse(page, media_type="text/html")
-    # Never let a shared cache hold a copy handed out against a token.
-    resp.headers["Cache-Control"] = "no-store, private"
+
     if k:
+        # Redirect rather than serving the page at ?k=<token>. Otherwise that
+        # stays the document URL: it sits in the address bar and in history, it
+        # is what gets copied and pasted, and — because the browser sends the
+        # full URL as Referer on same-origin requests — the console's own
+        # polling would put the token in the access log every 60 seconds. The
+        # one request that carried it is still logged once; that cannot be
+        # undone from here, only not repeated.
+        resp: Response = RedirectResponse(url="/internal", status_code=303)
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Cache-Control"] = "no-store, private"
         resp.set_cookie(
             _INTERNAL_COOKIE, _INTERNAL_TOKEN,
             max_age=_INTERNAL_MAX_AGE, httponly=True, samesite="lax",
@@ -1421,6 +1568,12 @@ def internal_console(request: Request, k: str = "") -> FileResponse:
             # local development over plain http still needs to work.
             secure=not _IS_LOCAL,
         )
+        return resp
+
+    resp = FileResponse(page, media_type="text/html")
+    # Never let a shared cache hold a copy handed out against a token.
+    resp.headers["Cache-Control"] = "no-store, private"
+    resp.headers["Referrer-Policy"] = "no-referrer"
     return resp
 
 

@@ -113,6 +113,32 @@
   .prog { height: 5px; background: #14161e; border-radius: 3px; overflow: hidden; min-width: 70px; }
   .prog i { display: block; height: 100%; background: var(--blue); }
 
+  /* ── track record ── */
+  .tr-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+  .tr-controls label { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .tr-controls input, .tr-controls select {
+    background: var(--raise); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 7px; font-size: 12px; font-family: inherit;
+  }
+  #tr-run {
+    background: var(--blue); color: #fff; border: 0; border-radius: 6px;
+    padding: 7px 13px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  #tr-run:disabled { background: var(--border); color: var(--dim); cursor: default; }
+
+  /* ── research reports ── */
+  #rs-pick { max-width: 460px; }
+  #rs-body h1 { font-size: 15px; font-weight: 650; margin: 4px 0 10px; }
+  #rs-body h2 { font-size: 12px; margin: 20px 0 8px; }
+  #rs-body h3 { font-size: 11px; color: var(--muted); margin: 15px 0 7px;
+                text-transform: uppercase; letter-spacing: 0.06em; }
+  #rs-body p  { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; max-width: 78ch; }
+  #rs-body ul { margin: 0 0 10px 18px; color: var(--muted); font-size: 12.5px; max-width: 78ch; }
+  #rs-body li { margin-bottom: 4px; }
+  #rs-body table { margin-bottom: 14px; }
+  #rs-body strong { color: var(--text); font-weight: 600; }
+  #rs-body code { font-family: var(--mono); font-size: 12px; color: var(--violet); }
+
   /* ── messages ── */
   .msg { border-radius: 8px; padding: 12px 14px; font-size: 12.5px; border: 1px solid; }
   .msg-err  { border-color: rgba(239,68,68,.35);  background: #1f151a; color: #ffc4c4; }
@@ -175,6 +201,43 @@
   <section>
     <h2>Beta tracking <span class="note">strategy vs SPY vs money market, per opened position</span></h2>
     <div class="card" id="beta"><div class="empty">loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Research results <span class="note" id="rs-note">every study already run — no engine run needed</span></h2>
+    <div class="card">
+      <div class="tr-controls">
+        <label>Report <select id="rs-pick"><option>loading…</option></select></label>
+        <span class="dim" id="rs-lead"></span>
+      </div>
+      <div id="rs-body"><div class="empty">loading…</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Track record <span class="note">what the engine would have done, run on demand</span></h2>
+    <div class="card">
+      <div class="tr-controls">
+        <label>From <input type="date" id="tr-start" value="2018-01-01" min="2010-01-01" max="2026-06-30"></label>
+        <label>To <input type="date" id="tr-end" value="2026-06-30" min="2010-01-01" max="2026-06-30"></label>
+        <label>Hold
+          <select id="tr-hold">
+            <option value="252">1 year</option>
+            <option value="378">1.5 years</option>
+            <option value="504" selected>2 years (policy)</option>
+          </select>
+        </label>
+        <button id="tr-run" type="button">Run backtest</button>
+        <span class="dim" id="tr-status"></span>
+      </div>
+      <div id="tr-result"></div>
+      <div class="foot" style="margin-top:12px">
+        Runs the same engine the live screener uses, on the survivorship-free
+        point-in-time universe. Takes a few minutes and only one runs at a time.
+        Entry threshold, sizing and sleeve count are the production values — only
+        the window and the hold period are yours to set.
+      </div>
+    </div>
   </section>
 
   <section>
@@ -577,6 +640,329 @@
         String(t.getSeconds()).padStart(2, "0");
     });
   }
+
+  // ── track record ──────────────────────────────────────────────────────────
+  // A backtest runs for minutes, so it deliberately does NOT use the refresh
+  // cycle's AbortController or its 20-second deadline — that would kill it.
+  // It is user-initiated, owns its own lifetime, and is independent of the
+  // 60-second polling above.
+  var TR_POLL_MS = 4000;
+  var TR_MAX_WAIT_MS = 15 * 60 * 1000;   // give up rather than poll forever
+  var trRunning = false;
+
+  function trSay(text, cls) {
+    var el = $("tr-status");
+    el.textContent = text;
+    el.className = cls || "dim";
+  }
+
+  function trHoldLabel(days) {
+    return { 252: "1 year", 378: "1.5 years", 504: "2 years" }[days] || days + " days";
+  }
+
+  // POST/GET without the cycle signal; see the note above.
+  function trFetch(path, body) {
+    var opts = { headers: { Accept: "application/json" }, cache: "no-store" };
+    if (body) {
+      opts.method = "POST";
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(path, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (payload) {
+        if (!r.ok) {
+          var e = new Error(payload && payload.detail ? payload.detail : "HTTP " + r.status);
+          e.status = r.status;
+          throw e;
+        }
+        return payload;
+      });
+    });
+  }
+
+  // beat_spy is true / false / null (null when the window had no SPY series),
+  // and the three cases read better as a lookup than as a chain.
+  var TR_VERDICT = {
+    "true":  { text: "beat SPY",          cls: "pos" },
+    "false": { text: "lost to SPY",       cls: "neg" },
+    "null":  { text: "no SPY comparison", cls: "dim" },
+  };
+
+  function trVerdict(beatSpy) {
+    return TR_VERDICT[String(beatSpy)] || TR_VERDICT["null"];
+  }
+
+  function trSummary(sum, params) {
+    var verdict = trVerdict(sum.beat_spy);
+    return '<div class="grid g4" style="margin:14px 0">' +
+      '<div class="tile"><div class="k">CAGR</div><div class="v">' + pct(sum.cagr) +
+        '</div><div class="u">SPY ' + pct(sum.spy_cagr) + '</div></div>' +
+      '<div class="tile"><div class="k">Sharpe</div><div class="v">' + num(sum.sharpe, 2) +
+        '</div><div class="u">risk-adjusted</div></div>' +
+      '<div class="tile"><div class="k">Max drawdown</div><div class="v">' + pct(sum.max_drawdown_pct) +
+        '</div><div class="u">peak to trough</div></div>' +
+      '<div class="tile"><div class="k">Verdict</div><div class="v ' + verdict.cls + '">' + verdict.text +
+        '</div><div class="u">' + sum.n_trades + ' trades · ' + pct(sum.pct_positive, 0) +
+        ' positive</div></div>' +
+      "</div>" +
+      '<div class="foot" style="margin-bottom:14px">' +
+        "Hold " + esc(trHoldLabel(params.hold_days)) + " · entry ≥ " + num(params.entry_threshold, 2) +
+        " · " + num(params.position_size_pct, 0) + "% per sleeve, max " + params.max_positions +
+        " · avg hold " + num(sum.avg_hold_days, 0) + " days" +
+        (sum.n_open_at_end ? " · " + sum.n_open_at_end +
+          " still open at the end, marked to market (" + signed(sum.unrealized_pnl_pct) + ")" : "") +
+      "</div>";
+  }
+
+  function trYearly(rows) {
+    if (!rows || !rows.length) return "";
+    var body = rows.map(function (y) {
+      var diff = fin(y.portfolio_return) !== null && fin(y.spy_return) !== null
+        ? y.portfolio_return - y.spy_return : null;
+      return "<tr><td class='tick'>" + esc(y.year) + "</td>" +
+        "<td class='n'>" + signed(y.portfolio_return) + "</td>" +
+        "<td class='n dim'>" + pct(y.spy_return) + "</td>" +
+        "<td class='n'>" + signed(diff) + "</td></tr>";
+    }).join("");
+    return '<div class="scroll"><table><thead><tr><th>Year</th>' +
+      "<th class='n'>Engine</th><th class='n'>SPY</th><th class='n'>vs SPY</th>" +
+      "</tr></thead><tbody>" + body + "</tbody></table></div>";
+  }
+
+  function trTrades(trades) {
+    if (!trades || !trades.length) return '<div class="empty">no trades in this window</div>';
+    var body = trades.map(function (t) {
+      return "<tr><td class='tick'>" + esc(t.ticker) + "</td>" +
+        "<td class='dim'>" + esc(t.entry_date) + " → " + esc(t.exit_date) + "</td>" +
+        "<td class='n'>" + num(t.entry_price) + "</td>" +
+        "<td class='n'>" + num(t.exit_price) + "</td>" +
+        "<td class='n'>" + signed(t.return_pct) + "</td>" +
+        "<td class='n dim'>" + esc(t.hold_days) + "</td>" +
+        "<td class='dim'>" + esc(t.exit_reason) + "</td></tr>";
+    }).join("");
+    return '<div class="scroll"><table><thead><tr><th>Ticker</th><th>Held</th>' +
+      "<th class='n'>In $</th><th class='n'>Out $</th><th class='n'>Return</th>" +
+      "<th class='n'>Days</th><th>Exit</th>" +
+      "</tr></thead><tbody>" + body + "</tbody></table></div>";
+  }
+
+  function trRender(result) {
+    var sum = result.summary || {};
+    var trades = result.trades || [];
+    $("tr-result").innerHTML =
+      trSummary(sum, result.params || {}) +
+      '<h2 style="margin-top:4px">By year</h2>' + trYearly(result.yearly) +
+      '<h2 style="margin-top:18px">Every trade <span class="note">' + trades.length +
+        " in this window</span></h2>" + trTrades(trades);
+  }
+
+  function trPoll(jobId, startedAt) {
+    return trFetch("/api/backtest/" + encodeURIComponent(jobId)).then(function (r) {
+      if (r.status === "done") return r;
+      if (r.status === "error") throw new Error(r.detail || "the backtest failed");
+      if (Date.now() - startedAt > TR_MAX_WAIT_MS) {
+        throw new Error("still running after " + (TR_MAX_WAIT_MS / 60000) +
+                        " minutes — check the service logs");
+      }
+      var mins = Math.floor((Date.now() - startedAt) / 60000);
+      var secs = Math.floor(((Date.now() - startedAt) % 60000) / 1000);
+      trSay("running… " + mins + "m " + String(secs).padStart(2, "0") + "s");
+      return new Promise(function (resolve) {
+        setTimeout(function () { resolve(trPoll(jobId, startedAt)); }, TR_POLL_MS);
+      });
+    });
+  }
+
+  function trRun() {
+    if (trRunning) return;
+    var body = {
+      start_date: $("tr-start").value,
+      end_date: $("tr-end").value,
+      hold_days: Number($("tr-hold").value),
+    };
+    trRunning = true;
+    $("tr-run").disabled = true;
+    $("tr-result").innerHTML = "";
+    trSay("starting…");
+    var startedAt = Date.now();
+
+    trFetch("/api/backtest", body)
+      .then(function (job) { return trPoll(job.job_id, startedAt); })
+      .then(function (result) {
+        trRender(result);
+        trSay("done in " + Math.round((Date.now() - startedAt) / 1000) + "s");
+      })
+      .catch(function (e) {
+        var hint = e.status === 429
+          ? " — only one backtest runs at a time; wait for the other to finish."
+          : "";
+        $("tr-result").innerHTML = banner("err",
+          "<b>Backtest failed:</b> " + esc(e.message || String(e)) + esc(hint));
+        trSay("failed", "neg");
+      })
+      .then(function () {
+        trRunning = false;
+        $("tr-run").disabled = false;
+      });
+  }
+
+  $("tr-run").addEventListener("click", trRun);
+
+  // ── research results ──────────────────────────────────────────────────────
+  // The already-run studies. Every sweep the policy rests on, served as the
+  // committed markdown it lives in, so what shows here is the report itself
+  // rather than a summary of it that could drift.
+  //
+  // The renderer escapes the whole line FIRST and only then emits tags it
+  // built itself, so nothing in a report file can inject markup — these are
+  // repo files, but the rule costs nothing and removes the question.
+
+  function mdInline(text) {
+    return esc(text)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+      .replace(/(^|[\s(])_([^_]+)_(?=[\s.,;:)]|$)/g, "$1<em>$2</em>");
+  }
+
+  function mdRow(line, cell) {
+    var cells = line.replace(/^\||\|$/g, "").split("|");
+    return "<tr>" + cells.map(function (c) {
+      var t = c.trim();
+      // Right-align anything that reads as a number, the way the reports do.
+      var numeric = /^[+\-−$]?[\d.,]+%?$/.test(t) || /^[+\-−]?\d/.test(t);
+      return "<" + cell + (numeric ? " class='n'" : "") + ">" + mdInline(t) + "</" + cell + ">";
+    }).join("") + "</tr>";
+  }
+
+  // Each block parser takes the line array and the current index, pushes what
+  // it recognised onto `out`, and returns the next index — or -1 when it does
+  // not apply. Splitting them keeps mdToHtml a dispatch loop instead of one
+  // deeply nested function.
+
+  function blockTable(lines, i, out) {
+    if (!lines[i].startsWith("|")) return -1;
+    if (i + 1 >= lines.length || !/^\|[\s:|-]+\|?$/.test(lines[i + 1])) return -1;
+    var head = mdRow(lines[i], "th");
+    var j = i + 2;
+    var body = [];
+    while (j < lines.length && lines[j].startsWith("|")) {
+      body.push(mdRow(lines[j], "td"));
+      j++;
+    }
+    out.push('<div class="scroll"><table><thead>' + head + "</thead><tbody>" +
+             body.join("") + "</tbody></table></div>");
+    return j;
+  }
+
+  function blockHeading(lines, i, out) {
+    // One whitespace then the rest, deliberately: "\s+(.*)" lets both parts
+    // match the same spaces, which is the ambiguity that makes such a pattern
+    // backtrack super-linearly.
+    var m = /^(#{1,6})\s(.*)$/.exec(lines[i]);
+    if (!m) return -1;
+    var level = Math.min(m[1].length, 3);
+    out.push("<h" + level + ">" + mdInline(m[2].trim()) + "</h" + level + ">");
+    return i + 1;
+  }
+
+  function blockList(lines, i, out) {
+    if (!/^[-*]\s/.test(lines[i])) return -1;
+    var items = [];
+    var j = i;
+    while (j < lines.length && /^[-*]\s/.test(lines[j])) {
+      var item = lines[j].replace(/^[-*]\s+/, "");
+      j++;
+      // The reports wrap long bullets with a hanging indent; fold those in so
+      // a sentence does not break into a separate paragraph mid-clause.
+      while (j < lines.length && /^\s/.test(lines[j]) && lines[j].trim() !== "" &&
+             !/^\s*[-*]\s/.test(lines[j])) {
+        item += " " + lines[j].trim();
+        j++;
+      }
+      items.push("<li>" + mdInline(item) + "</li>");
+    }
+    out.push("<ul>" + items.join("") + "</ul>");
+    return j;
+  }
+
+  function blockRule(lines, i) {
+    return /^\s*(-{3,}|={3,})\s*$/.test(lines[i]) ? i + 1 : -1;
+  }
+
+  function blockParagraph(lines, i, out) {
+    var para = [];
+    var j = i;
+    while (j < lines.length && lines[j].trim() !== "" &&
+           !lines[j].startsWith("|") && !/^#{1,6}\s/.test(lines[j]) &&
+           !/^[-*]\s/.test(lines[j])) {
+      para.push(lines[j].trim());
+      j++;
+    }
+    if (!para.length) return -1;
+    out.push("<p>" + mdInline(para.join(" ")) + "</p>");
+    return j;
+  }
+
+  function mdToHtml(md) {
+    var lines = md.split("\n");
+    var out = [];
+    var i = 0;
+    while (i < lines.length) {
+      if (lines[i].trim() === "") { i++; continue; }
+      var next = blockTable(lines, i, out);
+      if (next < 0) next = blockHeading(lines, i, out);
+      if (next < 0) next = blockList(lines, i, out);
+      if (next < 0) next = blockRule(lines, i);
+      if (next < 0) next = blockParagraph(lines, i, out);
+      // Every parser declining would loop forever; consuming the line is the
+      // safe fallback and cannot happen for any line that is not blank.
+      i = next < 0 ? i + 1 : next;
+    }
+    return out.join("");
+  }
+
+  function rsShow(id) {
+    $("rs-body").innerHTML = '<div class="empty">loading…</div>';
+    get("/api/research/" + encodeURIComponent(id))
+      .then(function (r) { $("rs-body").innerHTML = mdToHtml(r.markdown || ""); })
+      .catch(function (e) {
+        $("rs-body").innerHTML = banner("err",
+          "<b>Could not load the report:</b> " + esc(e.message || String(e)));
+      });
+  }
+
+  function rsInit() {
+    get("/api/research").then(function (d) {
+      var reports = d.reports || [];
+      if (!reports.length) {
+        $("rs-body").innerHTML = '<div class="empty">no reports found on this deploy</div>';
+        return;
+      }
+      var pick = $("rs-pick");
+      pick.innerHTML = reports.map(function (r) {
+        return '<option value="' + esc(r.id) + '">' + esc(r.title) +
+               (r.tables ? "  (" + r.tables + " rows)" : "") + "</option>";
+      }).join("");
+      $("rs-note").textContent = reports.length + " studies, already run";
+      pick.addEventListener("change", function () {
+        var sel = reports.find(function (r) { return r.id === pick.value; });
+        $("rs-lead").textContent = sel ? sel.lead : "";
+        rsShow(pick.value);
+      });
+      // Open on the entry-threshold sweep when it is there: it is the study
+      // that most often prompts the question "why 0.60?".
+      var preferred = reports.find(function (r) { return r.id === "threshold_sweep"; });
+      pick.value = (preferred || reports[0]).id;
+      $("rs-lead").textContent = (preferred || reports[0]).lead;
+      rsShow(pick.value);
+    }).catch(function (e) {
+      $("rs-body").innerHTML = banner("err",
+        "<b>Could not list the reports:</b> " + esc(e.message || String(e)));
+    });
+  }
+
+  rsInit();
 
   load();
   setInterval(load, REFRESH_MS);
