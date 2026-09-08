@@ -41,9 +41,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any, List, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -70,6 +72,29 @@ class StorageError(RuntimeError):
 
     Raised instead of falling back to files: see the module docstring.
     """
+
+
+# A listed symbol: letters and digits, optionally with a dot or hyphen for
+# class shares and preferreds (BRK.B, RDS-A). Deliberately strict, and enforced
+# here rather than trusting the API models, because a ticker reaches two places
+# where a free-form string is dangerous:
+#
+#   * a PostgREST filter -- `ticker=eq.<value>` is a URL query, so an
+#     unencoded `&` or `?` in the value appends parameters of the attacker's
+#     choosing and can widen an UPDATE past the row it was meant to touch;
+#   * the run log -- a newline forges log lines.
+#
+# Values are URL-encoded on top of this. Validation is what makes the encoding
+# unnecessary rather than load-bearing; both are cheap.
+_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,14}$")
+
+
+def _clean_ticker(ticker: str) -> str:
+    """Normalise to upper case and reject anything that is not a symbol."""
+    candidate = (ticker or "").strip().upper()
+    if not _TICKER_RE.match(candidate):
+        raise ValueError(f"Not a valid ticker: {ticker!r}")
+    return candidate
 
 
 # ── backend selection ───────────────────────────────────────────────────────
@@ -175,8 +200,9 @@ def open_position(
     so two writers racing on the same signal cannot both insert -- the loser is
     rejected by the database rather than by a check that read stale state.
     """
+    ticker = _clean_ticker(ticker)
     row = {
-        "ticker": ticker.upper(),
+        "ticker": ticker,
         "entry_date": entry_date.isoformat(),
         "entry_price": float(entry_price),
         "signal_composite": signal_composite,
@@ -222,6 +248,7 @@ def close_position(
     cannot end up in neither list (or both) the way a delete-then-insert across
     two tables can when the second half fails.
     """
+    ticker = _clean_ticker(ticker)
     patch = {
         "status": "closed",
         "exit_date": exit_date.isoformat(),
@@ -233,15 +260,16 @@ def close_position(
     if _config():
         updated = _request(
             "PATCH",
-            f"{_TABLE}?ticker=eq.{ticker.upper()}"
-            f"&entry_date=eq.{entry_date.isoformat()}&status=eq.open",
+            f"{_TABLE}?ticker=eq.{quote(ticker, safe='')}"
+            f"&entry_date=eq.{quote(entry_date.isoformat(), safe='')}"
+            f"&status=eq.open",
             json=patch, headers={"Prefer": "return=representation"},
         )
         return bool(updated)
 
     rows = _read_file(_OPEN_FILE)
     match = next((r for r in rows
-                  if r.get("ticker") == ticker.upper()
+                  if r.get("ticker") == ticker
                   and r.get("entry_date") == entry_date.isoformat()), None)
     if match is None:
         return False
@@ -258,17 +286,19 @@ def mark_reminder_sent(ticker: str, entry_date: date) -> None:
     Persisted rather than recomputed so a skipped run -- weekend, holiday,
     outage -- cannot cause the reminder to be missed or sent twice.
     """
+    ticker = _clean_ticker(ticker)
     if _config():
         _request("PATCH",
-                 f"{_TABLE}?ticker=eq.{ticker.upper()}"
-                 f"&entry_date=eq.{entry_date.isoformat()}&status=eq.open",
+                 f"{_TABLE}?ticker=eq.{quote(ticker, safe='')}"
+                 f"&entry_date=eq.{quote(entry_date.isoformat(), safe='')}"
+                 f"&status=eq.open",
                  json={"reminder_sent": True},
                  headers={"Prefer": "return=minimal"})
         return
 
     rows = _read_file(_OPEN_FILE)
     for r in rows:
-        if (r.get("ticker") == ticker.upper()
+        if (r.get("ticker") == ticker
                 and r.get("entry_date") == entry_date.isoformat()):
             r["reminder_sent"] = True
     _write_file(_OPEN_FILE, rows)

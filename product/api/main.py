@@ -1059,7 +1059,11 @@ def beta_dashboard() -> dict:
         ) from exc
 
 
-@app.post("/api/positions/open", dependencies=[Depends(require_admin)])
+@app.post(
+    "/api/positions/open",
+    dependencies=[Depends(require_admin)],
+    responses={503: {"description": "The position book is unreachable; nothing was recorded."}},
+)
 def open_position(body: OpenPositionIn) -> dict:
     tracker    = ExitTracker()
     entry_date = date.fromisoformat(body.entry_date) if body.entry_date else date.today()
@@ -1074,7 +1078,15 @@ def open_position(body: OpenPositionIn) -> dict:
     return {"success": True}
 
 
-@app.post("/api/positions/close", dependencies=[Depends(require_admin)])
+@app.post(
+    "/api/positions/close",
+    dependencies=[Depends(require_admin)],
+    responses={
+        404: {"description": "No such open position."},
+        500: {"description": "The position book could not be read."},
+        503: {"description": "The position book is unreachable; nothing was closed."},
+    },
+)
 def close_position(body: ClosePositionIn) -> dict:
     ticker   = body.ticker.upper()
     try:

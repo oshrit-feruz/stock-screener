@@ -226,14 +226,7 @@ def test_closing_a_row_that_was_already_closed_reports_false(monkeypatch):
 
 # ── the property that matters most ──────────────────────────────────────────
 
-def test_an_unreachable_supabase_raises_instead_of_writing_to_a_file(monkeypatch):
-    """This is the whole point of the change.
-
-    Falling back to the local file when the database is unreachable would
-    recreate the split book silently -- the app would report success, the row
-    would sit on a container disk nobody else reads, and it would be gone at the
-    next restart. A loud failure can be retried; a silent one cannot be noticed.
-    """
+def _kill_the_network(monkeypatch):
     _configure(monkeypatch)
 
     def dead(*a, **k):
@@ -241,13 +234,68 @@ def test_an_unreachable_supabase_raises_instead_of_writing_to_a_file(monkeypatch
 
     monkeypatch.setattr(requests, "request", dead)
 
+
+def test_a_read_against_an_unreachable_supabase_raises(monkeypatch):
+    _kill_the_network(monkeypatch)
     with pytest.raises(store.StorageError):
         store.load_open()
+
+
+def test_a_write_against_an_unreachable_supabase_raises(monkeypatch):
+    _kill_the_network(monkeypatch)
     with pytest.raises(store.StorageError):
         store.open_position("AAPL", date(2026, 1, 5), 100.0)
 
+
+def test_an_outage_leaves_nothing_in_the_fallback_file(monkeypatch):
+    """This is the whole point of the change.
+
+    Falling back to the local file when the database is unreachable would
+    recreate the split book silently -- the app would report success, the row
+    would sit on a container disk nobody else reads, and it would be gone at the
+    next restart. A loud failure can be retried; a silent one cannot be noticed.
+    """
+    _kill_the_network(monkeypatch)
+    with pytest.raises(store.StorageError):
+        store.open_position("AAPL", date(2026, 1, 5), 100.0)
     assert not store._OPEN_FILE.exists(), \
         "an outage must not leave a position written to the local fallback file"
+
+
+# ── input validation ────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("bad", [
+    "AAPL&limit=1&or=(status.eq.closed)",  # extra PostgREST params
+    "AAPL&status=eq.closed",               # redirect the filter at other rows
+    "AAPL\nJan 01 forged log line",        # forge a line in the run log
+    "../../etc/passwd",
+    "*",
+    "",
+    "A" * 20,
+])
+def test_a_ticker_that_is_not_a_symbol_is_refused(bad):
+    """`ticker=eq.<value>` is a URL query and the ticker also reaches the log,
+    so a free-form string could append filter parameters of its own choosing --
+    widening an UPDATE past the row it was meant to touch -- or forge log lines.
+    Rejected at the store, not left to whatever validation a caller happens to
+    have."""
+    with pytest.raises(ValueError):
+        store.open_position(bad, date(2026, 1, 5), 100.0)
+
+
+@pytest.mark.parametrize("raw,expected", [("aapl", "AAPL"), ("  msft  ", "MSFT"),
+                                          ("BRK.B", "BRK.B"), ("RDS-A", "RDS-A")])
+def test_real_symbols_survive_normalisation(raw, expected):
+    """Class shares and preferreds carry a dot or hyphen; the guard must not
+    reject them, and case is normalised rather than refused."""
+    store.open_position(raw, date(2026, 1, 5), 100.0)
+    assert store.load_open()[0]["ticker"] == expected
+
+
+def test_closing_also_validates_the_ticker():
+    with pytest.raises(ValueError):
+        store.close_position("AAPL&status=eq.closed", date(2026, 1, 5),
+                             date(2026, 2, 1), 1.0, 0.0, 1)
 
 
 def test_count_open_reads_the_total_from_the_range_header(monkeypatch):
