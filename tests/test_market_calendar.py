@@ -55,6 +55,8 @@ _PUBLISHED = {
 
 @pytest.mark.parametrize("year", sorted(_PUBLISHED))
 def test_the_rules_reproduce_the_published_holiday_calendar(year):
+    """Exact set equality, not containment: an extra day is as wrong as a
+    missing one, because each false holiday closes a day the market traded."""
     expected = {date.fromisoformat(d) for d in _PUBLISHED[year]}
     assert nyse_holidays(year) == expected
 
@@ -97,10 +99,14 @@ def test_fallback_closes_on_a_holiday(_no_calendar_lib):
 
 
 def test_fallback_opens_on_an_ordinary_weekday(_no_calendar_lib):
+    """The control for the holiday case above — without it, a fallback that
+    simply answered False to everything would pass that test."""
     assert is_trading_day(date(2026, 9, 8)) is True
 
 
 def test_fallback_closes_on_a_weekend(_no_calendar_lib):
+    """The one thing the old weekday-only fallback did get right; the holiday
+    rules are layered on top of it, not in place of it."""
     assert is_trading_day(date(2026, 9, 5)) is False
     assert is_trading_day(date(2026, 9, 6)) is False
 
