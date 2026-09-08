@@ -1,5 +1,50 @@
 'use strict';
 
+var HOLD_DAYS_DEFAULT = 504;   // policy hold (~2 years); see satellite_policy.py
+
+// "1 year" / "1.5 years" / "2 years" for the periods the Simulator offers, and
+// a plain day count for anything else, so the run label says what was actually
+// tested instead of a fixed "12 months".
+function holdLabel(days) {
+  var d = days || HOLD_DAYS_DEFAULT;
+  if (d === 252) return '1 year';
+  if (d === 378) return '1.5 years';
+  if (d === 504) return '2 years';
+  return d + ' days';
+}
+
+// ── Time horizon ──────────────────────────────────────────────────────────────
+// The buckets a user picks from, each with the longest hold it promises in
+// trading days. Anything short of HOLD_DAYS_DEFAULT is a caution: the signal
+// was measured over the full hold, and on the clean backtest a 1-year exit
+// lost to SPY — so "more than 12 months" is not on its own a match for it,
+// which is why the old single over_12m bucket is split in two here.
+var TIME_HORIZONS = {
+  'under_3m':   { days: 63 },
+  '3_to_6m':    { days: 126 },
+  '6_to_12m':   { days: 252 },
+  '12_to_24m':  { days: 503 },
+  '2y_or_more': { days: HOLD_DAYS_DEFAULT }
+};
+var TIME_HORIZON_DEFAULT = '2y_or_more';
+
+// Read the stored horizon as one of the buckets above. 'over_12m' is the
+// spelling used before the hold moved to two years; it promised more than a
+// year and nothing further, so it reads as 12-24 months rather than as a
+// match — a stored value must not be silently upgraded into an endorsement.
+function readTimeHorizon() {
+  var th = localStorage.getItem('user_time_horizon');
+  if (th === 'over_12m') return '12_to_24m';
+  return (th && TIME_HORIZONS[th]) ? th : TIME_HORIZON_DEFAULT;
+}
+
+// Normalise on write so an unrecognised value can never reach storage and
+// suppress the caution by falling through every branch.
+function storeTimeHorizon(val) {
+  localStorage.setItem('user_time_horizon',
+                       TIME_HORIZONS[val] ? val : TIME_HORIZON_DEFAULT);
+}
+
 // ── State ──────────────────────────────────────────────────────────────────────
 var _sigCache   = null;
 var _sigCacheTs = 0;
@@ -110,8 +155,7 @@ function obBack(toScreen)  { showOnboardingScreen(toScreen); }
 
 function completeOnboarding(mode) {
   var sel = document.querySelector('input[name="time_horizon"]:checked');
-  var th  = sel ? sel.value : '6_to_12m';
-  localStorage.setItem('user_time_horizon', th);
+  storeTimeHorizon(sel ? sel.value : TIME_HORIZON_DEFAULT);
   localStorage.setItem('user_mode', mode);
   localStorage.setItem('onboarding_complete', 'true');
   hideOnboarding();
@@ -262,22 +306,26 @@ function renderSignals(data) {
 }
 
 function timeHorizonBannerHTML() {
-  var th = localStorage.getItem('user_time_horizon') || '6_to_12m';
+  var th = readTimeHorizon();
   if (th === 'under_3m' || th === '3_to_6m') {
     return '<div class="th-warning-banner">'
       + '&#9888;&#65039; Your time horizon is under 6 months. '
-      + 'This signal\'s edge is strongest at 12 months. '
+      + 'This signal is built around a ~2 year hold. '
       + 'At 3&ndash;6 months: avg +6&ndash;12%. Proceed with extra caution.'
       + '</div>';
   }
-  if (th === 'over_12m') {
-    return '<div class="th-info-banner">'
-      + '&#8505;&#65039; You plan to hold beyond 12 months. '
-      + 'The signal has no validated edge past 252 days. '
-      + 'You may hold longer at your own discretion.'
+  if (TIME_HORIZONS[th].days < HOLD_DAYS_DEFAULT) {
+    return '<div class="th-warning-banner">'
+      + '&#9888;&#65039; Your time horizon is shorter than the ~2 year planned hold. '
+      + 'The 12-month average is +49.2%, but on the clean backtest a 1-year hold '
+      + 'lost to SPY &mdash; exiting early is not the tested strategy.'
       + '</div>';
   }
-  return '';
+  return '<div class="th-info-banner">'
+    + '&#8505;&#65039; Your horizon matches the ~2 year planned hold. '
+    + 'The signal has no validated edge past it. '
+    + 'You may hold longer at your own discretion.'
+    + '</div>';
 }
 
 function maybeShowFirstSignalTooltip() {
@@ -353,7 +401,7 @@ function sigDetailHTML(s) {
     '<div class="warn-text">',
     '  &#9888;&#65039; Expect another 10&ndash;15% drop before recovery.<br>',
     '  Median drawdown before recovery: &minus;15%.<br>',
-    '  Hold 12 months (~252 trading days). No stop-loss.<br>',
+    '  Hold ~2 years (504 trading days). No stop-loss.<br>',
     '  The edge requires holding through the drawdown.',
     '</div>',
 
@@ -440,7 +488,7 @@ function renderPositions(positions) {
       '  <div class="em-h">No open positions.</div>',
       '  <p>When you tap "Track" on a BUY signal,<br>',
       '  it appears here with live return tracking<br>',
-      '  and a 252-day countdown.</p>',
+      '  and a ' + HOLD_DAYS_DEFAULT + '-day countdown.</p>',
       '</div>'
     ].join('\n');
     return;
@@ -450,7 +498,7 @@ function renderPositions(positions) {
 
 function posCardHTML(p) {
   var r    = fmtRet(p.current_return_pct);
-  var prog = Math.min(100, Math.round((p.days_held / 252) * 100));
+  var prog = Math.min(100, Math.round((p.days_held / HOLD_DAYS_DEFAULT) * 100));
   var cur  = p.current_price ? '$' + fmt(p.current_price, 2) : 'Price unavailable';
   var exp  = p.expected_return_pct !== null ? (p.expected_return_pct >= 0 ? '+' : '') + fmt(p.expected_return_pct, 1) + '%' : '—';
 
@@ -467,7 +515,7 @@ function posCardHTML(p) {
     '  <div style="margin-top:10px;" class="bar-row">',
     '    <div class="bar-track" style="height:6px;"><div class="bar-fill bar-fill-blue" style="width:' + prog + '%;height:6px;"></div></div>',
     '  </div>',
-    '  <div class="prog-label">Day ' + p.days_held + ' of 252 &mdash; ' + p.days_remaining + ' days remaining</div>',
+    '  <div class="prog-label">Day ' + p.days_held + ' of ' + HOLD_DAYS_DEFAULT + ' &mdash; ' + p.days_remaining + ' days remaining</div>',
     '  <div style="font-size:11px;color:var(--muted);margin-top:3px;">Historical avg at day ' + p.days_held + ': <span style="font-family:monospace;color:var(--text)">' + exp + '</span></div>',
     p.context_message ? '  <div class="context-msg">&ldquo;' + escHtml(p.context_message) + '&rdquo;</div>' : '',
     '  <div class="card-actions" style="margin-top:12px;">',
@@ -595,7 +643,7 @@ function betaVsBlock(spy, mm, vsSpy, vsMm) {
 
 function betaOpenCardHTML(p) {
   var r    = fmtRet(p.return_pct);
-  var prog = Math.min(100, Math.round(((p.days_held || 0) / 252) * 100));
+  var prog = Math.min(100, Math.round(((p.days_held || 0) / HOLD_DAYS_DEFAULT) * 100));
   return [
     '<div class="card">',
     '  <div class="pos-header">',
@@ -606,7 +654,7 @@ function betaOpenCardHTML(p) {
     '  <div style="margin-top:10px;" class="bar-row">',
     '    <div class="bar-track" style="height:6px;"><div class="bar-fill bar-fill-blue" style="width:' + prog + '%;height:6px;"></div></div>',
     '  </div>',
-    '  <div class="prog-label">Day ' + (p.days_held || 0) + ' of 252 &mdash; ' + (p.days_remaining || 0) + ' days remaining</div>',
+    '  <div class="prog-label">Day ' + (p.days_held || 0) + ' of ' + HOLD_DAYS_DEFAULT + ' &mdash; ' + (p.days_remaining || 0) + ' days remaining</div>',
     betaVsBlock(fmtRet(p.spy_return_pct), fmtRet(p.mm_return_pct), fmtRet(p.vs_spy_pct), fmtRet(p.vs_mm_pct)),
     '</div>'
   ].join('\n');
@@ -893,7 +941,9 @@ function _getSimParams(suffix) {
   var tsEnabled = (document.getElementById(tsEnId) || {}).checked;
   var tsVal     = tsEnabled ? parseFloat((document.getElementById(tsValId) || {}).value || 25) : 0;
   var et        = etEl ? parseFloat(etEl.value) : 0.80;
-  var em        = emEl ? emEl.value : '252d_only';
+  var em        = emEl ? emEl.value : 'hold_only';
+  var hdEl      = document.querySelector('input[name="hold_days"]:checked');
+  var hd        = hdEl ? Number.parseInt(hdEl.value, 10) : HOLD_DAYS_DEFAULT;
   var ps        = parseFloat((document.getElementById('pos-size-slider') || {}).value || 10);
   var sd        = (document.getElementById('sim-start-date') || {}).value || '2018-01-01';
   var ed        = (document.getElementById('sim-end-date')   || {}).value || '2024-12-31';
@@ -902,6 +952,7 @@ function _getSimParams(suffix) {
     entry_threshold:   et,
     exit_threshold:    exv,
     exit_mode:         em,
+    hold_days:         hd,
     take_profit_pct:   tpVal,
     stop_loss_pct:      slVal,
     trailing_stop_pct:  tsVal,
@@ -982,7 +1033,7 @@ function runSimulation(scenario) {
   var params = _getSimParams(suffix);
 
   // Validate
-  if (params.exit_mode !== '252d_only' && params.exit_threshold >= params.entry_threshold) {
+  if (params.exit_mode !== 'hold_only' && params.exit_threshold >= params.entry_threshold) {
     showToast('Exit threshold must be lower than entry threshold'); return;
   }
   if (new Date(params.end_date) <= new Date(params.start_date)) {
@@ -1040,8 +1091,8 @@ function renderSimResults(data, scenario) {
   scenario = scenario || 'A';
 
   var exitLabel = {
-    '252d_only':        'Hold 12 months',
-    'threshold_or_252d': 'Threshold or 12m',
+    'hold_only':        'Hold ' + holdLabel(params.hold_days),
+    'threshold_or_hold': 'Threshold or ' + holdLabel(params.hold_days),
     'threshold_only':   'Threshold exit',
   }[params.exit_mode] || params.exit_mode;
   if (params.take_profit_pct && params.take_profit_pct > 0) {
@@ -1409,7 +1460,7 @@ function fmtK(n) {
 function loadSettings() {
   var hEl = document.getElementById('settings-horizon');
   var mEl = document.getElementById('settings-mode');
-  var th  = localStorage.getItem('user_time_horizon') || '6_to_12m';
+  var th  = readTimeHorizon();
   var m   = localStorage.getItem('user_mode') || 'fresh';
   if (m === 'portfolio') m = 'existing';
   if (hEl) hEl.value = th;
@@ -1473,7 +1524,7 @@ function settingsRemoveHolding(ticker) {
 }
 
 function saveTimeHorizon(val) {
-  localStorage.setItem('user_time_horizon', val);
+  storeTimeHorizon(val);
   showToast('Time horizon updated');
 }
 

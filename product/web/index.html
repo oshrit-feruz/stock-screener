@@ -605,25 +605,34 @@
             </span>
           </label>
           <label class="ob-horizon-opt">
-            <input type="radio" name="time_horizon" value="6_to_12m" checked>
+            <input type="radio" name="time_horizon" value="6_to_12m">
             <span class="ob-horizon-body">
               <span class="ob-horizon-label">6 to 12 months</span>
-              <span class="ob-horizon-ret" style="color:var(--green);">avg +49.2% &#10003;</span>
+              <span class="ob-horizon-ret">avg +49.2%</span>
             </span>
           </label>
           <label class="ob-horizon-opt">
-            <input type="radio" name="time_horizon" value="over_12m">
+            <input type="radio" name="time_horizon" value="12_to_24m">
             <span class="ob-horizon-body">
-              <span class="ob-horizon-label">More than 12 months</span>
+              <span class="ob-horizon-label">12 to 24 months</span>
               <span class="ob-horizon-ret">avg +49.2%*</span>
+            </span>
+          </label>
+          <label class="ob-horizon-opt">
+            <input type="radio" name="time_horizon" value="2y_or_more" checked>
+            <span class="ob-horizon-body">
+              <span class="ob-horizon-label">2 years or more</span>
+              <span class="ob-horizon-ret" style="color:var(--green);">the planned hold &#10003;</span>
             </span>
           </label>
         </div>
         <hr class="ob-divider">
         <p class="ob-horizon-note">
-          This signal works best at 12 months (+49.2% avg).<br>
+          The validated hold is ~2 years; on the clean backtest a 1-year hold lost to SPY.<br>
+          Measured 12-month average: +49.2%.<br>
           At 3 months: +6.4% avg &nbsp;&middot;&nbsp; At 6 months: +11.9% avg.<br><br>
-          If you select under 6 months, every signal card will show a caution warning &mdash; the edge is weak at short horizons.
+          The +49.2% is the measured 12-month average, not a 2-year figure &mdash; the study did not measure one.<br><br>
+          If you select anything shorter than 2 years, every signal card will show a caution &mdash; exiting before the planned hold is not the tested strategy.
         </p>
         <div class="ob-nav-row">
           <button class="btn btn-ghost" onclick="obBack(1)">&larr; Back</button>
@@ -665,7 +674,7 @@
         This stock is in a significant dip and showing early recovery signs.<br><br>
         Tap <b>Why now?</b> for the full analysis.<br>
         Tap <b>Track</b> to record your entry if you buy.<br><br>
-        Remember: hold 12 months. Expect a bumpy ride.<br>
+        Remember: hold ~2 years (504 trading days). Expect a bumpy ride.<br>
         1 in 4 signals ends negative.
       </div>
       <button class="btn btn-primary" style="width:100%;padding:12px;font-size:14px;justify-content:center;" onclick="dismissFirstSignalTooltip()">Got it</button>
@@ -765,19 +774,34 @@
         <div style="font-size:11px;color:var(--muted);margin-top:8px;">Production signal BUY threshold: 0.60 (required to enter)</div>
       </div>
 
+      <!-- Holding period -->
+      <div class="section-title">Holding Period</div>
+      <div class="card">
+        <div class="radio-group">
+          <label class="radio-option"><input type="radio" name="hold_days" value="252"> 1 year</label>
+          <label class="radio-option"><input type="radio" name="hold_days" value="378"> 1.5 years</label>
+          <label class="radio-option"><input type="radio" name="hold_days" value="504" checked> 2 years</label>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;">
+          Production hold: 504 trading days (~2 years). On the clean survivorship-free
+          backtest the 1-year hold <em>lost</em> to SPY (+9.0% vs +10.3% CAGR) and only
+          the 2-year hold beat it (+12.0%).
+        </div>
+      </div>
+
       <!-- Exit rule -->
       <div class="section-title">Exit Rule</div>
       <div class="card">
         <div class="exit-option">
           <label>
-            <input type="radio" name="exit_mode" value="252d_only" checked>
-            <span>Hold 12 months / 252 trading days <span style="color:var(--muted)">(recommended)</span></span>
+            <input type="radio" name="exit_mode" value="hold_only" checked>
+            <span>Hold for the full period <span style="color:var(--muted)">(recommended)</span></span>
           </label>
         </div>
         <div class="exit-option">
           <label>
-            <input type="radio" name="exit_mode" value="threshold_or_252d">
-            <span>Exit when signal drops below <input type="number" id="exit-thresh-val" class="exit-threshold-input" value="0.40" step="0.05" min="0.10" max="0.59"> OR 12 months, whichever first</span>
+            <input type="radio" name="exit_mode" value="threshold_or_hold">
+            <span>Exit when signal drops below <input type="number" id="exit-thresh-val" class="exit-threshold-input" value="0.40" step="0.05" min="0.10" max="0.59"> OR the full period, whichever first</span>
           </label>
         </div>
         <div class="exit-option">
@@ -880,10 +904,10 @@
         <div class="section-title">Scenario B — Exit Rule</div>
         <div class="card">
           <div class="exit-option">
-            <label><input type="radio" name="exit_mode_B" value="252d_only" checked> Hold 252 days</label>
+            <label><input type="radio" name="exit_mode_B" value="hold_only" checked> Hold the full period</label>
           </div>
           <div class="exit-option">
-            <label><input type="radio" name="exit_mode_B" value="threshold_or_252d"> Signal drops below 0.40 or 252d</label>
+            <label><input type="radio" name="exit_mode_B" value="threshold_or_hold"> Signal drops below 0.40 or the full period</label>
           </div>
           <div class="exit-option">
             <label><input type="radio" name="exit_mode_B" value="threshold_only"> Signal drops below 0.40 only</label>
@@ -929,7 +953,8 @@
             <option value="under_3m">Under 3 months</option>
             <option value="3_to_6m">3 to 6 months</option>
             <option value="6_to_12m">6 to 12 months</option>
-            <option value="over_12m">Over 12 months</option>
+            <option value="12_to_24m">12 to 24 months</option>
+            <option value="2y_or_more">2 years or more</option>
           </select>
         </div>
         <div class="about-row">
@@ -981,7 +1006,7 @@
         <div class="about-row"><span>% positive at 12 months</span><span class="about-val">78.9%</span></div>
         <div class="about-row"><span>Median drawdown before recovery</span><span class="about-val">-15.0%</span></div>
         <div class="about-row"><span>BUY threshold</span><span class="about-val">score &ge; 0.60</span></div>
-        <div class="about-row"><span>Hold rule</span><span class="about-val">252 trading days, no stop-loss</span></div>
+        <div class="about-row"><span>Hold rule</span><span class="about-val">504 trading days (~2 years), no stop-loss</span></div>
       </div>
 
       <div class="card">

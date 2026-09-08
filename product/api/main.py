@@ -44,7 +44,7 @@ from product.alerts.alert_templates import (  # noqa: E402
 from product.backtest.engine import run_backtest  # noqa: E402
 from product.beta.beta_tracker import build_beta_data  # noqa: E402
 from product.exit.exit_tracker import ExitTracker  # noqa: E402
-from product.satellite_policy import SCHEMA_VERSION  # noqa: E402
+from product.satellite_policy import HOLD_TRADING_DAYS, SCHEMA_VERSION  # noqa: E402
 from product.screener.daily_screener import (  # noqa: E402
     ScreenerRow,
     _load_disk_cache,
@@ -377,7 +377,13 @@ class BacktestParams(BaseModel):
     # replicates live screener behavior (imported to prevent future drift).
     entry_threshold:  float = BUY_THRESHOLD
     exit_threshold:   float = 0.40
-    exit_mode:        str   = "252d_only"   # "252d_only" | "threshold_or_252d" | "threshold_only"
+    # Holding period in trading days. Defaults to the validated policy hold so
+    # a default Simulator run reproduces what the exit tracker enforces; the
+    # UI offers 252 / 378 / 504 for comparison.
+    hold_days:        int   = HOLD_TRADING_DAYS
+    # "hold_only" | "threshold_or_hold" | "threshold_only". The old spellings
+    # ("252d_only", "threshold_or_252d") are still accepted by the engine.
+    exit_mode:        str   = "hold_only"
     take_profit_pct:  float = 0.0           # 0 = disabled; e.g. 30 = exit at +30%
     stop_loss_pct:    float = 0.0           # 0 = disabled; e.g. 20 = exit at -20%
     trailing_stop_pct: float = 0.0         # 0 = disabled; e.g. 25 = exit 25% below peak
@@ -983,7 +989,7 @@ def get_positions() -> dict:
             "current_price":       round(cur_price, 2) if cur_price else None,
             "current_return_pct":  round(ret * 100, 1) if ret is not None else None,
             "days_held":           days_held,
-            "days_remaining":      max(0, 252 - days_held),
+            "days_remaining":      max(0, HOLD_TRADING_DAYS - days_held),
             "percentile_rank":     pct_r,
             "expected_return_pct": round(exp_ret * 100, 1),
             "context_message":     context,
@@ -1315,6 +1321,7 @@ def backtest(body: BacktestParams) -> dict:
         "entry_threshold":  body.entry_threshold,
         "exit_threshold":   body.exit_threshold,
         "exit_mode":        body.exit_mode,
+        "hold_days":        body.hold_days,
         "take_profit_pct":  body.take_profit_pct,
         "stop_loss_pct":    body.stop_loss_pct,
         "trailing_stop_pct": body.trailing_stop_pct,
