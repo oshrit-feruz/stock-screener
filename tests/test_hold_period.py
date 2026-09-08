@@ -334,7 +334,12 @@ def test_the_ceiling_is_the_window_not_the_policy_hold():
     tool is for, and a cap at the policy value would forbid asking it."""
     import pydantic
 
-    from product.api.main import _MAX_HOLD_DAYS, BacktestParams
+    from product.api.main import (
+        _MAX_HOLD_DAYS,
+        _SIM_MAX_END,
+        _SIM_MIN_START,
+        BacktestParams,
+    )
     assert _MAX_HOLD_DAYS > HOLD_TRADING_DAYS
     assert BacktestParams(hold_days=HOLD_TRADING_DAYS + 1).hold_days \
         == HOLD_TRADING_DAYS + 1
@@ -344,3 +349,10 @@ def test_the_ceiling_is_the_window_not_the_policy_hold():
     # supposed to pin the moment the simulator window grows.
     with pytest.raises(pydantic.ValidationError):
         BacktestParams(hold_days=_MAX_HOLD_DAYS + 1)
+    # The assertions above all still pass if someone replaces the derivation
+    # with a hardcoded number that happens to exceed HOLD_TRADING_DAYS. Pin the
+    # ceiling to the window it claims to describe — as a band, not as a copy of
+    # the arithmetic, so a deliberate change to the trading-day density is not
+    # a test failure while an unmoored constant is.
+    window_days = (_SIM_MAX_END - _SIM_MIN_START).days
+    assert 0.6 * window_days < _MAX_HOLD_DAYS < 0.8 * window_days
