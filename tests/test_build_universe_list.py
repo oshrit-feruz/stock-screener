@@ -468,4 +468,37 @@ def test_allowing_one_name_does_not_excuse_another(monkeypatch):
     monkeypatch.setattr(bul.u, "pit_dollar_volume",
                         lambda t, d: None if t in ("SPIN", "HON") else 1.0)
     msg = bul._unrankable_error(["AAPL", "SPIN", "HON"], _AS_OF, {"SPIN"}, 100)
-    assert msg is not None and "HON" in msg and "SPIN" not in msg
+    assert msg is not None, "HON is still unrankable, so the build must abort"
+    assert "HON" in msg
+    assert "SPIN" not in msg, "the spared name must not be named as an offender"
+
+
+# ── resolving the target month ──────────────────────────────────────────────
+
+def test_an_explicit_month_resolves_to_its_first_trading_day(monkeypatch):
+    monkeypatch.setattr(bul, "_first_trading_day", lambda y, m: date(2026, 9, 1))
+    assert bul._resolve_as_of("2026-09") == (date(2026, 9, 1), 0)
+
+
+def test_no_month_argument_uses_today(monkeypatch):
+    seen = []
+    monkeypatch.setattr(bul, "_first_trading_day",
+                        lambda y, m: seen.append((y, m)) or date(2026, 9, 1))
+    bul._resolve_as_of(None)
+    today = date.today()
+    assert seen == [(today.year, today.month)]
+
+
+def test_the_current_month_with_no_trading_day_yet_is_not_an_error(monkeypatch):
+    """Normal on the 1st before the market has opened — exit 0, not a failure
+    the workflow should report."""
+    today = date.today()
+    monkeypatch.setattr(bul, "_first_trading_day", lambda y, m: None)
+    assert bul._resolve_as_of(f"{today.year}-{today.month:02d}") == (None, 0)
+
+
+def test_a_past_month_with_no_trading_day_is_an_error(monkeypatch):
+    """A month that is over must have had a trading day; not finding one means
+    SPY's calendar could not be read, which is a real failure."""
+    monkeypatch.setattr(bul, "_first_trading_day", lambda y, m: None)
+    assert bul._resolve_as_of("2020-01") == (None, 1)

@@ -391,6 +391,38 @@ def _diagnose_empty_ranking(pool: list[str], as_of: date, sample: int = 5) -> st
     return "; ".join(parts)
 
 
+def _resolve_as_of(month_arg: str | None) -> tuple[date | None, int]:
+    """Resolve the target month to its first trading day.
+
+    Returns (as_of, exit_code). `as_of` is None when the job should stop, and
+    the code says whether that is success — the current month simply has no
+    trading day yet, which is normal on the 1st — or a real failure to read
+    SPY's calendar.
+
+    Lives outside main() so its four branches do not count against the one
+    decision main is actually making. Extracted when the unrankable guard
+    pushed main's cognitive complexity past the limit (SonarCloud S3776).
+    """
+    if month_arg:
+        year, month = (int(x) for x in month_arg.split("-"))
+    else:
+        today = date.today()
+        year, month = today.year, today.month
+
+    as_of = _first_trading_day(year, month)
+    if as_of is not None:
+        print(f"Target month {year}-{month:02d} → as_of (first trading day) {as_of}")
+        return as_of, 0
+
+    today = date.today()
+    if (year, month) == (today.year, today.month):
+        print(f"{year}-{month:02d} has no trading day yet — nothing to do.")
+        return None, 0
+    print(f"ERROR: no SPY data for {year}-{month:02d}; cannot determine its "
+          f"first trading day.", file=sys.stderr)
+    return None, 1
+
+
 def main() -> int:
     # Without this the module loggers have no handler configured and the EDGAR /
     # EODHD diagnostics fall back to Python's bare lastResort output. This job's
@@ -418,22 +450,9 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if args.month:
-        year, month = (int(x) for x in args.month.split("-"))
-    else:
-        today = date.today()
-        year, month = today.year, today.month
-
-    as_of = _first_trading_day(year, month)
+    as_of, code = _resolve_as_of(args.month)
     if as_of is None:
-        today = date.today()
-        if (year, month) == (today.year, today.month):
-            print(f"{year}-{month:02d} has no trading day yet — nothing to do.")
-            return 0
-        print(f"ERROR: no SPY data for {year}-{month:02d}; cannot determine its "
-              f"first trading day.", file=sys.stderr)
-        return 1
-    print(f"Target month {year}-{month:02d} → as_of (first trading day) {as_of}")
+        return code
 
     # Before any provider work. The days 1-5 schedule means most invocations
     # land here, and re-ranking an already-published month can only churn the
