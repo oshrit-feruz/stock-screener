@@ -349,6 +349,70 @@ def test_count_open_of_an_empty_book_is_zero(monkeypatch):
     assert store.count_open() == 0
 
 
+def test_the_service_key_is_never_sent_over_plain_http(monkeypatch):
+    """Every request carries the service-role key, and that key bypasses RLS --
+    it is the only way into the table. Over http it would cross the network in
+    clear text, so one typo in an environment variable would leak the credential
+    that owns the book. Refuse rather than send it."""
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "service-key")
+    for bad in ("http://proj.supabase.co", "ftp://proj", "proj.supabase.co", "https://"):
+        monkeypatch.setenv("SUPABASE_URL", bad)
+        with pytest.raises(store.StorageError, match="https"):
+            store.backend()
+
+
+def test_the_reminder_can_only_be_claimed_once(monkeypatch):
+    """Two overlapping runs both read reminder_sent=False. Only the one that
+    actually flips it may announce the notice, or the user gets it twice."""
+    _configure(monkeypatch)
+    calls = []
+
+    def fake(method, url, **kw):
+        calls.append(url)
+        # PostgREST returns the updated rows; the second caller matches none
+        # because the first already set the flag.
+        return _Resp(payload=[{"ticker": "AAPL"}] if len(calls) == 1 else [])
+
+    monkeypatch.setattr(requests, "request", fake)
+    assert store.mark_reminder_sent("AAPL", _ENTRY) is True
+    assert store.mark_reminder_sent("AAPL", _ENTRY) is False
+    assert "reminder_sent=is.false" in calls[0], \
+        "the filter is what makes the database the arbiter, not a read-then-write"
+
+
+def test_the_reminder_claim_is_once_only_on_the_file_backend_too():
+    store.open_position("AAPL", _ENTRY, 100.0)
+    assert store.mark_reminder_sent("AAPL", _ENTRY) is True
+    assert store.mark_reminder_sent("AAPL", _ENTRY) is False
+
+
+def test_a_position_left_in_both_books_reads_as_closed(monkeypatch, tmp_path):
+    """The file backend has no transaction across its two files. Closing writes
+    the closed book first and the open book second on purpose: interrupted that
+    way the position is briefly in both, which this resolves, where the other
+    order would lose it outright."""
+    row = {"ticker": "AAPL", "entry_date": "2026-01-05", "entry_price": 100.0}
+    (tmp_path / "open_positions.json").write_text(json.dumps([row]))
+    (tmp_path / "closed_positions.json").write_text(json.dumps(
+        [{**row, "exit_date": "2026-02-01", "exit_price": 120.0,
+          "realized_return": 0.2, "days_held": 19}]))
+    monkeypatch.setattr(store, "_OPEN_FILE", tmp_path / "open_positions.json")
+    monkeypatch.setattr(store, "_CLOSED_FILE", tmp_path / "closed_positions.json")
+
+    assert store.load_open() == [], "a closed position is not open, whatever the open file says"
+    assert store.count_open() == 0
+
+
+def test_a_book_file_that_is_not_utf8_reads_as_empty(monkeypatch, tmp_path):
+    """read_text raises UnicodeDecodeError before json.loads ever runs, and that
+    is neither an OSError nor a JSONDecodeError -- uncaught it turned a degraded
+    read into a 500 on the page."""
+    bad = tmp_path / "open_positions.json"
+    bad.write_bytes(b"\xff\xfe not utf-8 at all")
+    monkeypatch.setattr(store, "_OPEN_FILE", bad)
+    assert store.load_open() == []
+
+
 def test_an_http_error_from_supabase_raises_with_the_reason(monkeypatch):
     """PostgREST puts the cause in the body (constraint name, RLS denial).
     Losing it would turn every storage problem into an unexplained 500."""

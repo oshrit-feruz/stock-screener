@@ -45,7 +45,7 @@ import re
 from datetime import date
 from pathlib import Path
 from typing import Any, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -105,10 +105,24 @@ def _config() -> Optional[tuple[str, str]]:
     Read at call time rather than import time so tests can set or clear the
     variables with monkeypatch, and so a redeploy that adds them takes effect
     without a code change.
+
+    The URL must be https with a host. Every request carries the service-role
+    key in an Authorization header, and that key bypasses RLS -- it is the only
+    way into bot_positions. Over http it would cross the network in clear text,
+    so a typo in one environment variable would leak the credential that owns
+    the book. Refuse rather than send it.
     """
     url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
     key = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
-    return (url, key) if url and key else None
+    if not (url and key):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise StorageError(
+            "SUPABASE_URL must be an https:// URL with a host; refusing to send "
+            f"the service-role key to {url!r}"
+        )
+    return (url, key)
 
 
 def backend() -> str:
@@ -182,7 +196,7 @@ def _read_file(which: str) -> List[dict]:
         return []
     try:
         data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         logger.warning("Could not read %s: %s", path, exc)
         return []
     if not isinstance(data, list):
@@ -209,13 +223,30 @@ def _project(row: dict, fields: tuple) -> dict:
 
 # ── reads ───────────────────────────────────────────────────────────────────
 
+def _key(row: dict) -> tuple:
+    return (row.get("ticker"), row.get("entry_date"))
+
+
 def load_open() -> List[dict]:
-    """Every open position, oldest entry first."""
+    """Every open position, oldest entry first.
+
+    On Supabase this is one row set: status is a column, so a position cannot be
+    in two states at once.
+
+    The file backend has no transaction across its two files. Closing writes the
+    closed book first and the open book second, deliberately: interrupted that
+    way a position is briefly in both, which this read resolves, whereas the
+    other order would lose it outright. Anything already closed is therefore not
+    open, whatever the open file still says.
+    """
     if _config():
         rows = _request("GET", f"{_TABLE}?status=eq.open&order=entry_date.asc"
                                f"&select={','.join(_OPEN_FIELDS)}")
         return [_project(r, _OPEN_FIELDS) for r in (rows or [])]
-    return [_project(r, _OPEN_FIELDS) for r in _read_file("open")]
+
+    closed = {_key(r) for r in _read_file("closed")}
+    rows = [r for r in _read_file("open") if _key(r) not in closed]
+    return [_project(r, _OPEN_FIELDS) for r in rows]
 
 
 def load_closed() -> List[dict]:
@@ -322,28 +353,41 @@ def close_position(
     return True
 
 
-def mark_reminder_sent(ticker: str, entry_date: date) -> None:
-    """Flag that the 30-day advance notice has fired for this position.
+def mark_reminder_sent(ticker: str, entry_date: date) -> bool:
+    """Claim the 30-day advance notice for this position.
+
+    Returns True for the caller that actually flipped the flag, False if it was
+    already set. The claim, not just the record: two runs overlapping -- the
+    daily job and a manual re-run, say -- would both read reminder_sent=False
+    and both send the notice. Filtering the UPDATE on reminder_sent=false makes
+    the database the arbiter, so exactly one caller is told to send it.
 
     Persisted rather than recomputed so a skipped run -- weekend, holiday,
-    outage -- cannot cause the reminder to be missed or sent twice.
+    outage -- cannot cause the reminder to be missed either.
     """
     ticker = _clean_ticker(ticker)
     if _config():
-        _request("PATCH",
-                 f"{_TABLE}?ticker=eq.{quote(ticker, safe='')}"
-                 f"&entry_date=eq.{quote(entry_date.isoformat(), safe='')}"
-                 f"&status=eq.open",
-                 json={"reminder_sent": True},
-                 headers={"Prefer": "return=minimal"})
-        return
+        updated = _request(
+            "PATCH",
+            f"{_TABLE}?ticker=eq.{quote(ticker, safe='')}"
+            f"&entry_date=eq.{quote(entry_date.isoformat(), safe='')}"
+            f"&status=eq.open&reminder_sent=is.false",
+            json={"reminder_sent": True},
+            headers={"Prefer": "return=representation"},
+        )
+        return bool(updated)
 
     rows = _read_file("open")
+    claimed = False
     for r in rows:
         if (r.get("ticker") == ticker
-                and r.get("entry_date") == entry_date.isoformat()):
+                and r.get("entry_date") == entry_date.isoformat()
+                and not r.get("reminder_sent")):
             r["reminder_sent"] = True
-    _write_file("open", rows)
+            claimed = True
+    if claimed:
+        _write_file("open", rows)
+    return claimed
 
 
 def count_open() -> int:
@@ -366,4 +410,6 @@ def count_open() -> int:
         # Content-Range is "0-0/<total>" (or "*/0" when empty).
         total = resp.headers.get("Content-Range", "*/0").split("/")[-1]
         return int(total) if total.isdigit() else 0
-    return len(_read_file("open"))
+    # Counts what load_open() would return rather than the raw file, so the
+    # summary line cannot disagree with the page about how many are open.
+    return len(load_open())

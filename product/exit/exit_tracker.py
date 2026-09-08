@@ -177,33 +177,44 @@ class ExitTracker:
                     days_held       = days_held,
                     realized_return = ret,
                 )
-                alerts.append(ExitAlert(
-                    ticker            = pos.ticker,
-                    entry_date        = pos.entry_date,
-                    exit_date         = today,
-                    entry_price       = pos.entry_price,
-                    current_price     = cur_price,
-                    realized_return   = ret,
-                    days_held         = days_held,
-                    is_win            = ret > 0,
-                    alert_type        = "EXIT",
-                    formatted_message = f"{copy['body']}\n\n{copy['disclaimer']}",
-                ))
+                # Close first, and alert only if this run is the one that did
+                # it. A concurrent run or an /api/positions/close in between
+                # leaves close_position returning False -- announcing an exit we
+                # did not perform would send the user a second exit notice for
+                # one position.
+                #
                 # One row moves open -> closed in place. The previous code
                 # rebuilt both lists and rewrote two files at the end, so a
                 # crash between the two writes could drop a position from the
                 # book entirely or leave it in both.
-                storage.close_position(
+                if storage.close_position(
                     ticker          = pos.ticker,
                     entry_date      = pos.entry_date,
                     exit_date       = today,
                     exit_price      = cur_price,
                     realized_return = ret,
                     days_held       = days_held,
-                )
+                ):
+                    alerts.append(ExitAlert(
+                        ticker            = pos.ticker,
+                        entry_date        = pos.entry_date,
+                        exit_date         = today,
+                        entry_price       = pos.entry_price,
+                        current_price     = cur_price,
+                        realized_return   = ret,
+                        days_held         = days_held,
+                        is_win            = ret > 0,
+                        alert_type        = "EXIT",
+                        formatted_message = f"{copy['body']}\n\n{copy['disclaimer']}",
+                    ))
             else:
-                if not pos.reminder_sent and days_held >= _REMINDER_WINDOW_START:
-                    storage.mark_reminder_sent(pos.ticker, pos.entry_date)
+                # mark_reminder_sent is a claim, not a note: it flips the flag
+                # only if it was unset and says whether this caller is the one
+                # that flipped it. Two overlapping runs both read False, so
+                # without that only one of them may announce the notice.
+                if (not pos.reminder_sent
+                        and days_held >= _REMINDER_WINDOW_START
+                        and storage.mark_reminder_sent(pos.ticker, pos.entry_date)):
                     copy = format_position_update(
                         ticker            = pos.ticker,
                         entry_price       = pos.entry_price,
