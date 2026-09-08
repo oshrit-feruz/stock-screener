@@ -30,6 +30,16 @@ services:
       # exposes nothing. Set a long random value in the Render dashboard and
       # open the console once as /internal/?k=<value>; it stores a cookie.
       - key: INTERNAL_CONSOLE_TOKEN
+      # Required for the mutating endpoints (/api/positions/open, /api/positions/
+      # close, POST /api/portfolio). Writes FAIL CLOSED without it: leave this
+      # unset and every write is refused, so a misconfigured deploy stops the
+      # buttons working rather than leaving the tracked book open to the
+      # internet. Render generates the value; to use the app, open
+      # https://<service>/api/auth once in each browser and paste the value
+      # into the form — the app's own POSTs then carry the session cookie.
+      # Never put it in a URL: a query string lands in browser history and in
+      # the platform access log, and this token can trade the tracked book.
+      - key: ADMIN_TOKEN
         generateValue: true
 
   # The daily scheduled run has moved to GitHub Actions (free tier) —
