@@ -167,11 +167,11 @@ def test_fetch_failure_falls_through_to_refusal_not_scan(tmp_path, monkeypatch):
 # ── the window is counted in trading days ───────────────────────────────────
 #
 # These drive _lookback_dates through an EXPLICIT calendar rather than the real
-# one. pandas_market_calendars is an optional dependency — without it
-# is_trading_day falls back to a plain weekday check, and a test asserting that
-# Labor Day is skipped would then pass in CI and fail on a developer's machine
-# for reasons that have nothing to do with the window. The calendar itself is
-# covered in tests/test_run_daily.py; what is at stake here is the counting.
+# one. What is at stake here is the COUNTING — that a closed day does not
+# consume a slot — and stating the calendar inline is what makes the expected
+# list readable as an argument rather than as a lookup someone has to trust.
+# Which days the NYSE is actually closed is a separate question, answered in
+# tests/test_market_calendar.py.
 
 _LABOR_DAY = date(2026, 9, 7)
 
