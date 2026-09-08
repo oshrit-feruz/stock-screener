@@ -19,7 +19,6 @@ market data; it never opens, closes, sizes, or otherwise touches trading logic.
 """
 from __future__ import annotations
 
-import json
 import logging
 import sys
 from datetime import date, timedelta
@@ -33,13 +32,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core.data.prices import PriceData  # noqa: E402
 from product.satellite_policy import HOLD_TRADING_DAYS  # noqa: E402
+from product.storage import positions as storage  # noqa: E402
 from scripts.run_combined_validation import load_fedfunds  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 _ROOT        = Path(__file__).parent.parent.parent
-_OPEN_FILE   = _ROOT / "data" / "positions" / "open_positions.json"
-_CLOSED_FILE = _ROOT / "data" / "positions" / "closed_positions.json"
 _REPORT_DIR  = _ROOT / "data" / "beta_tracking"
 _REPORT_FILE = _REPORT_DIR / "beta_log.md"
 
@@ -50,17 +48,6 @@ _HOLD_TARGET = HOLD_TRADING_DAYS
 
 
 # ── data loading ────────────────────────────────────────────────────────────
-
-def _load(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text())
-        return data if isinstance(data, list) else []
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("beta: could not read %s: %s", path, exc)
-        return []
-
 
 # ── market-data helpers (all fail soft → None, never raise) ─────────────────
 
@@ -216,8 +203,8 @@ def build_beta_data(as_of_date: Optional[date] = None,
         logger.warning("beta: Fed Funds Rate unavailable (%s); money-market comparison omitted", exc)
         fedfunds = None
 
-    open_list   = [r for r in (_build_open(p, as_of, prices, fedfunds) for p in _load(_OPEN_FILE)) if r is not None]
-    closed_list = [r for r in (_build_closed(p, prices, fedfunds) for p in _load(_CLOSED_FILE)) if r is not None]
+    open_list   = [r for r in (_build_open(p, as_of, prices, fedfunds) for p in storage.load_open()) if r is not None]
+    closed_list = [r for r in (_build_closed(p, prices, fedfunds) for p in storage.load_closed()) if r is not None]
 
     entries = [i["entry_date"] for i in (open_list + closed_list)]
     beta_start = min(entries) if entries else None

@@ -108,16 +108,20 @@ def test_the_guard_lets_an_authenticated_write_through(app, path, body, tmp_path
     write, and data/positions/*.json and data/portfolio/portfolio.json are
     tracked in the repo — an authenticated write against the real paths would
     leave the working tree dirty and, run in CI, could be committed.
+
+    The position book now has exactly one owner, so one redirect covers both
+    endpoints; this used to need the same patch applied to main and to the exit
+    tracker separately, and missing either one still wrote to the real file.
     """
     import product.api.main as main
-    import product.exit.exit_tracker as tracker
-    monkeypatch.setattr(main, "_OPEN_FILE", tmp_path / "open_positions.json")
-    monkeypatch.setattr(main, "_CLOSED_FILE", tmp_path / "closed_positions.json")
+    import product.storage.positions as store
+    monkeypatch.setattr(store, "_OPEN_FILE", tmp_path / "open_positions.json")
+    monkeypatch.setattr(store, "_CLOSED_FILE", tmp_path / "closed_positions.json")
     monkeypatch.setattr(main, "_PORTFOLIO_FILE", tmp_path / "portfolio.json")
-    # /api/positions/open writes through ExitTracker, which carries its own
-    # path constants — redirecting main's alone still hits the real file.
-    monkeypatch.setattr(tracker, "_OPEN_FILE", tmp_path / "t_open.json")
-    monkeypatch.setattr(tracker, "_CLOSED_FILE", tmp_path / "t_closed.json")
+    # Force the file backend even if a developer has Supabase credentials in
+    # their shell: this test must never touch the real book.
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
 
     for kwargs in ({"cookie": f"admin_session={_TOKEN}"}, {"header_token": _TOKEN}):
         assert _call(app, path, "POST", body, **kwargs)["status"] != 403
