@@ -162,7 +162,8 @@ def test_a_full_cache_is_returned(tmp_path, monkeypatch):
     monkeypatch.setattr(ds, "_CACHE_DIR", tmp_path)
     _write_cache(tmp_path, _AS_OF, "fp", n_rows=100)
     result = _load_disk_cache(_AS_OF, "fp", universe_size=100)
-    assert result is not None and len(result.full_ranking) == 100
+    assert result is not None, "a fully-covered cache must be returned"
+    assert len(result.full_ranking) == 100
 
 
 def test_an_under_covered_cache_reads_as_absent(tmp_path, monkeypatch):
