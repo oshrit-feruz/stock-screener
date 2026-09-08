@@ -22,6 +22,12 @@ from product.storage import positions as store
 
 _ENV = ("SUPABASE_URL", "SUPABASE_SERVICE_KEY")
 
+# Built once, outside every pytest.raises block: a date() constructed inside one
+# is a second call that can throw, which muddies what the assertion is pinning.
+_ENTRY = date(2026, 1, 5)
+_ENTRY2 = date(2026, 1, 6)
+_EXIT = date(2026, 2, 1)
+
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch, tmp_path):
@@ -158,7 +164,7 @@ def test_a_write_cannot_truncate_the_book(monkeypatch):
 
     monkeypatch.setattr(Path, "replace", boom)
     with pytest.raises(OSError):
-        store.open_position("MSFT", date(2026, 1, 6), 200.0)
+        store.open_position("MSFT", _ENTRY2, 200.0)
     monkeypatch.setattr(Path, "replace", original)
 
     rows = store.load_open()
@@ -244,7 +250,7 @@ def test_a_read_against_an_unreachable_supabase_raises(monkeypatch):
 def test_a_write_against_an_unreachable_supabase_raises(monkeypatch):
     _kill_the_network(monkeypatch)
     with pytest.raises(store.StorageError):
-        store.open_position("AAPL", date(2026, 1, 5), 100.0)
+        store.open_position("AAPL", _ENTRY, 100.0)
 
 
 def test_an_outage_leaves_nothing_in_the_fallback_file(monkeypatch):
@@ -257,7 +263,7 @@ def test_an_outage_leaves_nothing_in_the_fallback_file(monkeypatch):
     """
     _kill_the_network(monkeypatch)
     with pytest.raises(store.StorageError):
-        store.open_position("AAPL", date(2026, 1, 5), 100.0)
+        store.open_position("AAPL", _ENTRY, 100.0)
     assert not store._OPEN_FILE.exists(), \
         "an outage must not leave a position written to the local fallback file"
 
@@ -280,7 +286,7 @@ def test_a_ticker_that_is_not_a_symbol_is_refused(bad):
     Rejected at the store, not left to whatever validation a caller happens to
     have."""
     with pytest.raises(ValueError):
-        store.open_position(bad, date(2026, 1, 5), 100.0)
+        store.open_position(bad, _ENTRY, 100.0)
 
 
 @pytest.mark.parametrize("raw,expected", [("aapl", "AAPL"), ("  msft  ", "MSFT"),
@@ -294,8 +300,7 @@ def test_real_symbols_survive_normalisation(raw, expected):
 
 def test_closing_also_validates_the_ticker():
     with pytest.raises(ValueError):
-        store.close_position("AAPL&status=eq.closed", date(2026, 1, 5),
-                             date(2026, 2, 1), 1.0, 0.0, 1)
+        store.close_position("AAPL&status=eq.closed", _ENTRY, _EXIT, 1.0, 0.0, 1)
 
 
 def test_count_open_reads_the_total_from_the_range_header(monkeypatch):

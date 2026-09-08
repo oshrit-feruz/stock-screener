@@ -142,7 +142,22 @@ def _request(method: str, path: str, **kw) -> Any:
 
 # ── file backend ────────────────────────────────────────────────────────────
 
-def _read_file(path: Path) -> List[dict]:
+def _book_path(which: str) -> Path:
+    """Resolve one of the two fixed book files.
+
+    Callers pass a literal, never data. Taking a name out of a closed set
+    rather than an arbitrary Path means no request value can steer a read or a
+    write at a path of its choosing, whatever a future caller does.
+    """
+    if which == "open":
+        return _OPEN_FILE
+    if which == "closed":
+        return _CLOSED_FILE
+    raise ValueError(f"Unknown book: {which!r}")
+
+
+def _read_file(which: str) -> List[dict]:
+    path = _book_path(which)
     if not path.exists():
         return []
     try:
@@ -153,7 +168,8 @@ def _read_file(path: Path) -> List[dict]:
     return data if isinstance(data, list) else []
 
 
-def _write_file(path: Path, rows: List[dict]) -> None:
+def _write_file(which: str, rows: List[dict]) -> None:
+    path = _book_path(which)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(rows, indent=2, default=str))
@@ -173,7 +189,7 @@ def load_open() -> List[dict]:
         rows = _request("GET", f"{_TABLE}?status=eq.open&order=entry_date.asc"
                                f"&select={','.join(_OPEN_FIELDS)}")
         return [_project(r, _OPEN_FIELDS) for r in (rows or [])]
-    return [_project(r, _OPEN_FIELDS) for r in _read_file(_OPEN_FILE)]
+    return [_project(r, _OPEN_FIELDS) for r in _read_file("open")]
 
 
 def load_closed() -> List[dict]:
@@ -182,7 +198,7 @@ def load_closed() -> List[dict]:
         rows = _request("GET", f"{_TABLE}?status=eq.closed&order=exit_date.asc"
                                f"&select={','.join(_CLOSED_FIELDS)}")
         return [_project(r, _CLOSED_FIELDS) for r in (rows or [])]
-    return [_project(r, _CLOSED_FIELDS) for r in _read_file(_CLOSED_FILE)]
+    return [_project(r, _CLOSED_FIELDS) for r in _read_file("closed")]
 
 
 # ── writes ──────────────────────────────────────────────────────────────────
@@ -223,13 +239,13 @@ def open_position(
         logger.info("Opened position: %s at %.2f on %s", ticker, entry_price, entry_date)
         return True
 
-    rows = _read_file(_OPEN_FILE)
+    rows = _read_file("open")
     if any(r.get("ticker") == row["ticker"]
            and r.get("entry_date") == row["entry_date"] for r in rows):
         logger.info("Position %s %s already recorded", ticker, entry_date)
         return False
     rows.append(_project(row, _OPEN_FIELDS))
-    _write_file(_OPEN_FILE, rows)
+    _write_file("open", rows)
     logger.info("Opened position: %s at %.2f on %s", ticker, entry_price, entry_date)
     return True
 
@@ -267,16 +283,16 @@ def close_position(
         )
         return bool(updated)
 
-    rows = _read_file(_OPEN_FILE)
+    rows = _read_file("open")
     match = next((r for r in rows
                   if r.get("ticker") == ticker
                   and r.get("entry_date") == entry_date.isoformat()), None)
     if match is None:
         return False
-    closed = _read_file(_CLOSED_FILE)
+    closed = _read_file("closed")
     closed.append(_project({**match, **patch}, _CLOSED_FIELDS))
-    _write_file(_CLOSED_FILE, closed)
-    _write_file(_OPEN_FILE, [r for r in rows if r is not match])
+    _write_file("closed", closed)
+    _write_file("open", [r for r in rows if r is not match])
     return True
 
 
@@ -296,12 +312,12 @@ def mark_reminder_sent(ticker: str, entry_date: date) -> None:
                  headers={"Prefer": "return=minimal"})
         return
 
-    rows = _read_file(_OPEN_FILE)
+    rows = _read_file("open")
     for r in rows:
         if (r.get("ticker") == ticker
                 and r.get("entry_date") == entry_date.isoformat()):
             r["reminder_sent"] = True
-    _write_file(_OPEN_FILE, rows)
+    _write_file("open", rows)
 
 
 def count_open() -> int:
@@ -324,4 +340,4 @@ def count_open() -> int:
         # Content-Range is "0-0/<total>" (or "*/0" when empty).
         total = resp.headers.get("Content-Range", "*/0").split("/")[-1]
         return int(total) if total.isdigit() else 0
-    return len(_read_file(_OPEN_FILE))
+    return len(_read_file("open"))
