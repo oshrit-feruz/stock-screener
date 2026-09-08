@@ -364,6 +364,14 @@ def mark_reminder_sent(ticker: str, entry_date: date) -> bool:
 
     Persisted rather than recomputed so a skipped run -- weekend, holiday,
     outage -- cannot cause the reminder to be missed either.
+
+    The file fallback claims by read-modify-write, which is not atomic across
+    processes. That is left as it is deliberately: the only caller is
+    check_exits, whose only caller is the daily run, which GitHub serializes
+    with a concurrency group -- so nothing in this system issues two concurrent
+    claims. A flock would not close the gap that matters either, being
+    per-filesystem while the two halves run on different hosts. That is the
+    reason the book is in Postgres rather than the reason to lock a file.
     """
     ticker = _clean_ticker(ticker)
     if _config():
