@@ -198,7 +198,8 @@ def test_lookback_skips_days_the_market_was_closed(_nyse):
         date(2026, 9, 2), date(2026, 9, 1),
     ]
     assert _LABOR_DAY not in dates, "a closed day cannot carry a result"
-    assert date(2026, 9, 5) not in dates and date(2026, 9, 6) not in dates
+    assert date(2026, 9, 5) not in dates, "Saturday cannot carry a result"
+    assert date(2026, 9, 6) not in dates, "Sunday cannot carry a result"
 
 
 def test_lookback_yields_today_even_when_the_market_is_closed(_nyse):
