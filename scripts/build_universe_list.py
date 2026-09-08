@@ -175,6 +175,28 @@ def _unrankable(pool: list[str], as_of: date) -> list[str]:
     return [t for t in pool if u.pit_dollar_volume(t, as_of.isoformat()) is None]
 
 
+def _unrankable_error(pool: list[str], as_of: date, allowed: set[str],
+                      top_n: int) -> str | None:
+    """The abort message if any member outside `allowed` cannot be ranked.
+
+    Returns None when the pool is clean. Kept out of main() so the guard reads
+    as one decision there rather than four branches.
+    """
+    offenders = sorted(t for t in _unrankable(pool, as_of) if t not in allowed)
+    if not offenders:
+        return None
+    shown = ", ".join(offenders[:20])
+    more = " …" if len(offenders) > 20 else ""
+    return (
+        f"ERROR: {len(offenders)} pool member(s) have a raw price reaching {as_of} "
+        f"but cannot produce a dollar-volume — most likely fewer than "
+        f"{u._DV_WINDOW} sessions of volume on/before that date: {shown}{more}. "
+        f"Ranking now would drop them and silently promote whoever sits at rank "
+        f"{top_n + 1}. Re-run once the provider recovers, or pass "
+        f"--allow-unrankable for a name that is genuinely too young to rank."
+    )
+
+
 def _covers(path: Path, as_of: date) -> bool:
     """True if a cached raw-price frame actually reaches `as_of`.
 
@@ -461,22 +483,11 @@ def main() -> int:
     # so the list still comes out at exactly N and the length guard below never
     # fires — see _unrankable for the September 2026 case this caught.
     allowed = {t.strip().upper() for t in args.allow_unrankable.split(",") if t.strip()}
-    unrankable = [t for t in _unrankable(pool, as_of) if t not in allowed]
-    if unrankable:
-        print(
-            f"ERROR: {len(unrankable)} pool member(s) have a raw price reaching {as_of} "
-            f"but cannot produce a dollar-volume — most likely fewer than "
-            f"{u._DV_WINDOW} sessions of volume on/before that date: "
-            f"{', '.join(sorted(unrankable)[:20])}"
-            f"{' …' if len(unrankable) > 20 else ''}. Ranking now would drop them "
-            f"and silently promote whoever sits at rank {args.top_n + 1}. Re-run once "
-            f"the provider recovers, or pass --allow-unrankable for a name that is "
-            f"genuinely too young to rank.",
-            file=sys.stderr,
-        )
+    problem = _unrankable_error(pool, as_of, allowed, args.top_n)
+    if problem:
+        print(problem, file=sys.stderr)
         return 1
-    if allowed:
-        pool = [t for t in pool if t not in allowed]
+    pool = [t for t in pool if t not in allowed]
 
     # The ranking re-reads the membership itself, so the delisted names must be
     # passed through explicitly: a cached raw file from before a name's final

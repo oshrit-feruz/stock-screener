@@ -438,3 +438,34 @@ def test_the_check_asks_the_ranking_its_own_question(monkeypatch):
                         lambda t, d: seen.append((t, d)) or 1.0)
     bul._unrankable(["AAPL", "MSFT"], _AS_OF)
     assert seen == [("AAPL", "2026-09-01"), ("MSFT", "2026-09-01")]
+
+
+# ── the abort decision ──────────────────────────────────────────────────────
+
+def test_no_error_when_every_member_ranks(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume", lambda t, d: 1.0)
+    assert bul._unrankable_error(["AAPL", "HON"], _AS_OF, set(), 100) is None
+
+
+def test_the_error_names_the_offender(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: None if t == "HON" else 1.0)
+    msg = bul._unrankable_error(["AAPL", "HON"], _AS_OF, set(), 100)
+    assert msg is not None
+    assert "HON" in msg
+    assert "101" in msg, "the message must say which rank would silently be promoted"
+
+
+def test_an_allowed_name_does_not_abort(monkeypatch):
+    """--allow-unrankable is the escape hatch for a genuine recent spin-off, so
+    a real one cannot wedge the build for the whole month."""
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: None if t == "SPIN" else 1.0)
+    assert bul._unrankable_error(["AAPL", "SPIN"], _AS_OF, {"SPIN"}, 100) is None
+
+
+def test_allowing_one_name_does_not_excuse_another(monkeypatch):
+    monkeypatch.setattr(bul.u, "pit_dollar_volume",
+                        lambda t, d: None if t in ("SPIN", "HON") else 1.0)
+    msg = bul._unrankable_error(["AAPL", "SPIN", "HON"], _AS_OF, {"SPIN"}, 100)
+    assert msg is not None and "HON" in msg and "SPIN" not in msg
