@@ -392,19 +392,22 @@ function dismissFirstSignalTooltip() {
 // (`active_source`), so an override is shown AS an override rather than
 // silently replacing the gate's answer. `active` is null when the regime is
 // unknown (SPY unavailable), which is a third state, not a false.
+// The three values `active` can hold, as one table, so the pill label, its
+// colour and the "policy: …" wording can never disagree about what a value
+// means. null is the regime-unknown state, not a false.
+function activeState(v) {
+  if (v === true)  return { label: 'Active',     cls: 'act-on' };
+  if (v === false) return { label: 'Watch-only', cls: 'act-off' };
+  return { label: 'Unknown', cls: 'act-unknown' };
+}
+
 function activeRowHTML(s) {
   var overridden = s.active_source === 'override';
-  var state = s.active === true  ? 'Active'
-            : s.active === false ? 'Watch-only'
-            : 'Unknown';
-  var cls   = s.active === true  ? 'act-on'
-            : s.active === false ? 'act-off'
-            : 'act-unknown';
-  var note  = overridden
-    ? 'Overridden' + (s.active_policy === true  ? ' (policy: active)'
-                    : s.active_policy === false ? ' (policy: watch-only)'
-                    : ' (policy: unknown)')
-    : 'From the overlay policy';
+  var shown = activeState(s.active);
+  var note  = 'From the overlay policy';
+  if (overridden) {
+    note = 'Overridden (policy: ' + activeState(s.active_policy).label.toLowerCase() + ')';
+  }
   // The flip targets the opposite of what is being SHOWN. From Unknown there is
   // no opposite to infer, so offer the affirmative choice explicitly.
   var next  = s.active === true ? 'false' : 'true';
@@ -417,7 +420,7 @@ function activeRowHTML(s) {
   }
   return [
     '  <div class="act-row">',
-    '    <span class="act-pill ' + cls + '">' + state + '</span>',
+    '    <span class="act-pill ' + shown.cls + '">' + shown.label + '</span>',
     '    <span class="act-note">' + note + '</span>',
     '    <span class="act-btns">' + buttons + '</span>',
     '  </div>'
@@ -436,9 +439,9 @@ function setActive(ticker, next) {
     .then(parseJson)
     .then(function (res) {
       if (!res.success) { showToast('Could not update ' + ticker); return; }
-      showToast(next === null
-        ? ticker + ' back to the policy value'
-        : ticker + ' set ' + (next ? 'active' : 'watch-only'));
+      var msg = ticker + ' back to the policy value';
+      if (next !== null) msg = ticker + ' set ' + activeState(next).label.toLowerCase();
+      showToast(msg);
       _sigCacheTs = 0;      // force a re-read; the row now differs server-side
       loadSignals();
     })
