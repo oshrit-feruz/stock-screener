@@ -525,6 +525,14 @@
     /* Time horizon banners on signal cards */
     .th-warning-banner { background: rgba(245,158,11,0.09); border: 1px solid rgba(245,158,11,0.35); border-radius: 7px; padding: 10px 12px; font-size: 12px; color: var(--amber); line-height: 1.65; margin-bottom: 12px; }
     .th-info-banner { background: rgba(59,130,246,0.07); border: 1px solid rgba(59,130,246,0.25); border-radius: 7px; padding: 10px 12px; font-size: 12px; color: var(--blue); line-height: 1.65; margin-bottom: 12px; }
+    /* Market-regime banner (Signals tab) */
+    .regime-banner { border-radius: 7px; padding: 10px 12px; font-size: 12px; line-height: 1.65; margin-bottom: 12px; }
+    .regime-banner .rb-head { font-weight: 700; margin-bottom: 3px; }
+    .regime-banner .rb-dd { font-variant-numeric: tabular-nums; }
+    .regime-banner .rb-note { color: var(--muted); font-size: 11px; margin-top: 4px; }
+    .regime-on { background: rgba(59,130,246,0.07); border: 1px solid rgba(59,130,246,0.25); color: var(--blue); }
+    .regime-off { background: rgba(148,163,184,0.07); border: 1px solid var(--border); color: var(--muted); }
+    .regime-unknown { background: rgba(245,158,11,0.09); border: 1px solid rgba(245,158,11,0.35); color: var(--amber); }
     /* First signal tooltip */
     .fst-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 80; display: flex; align-items: flex-start; justify-content: center; padding: 70px 16px 20px; }
     .fst-card { max-width: 380px; width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 18px; }
