@@ -55,6 +55,7 @@ from product.screener.daily_screener import (  # noqa: E402
     run_screener,
 )
 from product.screener.universe_list import UniverseListError, load_universe_list  # noqa: E402
+from product.storage import active_overrides as active_store  # noqa: E402
 from product.storage import positions as positions_store  # noqa: E402
 from scripts.fetch_release_cache import fetch_and_extract as _fetch_release_cache  # noqa: E402
 from scripts.seed_cache import seed as _seed_cache  # noqa: E402
@@ -378,6 +379,11 @@ class PortfolioHolding(BaseModel):
 class PortfolioIn(BaseModel):
     holdings: List[PortfolioHolding]
 
+class ActiveOverrideIn(BaseModel):
+    ticker: str
+    # None clears the override and hands the ticker back to the policy value.
+    active: Optional[bool] = None
+
 _SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
 # Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and
 # the UI date-picker's max in product/web/index.html). Requests past this have no
@@ -479,6 +485,50 @@ def _screener_payload(result, computed_on: Optional[date] = None) -> dict:
         "satellite_policy": result.satellite_policy,
         "buy_signals":      [_row_to_dict(r) for r in result.buy_signals],
         "full_ranking":     [_row_to_dict(r) for r in result.full_ranking],
+    }
+
+
+def _apply_active_overrides(payload: dict) -> dict:
+    """Merge the stored manual `active` overrides over a screener payload.
+
+    Applied at SERVE time, never at build time: _get_screener_data caches the
+    payload for an hour, so folding overrides in there would leave a flip
+    invisible for up to an hour after it was made.
+
+    Every row gains two fields whether or not it is overridden, so the shape
+    does not change under a consumer's feet:
+      * `active_policy` — what satellite_policy.is_active() computed. Always
+        present, always the gate's answer, never overwritten.
+      * `active_source` — "policy" or "override", so a human decision is never
+        mistaken for the gate's. An override also carries `active_set_at`.
+
+    A storage failure is not allowed to take the screener down: the policy
+    payload is served unchanged and the failure is logged. Serving the gate's
+    own answer is the safe direction — it is what the validated strategy says.
+    """
+    if not payload or payload.get("warming"):
+        return payload
+    try:
+        overrides = active_store.load()
+    except Exception as exc:
+        logger.warning("screener: could not load active overrides (%s); "
+                       "serving policy values unchanged", str(exc)[:200])
+        overrides = {}
+
+    def _merge(row: dict) -> dict:
+        policy = row.get("active")
+        out = {**row, "active_policy": policy, "active_source": "policy"}
+        ov = overrides.get(row.get("ticker"))
+        if ov is not None:
+            out["active"] = ov["active"]
+            out["active_source"] = "override"
+            out["active_set_at"] = ov.get("set_at")
+        return out
+
+    return {
+        **payload,
+        "buy_signals":  [_merge(r) for r in payload.get("buy_signals", [])],
+        "full_ranking": [_merge(r) for r in payload.get("full_ranking", [])],
     }
 
 
@@ -1018,7 +1068,7 @@ def health() -> dict:
 )
 def screener() -> dict:
     try:
-        return _get_screener_data()
+        return _apply_active_overrides(_get_screener_data())
     except ScreenerStateUnavailable as exc:
         # Same honesty rule as below: no state is a 503 with the reason, never a
         # 200 carrying an empty ranking.
@@ -1228,6 +1278,38 @@ def save_portfolio(body: PortfolioIn) -> dict:
     ]
     _PORTFOLIO_FILE.write_text(json.dumps(data, indent=2))
     return {"success": True, "count": len(data)}
+
+
+@app.post(
+    "/api/screener/active",
+    dependencies=[Depends(require_admin)],
+    responses={
+        400: {"description": "Not a valid ticker."},
+        404: {"description": "There was no override to clear."},
+        503: {"description": "The override store is unreachable; nothing was written."},
+    },
+)
+def set_active_override(body: ActiveOverrideIn) -> dict:
+    """Override one signal's `active` flag, or clear the override.
+
+    `active: null` clears it and hands the ticker back to the policy value.
+    The computed value is never touched — see product/storage/active_overrides.
+    """
+    try:
+        if body.active is None:
+            cleared = active_store.clear_override(body.ticker)
+            if not cleared:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No active override stored for {body.ticker.upper()}",
+                )
+            return {"success": True, "ticker": body.ticker.upper(), "active": None}
+        row = active_store.set_override(body.ticker, body.active)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except active_store.StorageError as exc:
+        raise HTTPException(status_code=503, detail=f"Storage error: {exc}") from exc
+    return {"success": True, **row}
 
 
 @app.get("/api/portfolio/alerts")

@@ -17,5 +17,9 @@ data/seed_cache/
 results/
 data/universe_cache/*.json
 data/screener_cache/*.json
+# Manual `active` overrides written by the running service. Supabase is the
+# real backend in a deploy; this file is the local/dev fallback, so a flip
+# made while testing must never land in a commit.
+data/screener_overrides/
 .env
 .env.local

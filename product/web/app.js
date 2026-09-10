@@ -361,13 +361,10 @@ function timeHorizonBannerHTML() {
       + 'At 3&ndash;6 months: avg +6&ndash;12%. Proceed with extra caution.'
       + '</div>';
   }
-  if (TIME_HORIZONS[th].days < HOLD_DAYS_DEFAULT) {
-    return '<div class="th-warning-banner">'
-      + '&#9888;&#65039; Your time horizon is shorter than the ~2 year planned hold. '
-      + 'The 12-month average is +49.2%, but on the clean backtest a 1-year hold '
-      + 'lost to SPY &mdash; exiting early is not the tested strategy.'
-      + '</div>';
-  }
+  // 6-24 month horizons get no banner. They are still short of the planned hold,
+  // so they must NOT fall through to the "matches the hold" line below — saying
+  // that would turn the absence of a caution into an endorsement.
+  if (TIME_HORIZONS[th].days < HOLD_DAYS_DEFAULT) return '';
   return '<div class="th-info-banner">'
     + '&#8505;&#65039; Your horizon matches the ~2 year planned hold. '
     + 'The signal has no validated edge past it. '
@@ -387,6 +384,67 @@ function dismissFirstSignalTooltip() {
   if (el) el.style.display = 'none';
 }
 
+// The per-signal `active` control.
+//
+// `active` is the overlay's answer to "deploy a sleeve now?" — a BUY while the
+// market is in a dislocation. The server publishes both what the policy
+// computed (`active_policy`) and where the served value came from
+// (`active_source`), so an override is shown AS an override rather than
+// silently replacing the gate's answer. `active` is null when the regime is
+// unknown (SPY unavailable), which is a third state, not a false.
+function activeRowHTML(s) {
+  var overridden = s.active_source === 'override';
+  var state = s.active === true  ? 'Active'
+            : s.active === false ? 'Watch-only'
+            : 'Unknown';
+  var cls   = s.active === true  ? 'act-on'
+            : s.active === false ? 'act-off'
+            : 'act-unknown';
+  var note  = overridden
+    ? 'Overridden' + (s.active_policy === true  ? ' (policy: active)'
+                    : s.active_policy === false ? ' (policy: watch-only)'
+                    : ' (policy: unknown)')
+    : 'From the overlay policy';
+  // The flip targets the opposite of what is being SHOWN. From Unknown there is
+  // no opposite to infer, so offer the affirmative choice explicitly.
+  var next  = s.active === true ? 'false' : 'true';
+  var label = s.active === true ? 'Set watch-only' : 'Set active';
+  var buttons = '<button class="btn btn-ghost btn-sm" onclick="setActive(\'' + s.ticker + '\',' + next + ')">'
+    + label + '</button>';
+  if (overridden) {
+    buttons += '<button class="btn btn-ghost btn-sm" onclick="setActive(\'' + s.ticker + '\',null)">'
+      + 'Reset to policy</button>';
+  }
+  return [
+    '  <div class="act-row">',
+    '    <span class="act-pill ' + cls + '">' + state + '</span>',
+    '    <span class="act-note">' + note + '</span>',
+    '    <span class="act-btns">' + buttons + '</span>',
+    '  </div>'
+  ].join('\n');
+}
+
+// Write an override (or clear it with `next === null`), then re-read the
+// screener so what is shown is what the server actually serves — never a
+// local guess at what the write did.
+function setActive(ticker, next) {
+  fetch('/api/screener/active', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ ticker: ticker, active: next })
+  })
+    .then(parseJson)
+    .then(function (res) {
+      if (!res.success) { showToast('Could not update ' + ticker); return; }
+      showToast(next === null
+        ? ticker + ' back to the policy value'
+        : ticker + ' set ' + (next ? 'active' : 'watch-only'));
+      _sigCacheTs = 0;      // force a re-read; the row now differs server-side
+      loadSignals();
+    })
+    .catch(function (e) { showToast(errText(e, 'Could not update ' + ticker)); });
+}
+
 function sigCardHTML(s) {
   var pct = Math.round((s.composite_score || 0) * 100);
   var thBanner = timeHorizonBannerHTML();
@@ -403,6 +461,7 @@ function sigCardHTML(s) {
     '    <div class="bar-track"><div class="bar-fill bar-fill-blue" style="width:' + pct + '%"></div></div>',
     '    <span class="bar-val">' + fmt(s.composite_score, 2) + '</span>',
     '  </div>',
+    activeRowHTML(s),
     '  <div class="card-actions">',
     '    <button class="btn btn-ghost" id="why-btn-' + s.ticker + '" onclick="toggleDetail(\'' + s.ticker + '\')">Why now?</button>',
     '    <button class="btn btn-primary" onclick="toggleTrackForm(\'' + s.ticker + '\',' + s.price + ')">Track</button>',

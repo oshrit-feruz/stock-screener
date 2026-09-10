@@ -29,6 +29,7 @@ _WRITES = [
     ("/api/positions/open", {"ticker": "AAPL", "entry_price": 100.0, "entry_date": "2026-01-02"}),
     ("/api/positions/close", {"ticker": "AAPL"}),
     ("/api/portfolio", {"holdings": []}),
+    ("/api/screener/active", {"ticker": "AAPL", "active": True}),
 ]
 
 
@@ -105,9 +106,10 @@ def test_the_guard_lets_an_authenticated_write_through(app, path, body, tmp_path
     not accepted, and that is what this asserts against.
 
     The storage paths are redirected into tmp_path first: these calls really do
-    write, and data/positions/*.json and data/portfolio/portfolio.json are
-    tracked in the repo — an authenticated write against the real paths would
-    leave the working tree dirty and, run in CI, could be committed.
+    write, and data/positions/*.json, data/portfolio/portfolio.json and the
+    override store are tracked in (or written under) the repo — an
+    authenticated write against the real paths would leave the working tree
+    dirty and, run in CI, could be committed.
 
     The position book now has exactly one owner, so one redirect covers both
     endpoints; this used to need the same patch applied to main and to the exit
@@ -118,6 +120,8 @@ def test_the_guard_lets_an_authenticated_write_through(app, path, body, tmp_path
     monkeypatch.setattr(store, "_OPEN_FILE", tmp_path / "open_positions.json")
     monkeypatch.setattr(store, "_CLOSED_FILE", tmp_path / "closed_positions.json")
     monkeypatch.setattr(main, "_PORTFOLIO_FILE", tmp_path / "portfolio.json")
+    import product.storage.active_overrides as overrides
+    monkeypatch.setattr(overrides, "_FILE", tmp_path / "active_overrides.json")
     # Force the file backend even if a developer has Supabase credentials in
     # their shell: this test must never touch the real book.
     monkeypatch.delenv("SUPABASE_URL", raising=False)
