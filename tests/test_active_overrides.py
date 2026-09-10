@@ -427,10 +427,12 @@ def test_the_payload_publishes_the_universe_fingerprint_it_was_built_under(api):
     from datetime import date
     from types import SimpleNamespace
     result = SimpleNamespace(as_of_date=date(2026, 9, 9), market_regime=None,
-                             satellite_policy={}, buy_signals=[], full_ranking=[])
-    out = api._screener_payload(result, computed_on=date(2026, 9, 10),
-                                universe_fingerprint="abc123")
-    assert out["universe_fingerprint"] == "abc123"
+                             satellite_policy={}, buy_signals=[], full_ranking=[],
+                             universe_fingerprint="abc123")
+    out = api._screener_payload(result, computed_on=date(2026, 9, 10))
+    assert out["universe_fingerprint"] == "abc123", "read off the result, not re-derived"
     assert out["computed_on"] == "2026-09-10"
-    # Callers with no better provenance publish null, never a fabricated value.
-    assert api._screener_payload(result)["universe_fingerprint"] is None
+    # A result that predates the field publishes null, never a fabricated value.
+    bare = SimpleNamespace(as_of_date=date(2026, 9, 9), market_regime=None,
+                           satellite_policy={}, buy_signals=[], full_ranking=[])
+    assert api._screener_payload(bare)["universe_fingerprint"] is None

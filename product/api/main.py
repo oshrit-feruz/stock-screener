@@ -151,16 +151,17 @@ def _warm_screener_cache() -> None:
         _yield_fn = _make_backtest_yield_fn()
         _yield_fn()  # a backtest already running at boot delays the warm entirely
         result = run_screener(yield_fn=_yield_fn)
-        # The universe this warm ran under: stamped on the cache so the first
-        # request can reuse it (without it the fingerprint would be None and
-        # every warm result discarded), and published in the payload.
-        warm_fp = _universe_fingerprint(load_universe_list())
-        data = _screener_payload(result, computed_on=date.today(),
-                                 universe_fingerprint=warm_fp)
+        data = _screener_payload(result, computed_on=date.today())
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
-            _sc_universe_fp = warm_fp
+            # Bind the cache to the universe the run ACTUALLY used, which the
+            # result carries. Stamping from a fresh load here could label an
+            # old result with a new universe if the list changed mid-scan;
+            # the first request would then reuse rows ranked against the
+            # wrong list. The fallback only covers a result without one.
+            _sc_universe_fp = (data["universe_fingerprint"]
+                               or _universe_fingerprint(load_universe_list()))
         logger.warning("STARTUP %s: screener warm-up finished in %.0fs (incl. any yield pauses)",
                        _BUILD_MARKER, time.time() - t0)
     except Exception:
@@ -470,8 +471,7 @@ def _row_to_dict(r: ScreenerRow) -> dict:
     }
 
 
-def _screener_payload(result, computed_on: Optional[date] = None,
-                      universe_fingerprint: Optional[str] = None) -> dict:
+def _screener_payload(result, computed_on: Optional[date] = None) -> dict:
     """The /api/screener body. One builder for the startup warm, the request
     path and the published daily-state result, so they can never publish
     different shapes.
@@ -481,18 +481,20 @@ def _screener_payload(result, computed_on: Optional[date] = None,
     beside them. `computed_on` is the day the result was produced (defaults to
     `as_of` when the caller has no better provenance).
 
-    `universe_fingerprint` is the universe the result was computed under — the
-    same value the published daily-state file carries and this service
-    validates it against. It is what tells two same-dated results apart, and
-    a consumer that mirrors this payload (shift-app) keeps it for exactly that
-    reason; it was the one field the raw file had that this body dropped.
+    `universe_fingerprint` is the universe the result was computed under. It
+    is read off the result itself — set by run_screener from the list it
+    loaded, or by the cache loader from the validated file — never from a
+    second load here, which could name a universe the rows were not ranked
+    against. It is what tells two same-dated results apart, and a consumer
+    that mirrors this payload (shift-app) keeps it for exactly that reason;
+    it was the one field the raw file had that this body dropped.
     """
     as_of = result.as_of_date.isoformat()
     return {
         "schema_version":   SCHEMA_VERSION,
         "as_of":            as_of,
         "computed_on":      (computed_on or result.as_of_date).isoformat(),
-        "universe_fingerprint": universe_fingerprint,
+        "universe_fingerprint": getattr(result, "universe_fingerprint", None),
         "market_regime":    result.market_regime,      # null when SPY was unavailable
         "satellite_policy": result.satellite_policy,
         "buy_signals":      [_row_to_dict(r) for r in result.buy_signals],
@@ -824,8 +826,7 @@ def _get_screener_data() -> dict:
                         computed_on, date.today())
         # Provenance, not decoration: the newest available result may be days
         # old (weekend, holiday, pre-run morning). The client shows computed_on.
-        data = _screener_payload(cached, computed_on=computed_on,
-                                 universe_fingerprint=universe_fp)
+        data = _screener_payload(cached, computed_on=computed_on)
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
@@ -851,12 +852,11 @@ def _get_screener_data() -> dict:
 
     try:
         result = run_screener()
-        data = _screener_payload(result, computed_on=date.today(),
-                                 universe_fingerprint=universe_fp)
+        data = _screener_payload(result, computed_on=date.today())
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
-            _sc_universe_fp = universe_fp
+            _sc_universe_fp = data["universe_fingerprint"] or universe_fp
             _sc_warming = False
         return data
     except Exception:

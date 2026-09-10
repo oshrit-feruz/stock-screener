@@ -101,3 +101,14 @@ def test_legacy_cache_without_fingerprint_is_discarded(tmp_path):
 def test_absent_cache_returns_none():
     assert _load_disk_cache(_AS_OF, _universe_fingerprint(_ulist(["AAPL"])),
                             universe_size=1) is None
+
+
+def test_a_loaded_result_carries_the_fingerprint_it_was_saved_under():
+    """The result names the universe its rows were ranked against — the file's
+    own value, validated against the caller's — so the payload can publish it
+    without a second universe load that might name a different list."""
+    fp = _universe_fingerprint(_ulist(["AAPL"]))
+    _save_disk_cache(_result(), fp)
+    loaded = _load_disk_cache(_AS_OF, fp, universe_size=1)
+    assert loaded is not None
+    assert loaded.universe_fingerprint == fp

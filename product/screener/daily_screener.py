@@ -173,6 +173,9 @@ def _load_disk_cache(as_of: date, universe_fp: str,
             # a missing regime is honestly None, the policy is the current one.
             market_regime    = data.get("market_regime"),
             satellite_policy = data.get("satellite_policy") or policy_dict(),
+            # The file's own fingerprint — validated equal to the caller's
+            # above, so this is the universe these rows were ranked against.
+            universe_fingerprint = cached_fp,
         )
     except Exception as exc:
         logger.warning("screener disk cache load failed: %s", exc)
@@ -227,6 +230,12 @@ class ScreenerResult:
     # Overlay context published with every result (additive).
     market_regime: Optional[dict] = None                     # None when SPY was unavailable
     satellite_policy: dict = field(default_factory=policy_dict)
+    # The universe this result was computed under. Set by run_screener from
+    # the list IT loaded, and by the cache loader from the file it read —
+    # never from a second load, which could name a universe the rows were not
+    # ranked against if the list changed in between. Published as provenance;
+    # None only for a result that predates the field.
+    universe_fingerprint: Optional[str] = None
 
 
 def _classify(composite: Optional[float], gate: Optional[bool]) -> str:
@@ -461,6 +470,7 @@ def run_screener(
         vetoed           = vetoed,
         market_regime    = regime,
         satellite_policy = policy_dict(),
+        universe_fingerprint = universe_fp,   # the list this run actually used
     )
     _save_disk_cache(result, universe_fp)
     return result
