@@ -155,10 +155,13 @@ def _warm_screener_cache() -> None:
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
-            # Stamp the universe this warm ran under, so the first request can
-            # actually reuse it. Without this the fingerprint would be None and
-            # every warm result would be discarded on the next request.
-            _sc_universe_fp = _universe_fingerprint(load_universe_list())
+            # Bind the cache to the universe the run ACTUALLY used, which the
+            # result carries. Stamping from a fresh load here could label an
+            # old result with a new universe if the list changed mid-scan;
+            # the first request would then reuse rows ranked against the
+            # wrong list. The fallback only covers a result without one.
+            _sc_universe_fp = (data["universe_fingerprint"]
+                               or _universe_fingerprint(load_universe_list()))
         logger.warning("STARTUP %s: screener warm-up finished in %.0fs (incl. any yield pauses)",
                        _BUILD_MARKER, time.time() - t0)
     except Exception:
@@ -477,12 +480,21 @@ def _screener_payload(result, computed_on: Optional[date] = None) -> dict:
     `full_ranking` keep their exact meaning and position; everything new sits
     beside them. `computed_on` is the day the result was produced (defaults to
     `as_of` when the caller has no better provenance).
+
+    `universe_fingerprint` is the universe the result was computed under. It
+    is read off the result itself — set by run_screener from the list it
+    loaded, or by the cache loader from the validated file — never from a
+    second load here, which could name a universe the rows were not ranked
+    against. It is what tells two same-dated results apart, and a consumer
+    that mirrors this payload (shift-app) keeps it for exactly that reason;
+    it was the one field the raw file had that this body dropped.
     """
     as_of = result.as_of_date.isoformat()
     return {
         "schema_version":   SCHEMA_VERSION,
         "as_of":            as_of,
         "computed_on":      (computed_on or result.as_of_date).isoformat(),
+        "universe_fingerprint": getattr(result, "universe_fingerprint", None),
         "market_regime":    result.market_regime,      # null when SPY was unavailable
         "satellite_policy": result.satellite_policy,
         "buy_signals":      [_row_to_dict(r) for r in result.buy_signals],
@@ -537,8 +549,15 @@ def _apply_active_overrides(payload: dict) -> dict:
         **payload,
         "buy_signals":      [_merge(r) for r in payload.get("buy_signals", [])],
         "full_ranking":     [_merge(r) for r in payload.get("full_ranking", [])],
-        "active_overrides": sorted(overrides.values(), key=lambda o: o["ticker"]),
+        "active_overrides": _override_list(overrides),
     }
+
+
+def _override_list(overrides: dict) -> list:
+    """The published form of the override map: one sorted list, the same
+    whether it rides inside /api/screener or stands alone at
+    /api/screener/active, so a consumer can read either and see one shape."""
+    return sorted(overrides.values(), key=lambda o: o["ticker"])
 
 
 def _current_price(ticker: str, prices: PriceData) -> Optional[float]:
@@ -837,7 +856,7 @@ def _get_screener_data() -> dict:
         with _sc_lock:
             _sc_data = data
             _sc_ts = time.time()
-            _sc_universe_fp = universe_fp
+            _sc_universe_fp = data["universe_fingerprint"] or universe_fp
             _sc_warming = False
         return data
     except Exception:
@@ -1330,6 +1349,24 @@ def clear_active_override(ticker: str) -> dict:
         raise HTTPException(status_code=404,
                             detail=f"No active override stored for {ticker.upper()}")
     return {"success": True, "ticker": ticker.upper(), "active": None}
+
+
+@app.get("/api/screener/active")
+def list_active_overrides() -> dict:
+    """The stored manual overrides, in the form /api/screener publishes them.
+
+    Public and unauthenticated like /api/screener itself: this exact list is
+    already inside that payload as `active_overrides`. This is the small form
+    of it, for a consumer that mirrors the engine's published daily-state file
+    — which never carries overrides, because they are merged at serve time —
+    and needs only the overrides to reproduce the merge. A few hundred bytes,
+    no ranking inside, and no hour-long payload cache in front of it.
+
+    Served from the store's own 60-second cache. A store failure yields an
+    empty list, exactly as /api/screener serves policy values then; the
+    failure is logged in the store, not raised here.
+    """
+    return {"active_overrides": _override_list(active_store.load())}
 
 
 @app.get("/api/portfolio/alerts")

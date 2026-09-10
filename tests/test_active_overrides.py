@@ -332,6 +332,11 @@ def client(store, monkeypatch):
         def delete(self, ticker):
             return _call(main.app, f"/api/screener/active/{ticker}", "DELETE",
                          header_token=_TOKEN)
+        def get(self):
+            # Deliberately no token: the list is public, like /api/screener.
+            return _call(main.app, "/api/screener/active", "GET")
+        def screener_list(self, payload):
+            return main._apply_active_overrides(payload)["active_overrides"]
     yield Client()
     importlib.reload(main)
 
@@ -378,3 +383,56 @@ def test_deleting_nothing_is_a_404(client):
 
 def test_a_bad_ticker_is_a_400_on_delete(client):
     assert client.delete("bad%20ticker!")["status"] == 400
+
+
+# ── the public list ─────────────────────────────────────────────────────────
+
+def test_the_override_list_is_readable_without_a_token(client):
+    """A mirror that reads the engine's published daily-state file needs only
+    the overrides to reproduce the serve-time merge; the same list is already
+    public inside /api/screener, so this small form is public too."""
+    r = client.get()
+    assert r["status"] == 200
+    assert json.loads(r["body"]) == {"active_overrides": []}
+
+
+def test_the_public_list_is_exactly_what_the_screener_payload_carries(client, store):
+    """One shape, two doors: a consumer reading either must see the same rows."""
+    store.set_override("NVDA", True)
+    store.set_override("AAPL", False)
+    standalone = json.loads(client.get()["body"])["active_overrides"]
+    inside = client.screener_list(_payload())
+    assert standalone == inside
+    assert [o["ticker"] for o in standalone] == ["AAPL", "NVDA"], "sorted by ticker"
+    assert set(standalone[0]) == {"ticker", "active", "set_at"}
+
+
+def test_a_store_failure_serves_an_empty_list_not_an_error(client, store, monkeypatch):
+    """The mirror falls back to policy values on an empty list; it must not
+    get a 500 to have to special-case."""
+    def boom():
+        raise store.StorageError("Supabase is unreachable")
+    monkeypatch.setattr(store, "_fetch", boom)
+    r = client.get()
+    assert r["status"] == 200
+    assert json.loads(r["body"]) == {"active_overrides": []}
+
+
+# ── provenance ──────────────────────────────────────────────────────────────
+
+def test_the_payload_publishes_the_universe_fingerprint_it_was_built_under(api):
+    """The daily-state file carries it and the service validates against it;
+    a consumer that mirrors this payload keeps it to tell two same-dated
+    results apart. It was the one field the raw file had that the body lost."""
+    from datetime import date
+    from types import SimpleNamespace
+    result = SimpleNamespace(as_of_date=date(2026, 9, 9), market_regime=None,
+                             satellite_policy={}, buy_signals=[], full_ranking=[],
+                             universe_fingerprint="abc123")
+    out = api._screener_payload(result, computed_on=date(2026, 9, 10))
+    assert out["universe_fingerprint"] == "abc123", "read off the result, not re-derived"
+    assert out["computed_on"] == "2026-09-10"
+    # A result that predates the field publishes null, never a fabricated value.
+    bare = SimpleNamespace(as_of_date=date(2026, 9, 9), market_regime=None,
+                           satellite_policy={}, buy_signals=[], full_ranking=[])
+    assert api._screener_payload(bare)["universe_fingerprint"] is None
