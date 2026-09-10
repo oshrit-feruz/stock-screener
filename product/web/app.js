@@ -292,7 +292,7 @@ function regimeBannerHTML(regime) {
   // not field-validate, so every value reaching innerHTML is either escaped or
   // — like this one — narrowed to a number before it is interpolated.
   var lookbk  = (typeof regime.lookback_days === 'number'
-    && isFinite(regime.lookback_days)
+    && Number.isFinite(regime.lookback_days)
     && regime.lookback_days > 0) ? regime.lookback_days : 252;
   var active  = regime.in_dislocation === true;
   var head    = active
