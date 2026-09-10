@@ -332,9 +332,12 @@ function renderSignals(data) {
 
   var regimeHTML = regimeBannerHTML(data.market_regime);
 
+  var orphanHTML = orphanOverridesHTML(data);
+
   if (!data.buy_signals || data.buy_signals.length === 0) {
     ctr.innerHTML = [
       regimeHTML,
+      orphanHTML,
       '<div class="empty">',
       '  <div class="em-h">No setups today.</div>',
       '  <p>The signal is selective.<br>',
@@ -348,7 +351,7 @@ function renderSignals(data) {
     return;
   }
 
-  ctr.innerHTML = regimeHTML + data.buy_signals.map(sigCardHTML).join('');
+  ctr.innerHTML = regimeHTML + data.buy_signals.map(sigCardHTML).join('') + orphanHTML;
   maybeShowFirstSignalTooltip();
 }
 
@@ -392,6 +395,42 @@ function dismissFirstSignalTooltip() {
 // (`active_source`), so an override is shown AS an override rather than
 // silently replacing the gate's answer. `active` is null when the regime is
 // unknown (SPY unavailable), which is a third state, not a false.
+// "on 2026-09-10" from an ISO timestamp, or "(date unknown)" — an override
+// whose date is missing must not read as if it were made today.
+function overrideDate(iso) {
+  if (typeof iso !== 'string' || iso.length < 10) return '(date unknown)';
+  return 'on ' + escHtml(iso.slice(0, 10));
+}
+
+// Overrides whose ticker is not in today's BUY list. They persist by design,
+// so without this section they would be invisible and uncleared — and would
+// quietly re-apply the day the ticker returned.
+function orphanOverridesHTML(data) {
+  var list = data.active_overrides;
+  if (!list || !list.length) return '';
+  var onList = {};
+  (data.buy_signals || []).forEach(function (s) { onList[s.ticker] = true; });
+  var orphans = list.filter(function (o) { return !onList[o.ticker]; });
+  if (!orphans.length) return '';
+  var rows = orphans.map(function (o) {
+    var st = activeState(o.active);
+    return '  <div class="act-row">'
+      + '<span class="act-pill ' + st.cls + '">' + st.label + '</span>'
+      + '<span class="act-note"><b>' + escHtml(o.ticker) + '</b> &mdash; set '
+      + overrideDate(o.set_at) + '</span>'
+      + '<span class="act-btns"><button class="btn btn-ghost btn-sm" '
+      + 'onclick="setActive(\'' + escHtml(o.ticker) + '\',null)">Reset to policy</button></span>'
+      + '</div>';
+  });
+  return [
+    '<div class="card orphan-card">',
+    '  <div class="section-title" style="margin:0 0 4px;">Overrides not on today\'s list</div>',
+    '  <div class="act-note" style="margin-bottom:6px;">These will apply again if the ticker returns.</div>',
+    rows.join('\n'),
+    '</div>'
+  ].join('\n');
+}
+
 // The three values `active` can hold, as one table, so the pill label, its
 // colour and the "policy: …" wording can never disagree about what a value
 // means. null is the regime-unknown state, not a false.
@@ -406,7 +445,11 @@ function activeRowHTML(s) {
   var shown = activeState(s.active);
   var note  = 'From the overlay policy';
   if (overridden) {
-    note = 'Overridden (policy: ' + activeState(s.active_policy).label.toLowerCase() + ')';
+    // The date is the point: an override persists across reruns, so the
+    // reader has to be able to tell a decision made this morning from one
+    // made in a different market three weeks ago.
+    note = 'Overridden ' + overrideDate(s.active_set_at)
+      + ' (policy: ' + activeState(s.active_policy).label.toLowerCase() + ')';
   }
   // The flip targets the opposite of what is being SHOWN. From Unknown there is
   // no opposite to infer, so offer the affirmative choice explicitly.

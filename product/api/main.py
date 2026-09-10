@@ -381,8 +381,10 @@ class PortfolioIn(BaseModel):
 
 class ActiveOverrideIn(BaseModel):
     ticker: str
-    # None clears the override and hands the ticker back to the policy value.
-    active: Optional[bool] = None
+    # Required, nullable — NOT `= None`. An explicit null clears the override;
+    # a body that merely omits the field is a 422, so a client that forgot to
+    # send its decision cannot delete one by accident.
+    active: Optional[bool]
 
 _SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
 # Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and
@@ -502,6 +504,12 @@ def _apply_active_overrides(payload: dict) -> dict:
       * `active_source` — "policy" or "override", so a human decision is never
         mistaken for the gate's. An override also carries `active_set_at`.
 
+    The payload also carries `active_overrides`, the full stored list. An
+    override persists across reruns by design, so its ticker can drop out of
+    today's BUY list — and then it has no row to ride on. Without this list it
+    could be neither seen nor cleared, yet would re-apply the day the ticker
+    came back. Publishing it is what lets the client show and reset those.
+
     A storage failure is not allowed to take the screener down: the policy
     payload is served unchanged and the failure is logged. Serving the gate's
     own answer is the safe direction — it is what the validated strategy says.
@@ -527,8 +535,9 @@ def _apply_active_overrides(payload: dict) -> dict:
 
     return {
         **payload,
-        "buy_signals":  [_merge(r) for r in payload.get("buy_signals", [])],
-        "full_ranking": [_merge(r) for r in payload.get("full_ranking", [])],
+        "buy_signals":      [_merge(r) for r in payload.get("buy_signals", [])],
+        "full_ranking":     [_merge(r) for r in payload.get("full_ranking", [])],
+        "active_overrides": sorted(overrides.values(), key=lambda o: o["ticker"]),
     }
 
 

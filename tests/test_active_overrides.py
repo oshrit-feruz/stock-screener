@@ -31,7 +31,11 @@ def store(tmp_path, monkeypatch):
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
     monkeypatch.setattr(overrides, "_FILE", tmp_path / "active_overrides.json")
-    return overrides
+    # The read cache is module state; without this, one test's overrides are
+    # what the next test's first load() sees.
+    overrides.invalidate()
+    yield overrides
+    overrides.invalidate()
 
 
 # ── the store ───────────────────────────────────────────────────────────────
@@ -109,6 +113,72 @@ def test_a_corrupt_file_reads_as_empty(store):
     store._FILE.parent.mkdir(parents=True, exist_ok=True)
     store._FILE.write_text("{ not json")
     assert store.load() == {}
+
+
+# ── the read cache ──────────────────────────────────────────────────────────
+
+def _count_fetches(store, monkeypatch):
+    """Wrap the uncached read so a test can count how often the store is hit."""
+    calls = {"n": 0}
+    real = store._fetch
+    def counted():
+        calls["n"] += 1
+        return real()
+    monkeypatch.setattr(store, "_fetch", counted)
+    return calls
+
+
+def test_repeated_loads_within_the_ttl_hit_the_store_once(store, monkeypatch):
+    """/api/screener is served from an hour-long memory cache; the override
+    read in front of it must not be the one round trip per request."""
+    calls = _count_fetches(store, monkeypatch)
+    store.set_override("NVDA", True)      # a write invalidates, so start clean
+    for _ in range(5):
+        assert store.load() == {"NVDA": store.load()["NVDA"]}
+    assert calls["n"] == 1
+
+
+def test_a_write_in_this_process_is_visible_on_the_very_next_load(store, monkeypatch):
+    """Immediate, not TTL-bounded: the flip the user just made must show."""
+    calls = _count_fetches(store, monkeypatch)
+    assert store.load() == {}
+    store.set_override("NVDA", True)
+    assert store.load()["NVDA"]["active"] is True
+    store.clear_override("NVDA")
+    assert store.load() == {}
+    assert calls["n"] == 3, "each write forces exactly one fresh read"
+
+
+def test_the_cache_expires_after_the_ttl(store, monkeypatch):
+    calls = _count_fetches(store, monkeypatch)
+    now = [1000.0]
+    monkeypatch.setattr(store.time, "monotonic", lambda: now[0])
+    store.load()
+    now[0] += store._CACHE_TTL - 1
+    store.load()
+    assert calls["n"] == 1
+    now[0] += 2
+    store.load()
+    assert calls["n"] == 2
+
+
+def test_a_failed_read_is_memoised_so_an_outage_costs_one_wait_per_ttl(store, monkeypatch):
+    """Otherwise every /api/screener request would wait out the store's
+    timeout for as long as Supabase was down."""
+    calls = {"n": 0}
+    def boom():
+        calls["n"] += 1
+        raise store.StorageError("Supabase is unreachable")
+    monkeypatch.setattr(store, "_fetch", boom)
+    for _ in range(4):
+        assert store.load() == {}, "an outage serves no overrides, never raises"
+    assert calls["n"] == 1
+
+
+def test_load_returns_a_copy_so_a_caller_cannot_poison_the_cache(store):
+    store.set_override("NVDA", True)
+    store.load()["NVDA"]["active"] = False
+    assert store.load()["NVDA"]["active"] is True
 
 
 # ── the merge onto a payload ────────────────────────────────────────────────
@@ -196,3 +266,72 @@ def test_a_store_failure_serves_the_policy_values(api, monkeypatch):
     out = api._apply_active_overrides(_payload())
     assert out["buy_signals"][0]["active"] is False
     assert out["buy_signals"][0]["active_source"] == "policy"
+
+
+def test_the_full_override_list_is_published_at_top_level(api, store):
+    """An override persists across reruns, so its ticker can drop out of the
+    BUY list and have no row to ride on. The top-level list is what lets the
+    client show and clear those instead of losing them."""
+    store.set_override("ZZZ", True)        # not in the payload at all
+    store.set_override("NVDA", False)
+    out = api._apply_active_overrides(_payload())
+    assert [o["ticker"] for o in out["active_overrides"]] == ["NVDA", "ZZZ"]
+    assert out["active_overrides"][1]["active"] is True
+    assert out["active_overrides"][1]["set_at"]
+
+
+def test_the_published_list_is_empty_not_missing_when_there_are_none(api):
+    assert api._apply_active_overrides(_payload())["active_overrides"] == []
+
+
+# ── the endpoint's body contract ────────────────────────────────────────────
+
+_TOKEN = "admin-token-for-tests"
+
+
+@pytest.fixture
+def client(store, monkeypatch):
+    """POST /api/screener/active as an authenticated admin, through the ASGI
+    app directly (the harness test_write_protection uses)."""
+    import importlib
+
+    import product.api.main as main
+    from tests.test_write_protection import _call
+    monkeypatch.setenv("ADMIN_TOKEN", _TOKEN)
+    monkeypatch.delenv("RENDER", raising=False)
+    importlib.reload(main)
+    monkeypatch.setattr(main, "active_store", store)
+
+    def post(body):
+        return _call(main.app, "/api/screener/active", "POST", body,
+                     header_token=_TOKEN)
+    yield post
+    importlib.reload(main)
+
+
+def test_a_body_that_omits_active_is_rejected_not_treated_as_a_clear(client, store):
+    """`active` is required-but-nullable: a client that forgot to send its
+    decision must not delete a stored one by accident."""
+    store.set_override("NVDA", True)
+    r = client({"ticker": "NVDA"})
+    assert r["status"] == 422
+    assert store.load()["NVDA"]["active"] is True, "the override survived"
+
+
+def test_an_explicit_null_clears(client, store):
+    store.set_override("NVDA", True)
+    assert client({"ticker": "NVDA", "active": None})["status"] == 200
+    assert store.load() == {}
+
+
+def test_clearing_nothing_is_a_404(client):
+    assert client({"ticker": "NVDA", "active": None})["status"] == 404
+
+
+def test_a_bool_sets(client, store):
+    assert client({"ticker": "nvda", "active": False})["status"] == 200
+    assert store.load()["NVDA"]["active"] is False
+
+
+def test_a_bad_ticker_is_a_400(client):
+    assert client({"ticker": "bad ticker!", "active": True})["status"] == 400
