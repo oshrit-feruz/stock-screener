@@ -288,7 +288,12 @@ function regimeBannerHTML(regime) {
   var ticker  = regime.market_ticker || 'SPY';
   var dd      = (regime.spy_dd_from_high * 100).toFixed(1);
   var gate    = ((typeof regime.gate_dd === 'number' ? regime.gate_dd : 0.10) * 100).toFixed(0);
-  var lookbk  = regime.lookback_days || 252;
+  // The payload can arrive from the published JSON cache, which the loader does
+  // not field-validate, so every value reaching innerHTML is either escaped or
+  // — like this one — narrowed to a number before it is interpolated.
+  var lookbk  = (typeof regime.lookback_days === 'number'
+    && isFinite(regime.lookback_days)
+    && regime.lookback_days > 0) ? regime.lookback_days : 252;
   var active  = regime.in_dislocation === true;
   var head    = active
     ? '&#128200; Dislocation &mdash; sleeves active'
