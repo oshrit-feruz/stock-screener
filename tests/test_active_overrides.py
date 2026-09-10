@@ -284,15 +284,17 @@ def test_the_published_list_is_empty_not_missing_when_there_are_none(api):
     assert api._apply_active_overrides(_payload())["active_overrides"] == []
 
 
-# ── the endpoint's body contract ────────────────────────────────────────────
+# ── the endpoint's contract ─────────────────────────────────────────────────
 
 _TOKEN = "admin-token-for-tests"
 
 
 @pytest.fixture
 def client(store, monkeypatch):
-    """POST /api/screener/active as an authenticated admin, through the ASGI
-    app directly (the harness test_write_protection uses)."""
+    """The override endpoints as an authenticated admin, through the ASGI app
+    directly (the harness test_write_protection uses). Set is a POST with the
+    decision in the body; clear is a DELETE on the ticker — two verbs, so a
+    request that lost its body cannot read as a clear."""
     import importlib
 
     import product.api.main as main
@@ -302,36 +304,56 @@ def client(store, monkeypatch):
     importlib.reload(main)
     monkeypatch.setattr(main, "active_store", store)
 
-    def post(body):
-        return _call(main.app, "/api/screener/active", "POST", body,
-                     header_token=_TOKEN)
-    yield post
+    class Client:
+        def post(self, body):
+            return _call(main.app, "/api/screener/active", "POST", body,
+                         header_token=_TOKEN)
+        def delete(self, ticker):
+            return _call(main.app, f"/api/screener/active/{ticker}", "DELETE",
+                         header_token=_TOKEN)
+    yield Client()
     importlib.reload(main)
 
 
 def test_a_body_that_omits_active_is_rejected_not_treated_as_a_clear(client, store):
-    """`active` is required-but-nullable: a client that forgot to send its
-    decision must not delete a stored one by accident."""
+    """A client that forgot to send its decision must not delete a stored one."""
     store.set_override("NVDA", True)
-    r = client({"ticker": "NVDA"})
-    assert r["status"] == 422
+    assert client.post({"ticker": "NVDA"})["status"] == 422
     assert store.load()["NVDA"]["active"] is True, "the override survived"
 
 
-def test_an_explicit_null_clears(client, store):
+def test_a_null_active_is_rejected_too(client, store):
+    """`active` is a plain bool: null is not a clear, it is a malformed set."""
     store.set_override("NVDA", True)
-    assert client({"ticker": "NVDA", "active": None})["status"] == 200
-    assert store.load() == {}
-
-
-def test_clearing_nothing_is_a_404(client):
-    assert client({"ticker": "NVDA", "active": None})["status"] == 404
+    assert client.post({"ticker": "NVDA", "active": None})["status"] == 422
+    assert store.load()["NVDA"]["active"] is True
 
 
 def test_a_bool_sets(client, store):
-    assert client({"ticker": "nvda", "active": False})["status"] == 200
+    assert client.post({"ticker": "nvda", "active": False})["status"] == 200
     assert store.load()["NVDA"]["active"] is False
 
 
-def test_a_bad_ticker_is_a_400(client):
-    assert client({"ticker": "bad ticker!", "active": True})["status"] == 400
+def test_a_bad_ticker_is_a_400_on_set(client):
+    assert client.post({"ticker": "bad ticker!", "active": True})["status"] == 400
+
+
+def test_delete_clears(client, store):
+    store.set_override("NVDA", True)
+    r = client.delete("NVDA")
+    assert r["status"] == 200
+    assert store.load() == {}
+
+
+def test_delete_normalises_the_ticker(client, store):
+    store.set_override("NVDA", True)
+    assert client.delete("nvda")["status"] == 200
+    assert store.load() == {}
+
+
+def test_deleting_nothing_is_a_404(client):
+    assert client.delete("NVDA")["status"] == 404
+
+
+def test_a_bad_ticker_is_a_400_on_delete(client):
+    assert client.delete("bad%20ticker!")["status"] == 400

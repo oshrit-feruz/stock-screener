@@ -474,11 +474,15 @@ function activeRowHTML(s) {
 // screener so what is shown is what the server actually serves — never a
 // local guess at what the write did.
 function setActive(ticker, next) {
-  fetch('/api/screener/active', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ ticker: ticker, active: next })
-  })
+  // Set is a POST with the decision in the body; clear is a DELETE on the
+  // ticker. Two verbs, so a request that lost its body cannot read as a clear.
+  var req = next === null
+    ? { method: 'DELETE' }
+    : { method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ ticker: ticker, active: next }) };
+  var url = '/api/screener/active' + (next === null ? '/' + encodeURIComponent(ticker) : '');
+  fetch(url, req)
     .then(parseJson)
     .then(function (res) {
       if (!res.success) { showToast('Could not update ' + ticker); return; }

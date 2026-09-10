@@ -381,12 +381,10 @@ class PortfolioIn(BaseModel):
 
 class ActiveOverrideIn(BaseModel):
     ticker: str
-    # Required AND nullable. Field(...) is Pydantic's explicit "no default":
-    # an explicit null clears the override, while a body that merely omits the
-    # field is a 422, so a client that forgot to send its decision cannot
-    # delete one by accident. Written out rather than left bare so the intent
-    # is visible — a bare Optional reads like a forgotten `= None`.
-    active: Optional[bool] = Field(...)
+    # A plain required bool. Clearing is a separate verb (DELETE on the
+    # ticker), not a null here: a nullable field would let a body that merely
+    # forgot to send its decision delete a stored one.
+    active: bool
 
 _SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
 # Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and
@@ -1296,31 +1294,42 @@ def save_portfolio(body: PortfolioIn) -> dict:
     dependencies=[Depends(require_admin)],
     responses={
         400: {"description": "Not a valid ticker."},
-        404: {"description": "There was no override to clear."},
         503: {"description": "The override store is unreachable; nothing was written."},
     },
 )
 def set_active_override(body: ActiveOverrideIn) -> dict:
-    """Override one signal's `active` flag, or clear the override.
-
-    `active: null` clears it and hands the ticker back to the policy value.
-    The computed value is never touched — see product/storage/active_overrides.
-    """
+    """Override one signal's `active` flag. The computed value is never
+    touched — see product/storage/active_overrides. To clear, DELETE."""
     try:
-        if body.active is None:
-            cleared = active_store.clear_override(body.ticker)
-            if not cleared:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No active override stored for {body.ticker.upper()}",
-                )
-            return {"success": True, "ticker": body.ticker.upper(), "active": None}
         row = active_store.set_override(body.ticker, body.active)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except active_store.StorageError as exc:
         raise HTTPException(status_code=503, detail=f"Storage error: {exc}") from exc
     return {"success": True, **row}
+
+
+@app.delete(
+    "/api/screener/active/{ticker}",
+    dependencies=[Depends(require_admin)],
+    responses={
+        400: {"description": "Not a valid ticker."},
+        404: {"description": "There was no override to clear."},
+        503: {"description": "The override store is unreachable; nothing was cleared."},
+    },
+)
+def clear_active_override(ticker: str) -> dict:
+    """Drop the override for one ticker, handing it back to the policy value."""
+    try:
+        cleared = active_store.clear_override(ticker)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except active_store.StorageError as exc:
+        raise HTTPException(status_code=503, detail=f"Storage error: {exc}") from exc
+    if not cleared:
+        raise HTTPException(status_code=404,
+                            detail=f"No active override stored for {ticker.upper()}")
+    return {"success": True, "ticker": ticker.upper(), "active": None}
 
 
 @app.get("/api/portfolio/alerts")
