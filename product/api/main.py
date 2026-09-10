@@ -381,10 +381,12 @@ class PortfolioIn(BaseModel):
 
 class ActiveOverrideIn(BaseModel):
     ticker: str
-    # Required, nullable — NOT `= None`. An explicit null clears the override;
-    # a body that merely omits the field is a 422, so a client that forgot to
-    # send its decision cannot delete one by accident.
-    active: Optional[bool]
+    # Required AND nullable. Field(...) is Pydantic's explicit "no default":
+    # an explicit null clears the override, while a body that merely omits the
+    # field is a 422, so a client that forgot to send its decision cannot
+    # delete one by accident. Written out rather than left bare so the intent
+    # is visible — a bare Optional reads like a forgotten `= None`.
+    active: Optional[bool] = Field(...)
 
 _SIM_MIN_START = date(2010, 1, 1)  # EDGAR lacks pre-2009 shares data for PIT ranking
 # Upper bound = the prebuilt cache's last date (seed_cache manifest sim_end, and

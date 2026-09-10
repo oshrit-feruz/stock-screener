@@ -407,7 +407,7 @@ function overrideDate(iso) {
 // quietly re-apply the day the ticker returned.
 function orphanOverridesHTML(data) {
   var list = data.active_overrides;
-  if (!list || !list.length) return '';
+  if (!list?.length) return '';
   var onList = {};
   (data.buy_signals || []).forEach(function (s) { onList[s.ticker] = true; });
   var orphans = list.filter(function (o) { return !onList[o.ticker]; });
