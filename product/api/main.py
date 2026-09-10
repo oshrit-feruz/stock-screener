@@ -537,8 +537,15 @@ def _apply_active_overrides(payload: dict) -> dict:
         **payload,
         "buy_signals":      [_merge(r) for r in payload.get("buy_signals", [])],
         "full_ranking":     [_merge(r) for r in payload.get("full_ranking", [])],
-        "active_overrides": sorted(overrides.values(), key=lambda o: o["ticker"]),
+        "active_overrides": _override_list(overrides),
     }
+
+
+def _override_list(overrides: dict) -> list:
+    """The published form of the override map: one sorted list, the same
+    whether it rides inside /api/screener or stands alone at
+    /api/screener/active, so a consumer can read either and see one shape."""
+    return sorted(overrides.values(), key=lambda o: o["ticker"])
 
 
 def _current_price(ticker: str, prices: PriceData) -> Optional[float]:
@@ -1330,6 +1337,24 @@ def clear_active_override(ticker: str) -> dict:
         raise HTTPException(status_code=404,
                             detail=f"No active override stored for {ticker.upper()}")
     return {"success": True, "ticker": ticker.upper(), "active": None}
+
+
+@app.get("/api/screener/active")
+def list_active_overrides() -> dict:
+    """The stored manual overrides, in the form /api/screener publishes them.
+
+    Public and unauthenticated like /api/screener itself: this exact list is
+    already inside that payload as `active_overrides`. This is the small form
+    of it, for a consumer that mirrors the engine's published daily-state file
+    — which never carries overrides, because they are merged at serve time —
+    and needs only the overrides to reproduce the merge. A few hundred bytes,
+    no ranking inside, and no hour-long payload cache in front of it.
+
+    Served from the store's own 60-second cache. A store failure yields an
+    empty list, exactly as /api/screener serves policy values then; the
+    failure is logged in the store, not raised here.
+    """
+    return {"active_overrides": _override_list(active_store.load())}
 
 
 @app.get("/api/portfolio/alerts")
