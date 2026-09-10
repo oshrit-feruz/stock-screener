@@ -80,6 +80,7 @@ Three separate things kept it invisible:
 | Monthly Top-100 universe | `scripts/build_universe_list.py` via `.github/workflows/monthly-universe.yml` | daily screener, `/api/screener` | `data/universe/current.json`, **committed to main** |
 | Daily screening state, alerts | `.github/workflows/daily-screener.yml` | — | `automation/daily-state` branch |
 | The position book | `/api/positions/*` (Render) **and** the daily exit tracker (Actions) | both of those, plus the beta report | Supabase `public.bot_positions` |
+| Manual `active` overrides | `POST /api/screener/active` (Render) | `/api/screener` (merged at serve time; the policy value is still published as `active_policy`) | Supabase `public.bot_active_overrides` |
 | Daily screener result (`data/screener_cache/<date>.json`) | `.github/workflows/daily-screener.yml` | `/api/screener` (raw-file fetch, 4-**trading**-day lookback, `computed_on` provenance) | `automation/daily-state` branch |
 | Prebuilt PIT grid + price cache | `scripts/build_full_cache.py` (manual) | Simulator/backtest | GitHub Release asset → `scripts/fetch_release_cache.py` |
 
@@ -183,10 +184,12 @@ error handler: if Supabase is configured but unreachable the module raises,
 because silently writing to a file nobody reads is the failure it exists to
 prevent.
 
-Access is service-role only. RLS is enabled on `bot_positions` with **no
-policies**, so the anon key — which is public and ships in the browser — can
-neither read nor write it; the service role bypasses RLS. `SUPABASE_SERVICE_KEY`
-is server-side only: never in `product/web/`, never in a URL.
+Access is service-role only. RLS is enabled on `bot_positions` (and on
+`bot_active_overrides`) with **no policies**, so the anon key — which is public
+and ships in the browser — can neither read nor write it; the service role
+bypasses RLS. `SUPABASE_SERVICE_KEY` is server-side only: never in
+`product/web/`, never in a URL. Table definitions live in `migrations/`;
+`bot_positions` predates that directory and was created by hand.
 
 The universe list is the one artifact committed to **main**, deliberately: it
 must reach the Render web service, and a Render redeploy once a month is the
