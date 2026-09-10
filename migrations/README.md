@@ -29,10 +29,19 @@ URL.
 
 ## Without these tables
 
-Every store falls back to JSON files under `data/` when `SUPABASE_URL` and
-`SUPABASE_SERVICE_KEY` are not both set, which is what lets the test suite and
-local development run with no credentials and no network. On Render that
-fallback is ephemeral — the container filesystem is discarded on restart — so a
-deploy that is missing a table here keeps working but silently forgets its
-state. That is the failure `product/storage/positions.py` was written to
-prevent; see its module docstring.
+Two different things can be missing, and they fail differently.
+
+**Missing credentials.** When `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are not
+both set, every store uses JSON files under `data/` instead. That is what lets
+the test suite and local development run with no credentials and no network.
+On Render it is ephemeral — the container filesystem is discarded on restart —
+so a deploy without credentials keeps working but silently forgets its state.
+That is the failure `product/storage/positions.py` was written to prevent; see
+its module docstring.
+
+**Missing table.** When the credentials are set but a migration here has not
+been applied, Supabase is still the backend — there is no fallback to files —
+and its operations fail. Writes surface as a 503 from the API. Reads are
+handled per store: the override store logs the failure and serves no overrides
+for one cache window, so `/api/screener` keeps answering with policy values.
+The fix is to apply the migration, not to unset the credentials.

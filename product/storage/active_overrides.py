@@ -75,6 +75,10 @@ _CACHE_TTL = 60.0                      # seconds
 _cache_lock = threading.Lock()
 _cache: Optional[Dict[str, dict]] = None
 _cache_ts: float = 0.0
+# Bumped by every invalidate(). load() releases the lock around the store
+# read, so a write can land between "read the rows" and "cache them"; the
+# generation is how load() notices and refuses to cache what it read.
+_cache_gen: int = 0
 
 
 def _now() -> str:
@@ -151,10 +155,11 @@ def _copy(rows: Dict[str, dict]) -> Dict[str, dict]:
 
 def invalidate() -> None:
     """Drop the cached read, so the next load() hits the store."""
-    global _cache, _cache_ts
+    global _cache, _cache_ts, _cache_gen
     with _cache_lock:
         _cache = None
         _cache_ts = 0.0
+        _cache_gen += 1
 
 
 def load() -> Dict[str, dict]:
@@ -175,6 +180,7 @@ def load() -> Dict[str, dict]:
     with _cache_lock:
         if _cache is not None and time.monotonic() - _cache_ts < _CACHE_TTL:
             return _copy(_cache)
+        gen = _cache_gen
     try:
         fresh = _fetch()
     except StorageError as exc:
@@ -182,8 +188,13 @@ def load() -> Dict[str, dict]:
                        str(exc)[:200], _CACHE_TTL)
         fresh = {}
     with _cache_lock:
-        _cache = fresh
-        _cache_ts = time.monotonic()
+        # A write that landed during the fetch bumped the generation. What was
+        # read may predate it, so it is handed to THIS caller (it was true when
+        # read) but not cached — caching it would hide the write for a full
+        # TTL, which is exactly what "a write invalidates immediately" forbids.
+        if _cache_gen == gen:
+            _cache = fresh
+            _cache_ts = time.monotonic()
     return _copy(fresh)
 
 

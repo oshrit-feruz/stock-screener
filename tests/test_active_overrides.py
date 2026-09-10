@@ -175,6 +175,27 @@ def test_a_failed_read_is_memoised_so_an_outage_costs_one_wait_per_ttl(store, mo
     assert calls["n"] == 1
 
 
+def test_a_write_that_lands_mid_fetch_is_not_hidden_by_the_cache(store, monkeypatch):
+    """load() reads the store with the lock released. A write that lands after
+    that read but before the rows are cached must not be buried for a TTL
+    behind the pre-write rows. Reproduced without threads: the fetch itself
+    performs the concurrent write after it has read."""
+    real = store._fetch
+    calls = {"n": 0}
+    def fetch_then_lose_the_race():
+        calls["n"] += 1
+        rows = real()                         # read the store as it is now
+        if calls["n"] == 1:
+            store.set_override("NVDA", True)  # a writer lands: persists + invalidate()
+        return rows
+    monkeypatch.setattr(store, "_fetch", fetch_then_lose_the_race)
+
+    assert store.load() == {}, "this caller read the pre-write store; that is fine"
+    assert store.load()["NVDA"]["active"] is True, \
+        "the next read sees the write instead of a cached pre-write snapshot"
+    assert calls["n"] == 2, "the racing read was not cached, so a fresh one ran"
+
+
 def test_load_returns_a_copy_so_a_caller_cannot_poison_the_cache(store):
     store.set_override("NVDA", True)
     store.load()["NVDA"]["active"] = False
