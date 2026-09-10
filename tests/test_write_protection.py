@@ -26,9 +26,13 @@ _TOKEN = "admin-token-for-tests"
 # One representative body per endpoint; the guard runs before validation, so
 # these only need to be well-formed enough to reach it.
 _WRITES = [
-    ("/api/positions/open", {"ticker": "AAPL", "entry_price": 100.0, "entry_date": "2026-01-02"}),
-    ("/api/positions/close", {"ticker": "AAPL"}),
-    ("/api/portfolio", {"holdings": []}),
+    ("POST", "/api/positions/open",
+     {"ticker": "AAPL", "entry_price": 100.0, "entry_date": "2026-01-02"}),
+    ("POST", "/api/positions/close", {"ticker": "AAPL"}),
+    ("POST", "/api/portfolio", {"holdings": []}),
+    ("POST", "/api/screener/active", {"ticker": "AAPL", "active": True}),
+    # Clearing an override is its own verb, and a write like any other.
+    ("DELETE", "/api/screener/active/AAPL", None),
 ]
 
 
@@ -83,31 +87,32 @@ def _call(app, path: str, method: str = "GET", body: dict | None = None,
     return out
 
 
-@pytest.mark.parametrize("path,body", _WRITES)
-def test_writes_are_refused_without_a_token(app, path, body):
+@pytest.mark.parametrize("method,path,body", _WRITES)
+def test_writes_are_refused_without_a_token(app, method, path, body):
     """403, and the message says how to authenticate rather than just failing."""
-    r = _call(app, path, "POST", body)
+    r = _call(app, path, method, body)
     assert r["status"] == 403
     assert "/api/auth" in r["body"].decode()
 
 
-@pytest.mark.parametrize("path,body", _WRITES)
-def test_writes_are_refused_with_a_wrong_token(app, path, body):
-    assert _call(app, path, "POST", body, cookie="admin_session=wrong")["status"] == 403
-    assert _call(app, path, "POST", body, header_token="wrong")["status"] == 403
+@pytest.mark.parametrize("method,path,body", _WRITES)
+def test_writes_are_refused_with_a_wrong_token(app, method, path, body):
+    assert _call(app, path, method, body, cookie="admin_session=wrong")["status"] == 403
+    assert _call(app, path, method, body, header_token="wrong")["status"] == 403
 
 
-@pytest.mark.parametrize("path,body", _WRITES)
-def test_the_guard_lets_an_authenticated_write_through(app, path, body, tmp_path,
-                                                       monkeypatch):
+@pytest.mark.parametrize("method,path,body", _WRITES)
+def test_the_guard_lets_an_authenticated_write_through(app, method, path, body,
+                                                       tmp_path, monkeypatch):
     """Past the guard the endpoint runs its own logic — it may still reject the
     body (a close with no such position, say). Only 403 would mean the token was
     not accepted, and that is what this asserts against.
 
     The storage paths are redirected into tmp_path first: these calls really do
-    write, and data/positions/*.json and data/portfolio/portfolio.json are
-    tracked in the repo — an authenticated write against the real paths would
-    leave the working tree dirty and, run in CI, could be committed.
+    write, and data/positions/*.json, data/portfolio/portfolio.json and the
+    override store are tracked in (or written under) the repo — an
+    authenticated write against the real paths would leave the working tree
+    dirty and, run in CI, could be committed.
 
     The position book now has exactly one owner, so one redirect covers both
     endpoints; this used to need the same patch applied to main and to the exit
@@ -118,13 +123,15 @@ def test_the_guard_lets_an_authenticated_write_through(app, path, body, tmp_path
     monkeypatch.setattr(store, "_OPEN_FILE", tmp_path / "open_positions.json")
     monkeypatch.setattr(store, "_CLOSED_FILE", tmp_path / "closed_positions.json")
     monkeypatch.setattr(main, "_PORTFOLIO_FILE", tmp_path / "portfolio.json")
+    import product.storage.active_overrides as overrides
+    monkeypatch.setattr(overrides, "_FILE", tmp_path / "active_overrides.json")
     # Force the file backend even if a developer has Supabase credentials in
     # their shell: this test must never touch the real book.
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
 
     for kwargs in ({"cookie": f"admin_session={_TOKEN}"}, {"header_token": _TOKEN}):
-        assert _call(app, path, "POST", body, **kwargs)["status"] != 403
+        assert _call(app, path, method, body, **kwargs)["status"] != 403
 
 
 def test_auth_endpoint_exchanges_the_token_for_a_cookie(app):
@@ -194,16 +201,16 @@ def test_a_get_with_no_token_configured_still_shows_the_form(monkeypatch):
         importlib.reload(main)
 
 
-@pytest.mark.parametrize("path,body", _WRITES)
-def test_writes_fail_closed_when_no_token_is_configured(monkeypatch, path, body):
+@pytest.mark.parametrize("method,path,body", _WRITES)
+def test_writes_fail_closed_when_no_token_is_configured(monkeypatch, method, path, body):
     """A deploy that forgets ADMIN_TOKEN must stop writes, not leave them open.
     503 rather than 403: nothing the caller does can help."""
     monkeypatch.delenv("ADMIN_TOKEN", raising=False)
     import product.api.main as main
     importlib.reload(main)
     try:
-        assert _call(main.app, path, "POST", body)["status"] == 503
-        assert _call(main.app, path, "POST", body,
+        assert _call(main.app, path, method, body)["status"] == 503
+        assert _call(main.app, path, method, body,
                      cookie=f"admin_session={_TOKEN}")["status"] == 503
     finally:
         # Undo before the reload: the token is read into module state at import,
