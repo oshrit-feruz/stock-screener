@@ -310,6 +310,9 @@ function regimeBannerHTML(regime) {
     + '<div class="rb-head">' + head + '</div>' + body + note + '</div>';
 }
 
+// Paints the Signals tab: the provenance line, the market-regime banner, and
+// either the BUY cards or the empty state. The banner renders on both paths —
+// "no setups today" still has to say where the market stands.
 function renderSignals(data) {
   var ctr = document.getElementById('signals-container');
   // Provenance, not decoration: the server may legitimately serve the newest
