@@ -274,6 +274,42 @@ function loadSignals() {
     });
 }
 
+// The market-regime line above the signal list. The overlay only deploys a
+// sleeve while SPY is at least `gate_dd` below its trailing high, so the
+// reader of a BUY list has to see where the market actually stands — and a
+// null regime (SPY unavailable) is stated, never quietly rendered as "calm".
+function regimeBannerHTML(regime) {
+  if (!regime || typeof regime.spy_dd_from_high !== 'number') {
+    return '<div class="regime-banner regime-unknown">'
+      + '<div class="rb-head">&#9888;&#65039; Market drawdown unavailable</div>'
+      + 'SPY could not be read for this scan, so the dislocation gate is unknown.'
+      + '</div>';
+  }
+  var ticker  = regime.market_ticker || 'SPY';
+  var dd      = (regime.spy_dd_from_high * 100).toFixed(1);
+  var gate    = ((typeof regime.gate_dd === 'number' ? regime.gate_dd : 0.10) * 100).toFixed(0);
+  var lookbk  = regime.lookback_days || 252;
+  var active  = regime.in_dislocation === true;
+  var head    = active
+    ? '&#128200; Dislocation &mdash; sleeves active'
+    : '&#128737;&#65039; Calm market &mdash; sleeves on hold';
+  var body    = escHtml(ticker) + ' is <b class="rb-dd">' + dd + '%</b> below its '
+    + lookbk + '-day high (gate: ' + gate + '%). '
+    + (active
+        ? 'The overlay is live &mdash; BUY signals are actionable now.'
+        : 'BUY signals below are watch-only until the drawdown reaches ' + gate + '%.');
+  var note = '';
+  if (typeof regime.bars_in_window === 'number' && regime.bars_in_window < lookbk) {
+    note = '<div class="rb-note">Partial window: ' + regime.bars_in_window
+      + ' of ' + lookbk + ' bars &mdash; the trailing high may understate the drawdown.</div>';
+  }
+  if (regime.as_of) {
+    note += '<div class="rb-note">Regime as of ' + escHtml(regime.as_of) + '.</div>';
+  }
+  return '<div class="regime-banner ' + (active ? 'regime-on' : 'regime-off') + '">'
+    + '<div class="rb-head">' + head + '</div>' + body + note + '</div>';
+}
+
 function renderSignals(data) {
   var ctr = document.getElementById('signals-container');
   // Provenance, not decoration: the server may legitimately serve the newest
@@ -286,8 +322,11 @@ function renderSignals(data) {
   }
   document.getElementById('last-updated').textContent = label;
 
+  var regimeHTML = regimeBannerHTML(data.market_regime);
+
   if (!data.buy_signals || data.buy_signals.length === 0) {
     ctr.innerHTML = [
+      regimeHTML,
       '<div class="empty">',
       '  <div class="em-h">No setups today.</div>',
       '  <p>The signal is selective.<br>',
@@ -301,7 +340,7 @@ function renderSignals(data) {
     return;
   }
 
-  ctr.innerHTML = data.buy_signals.map(sigCardHTML).join('');
+  ctr.innerHTML = regimeHTML + data.buy_signals.map(sigCardHTML).join('');
   maybeShowFirstSignalTooltip();
 }
 
