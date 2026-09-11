@@ -1,6 +1,6 @@
 # Beta tracking — opened positions
 
-_As of 2026-09-10 · beta start 2026-09-08 · observation-only (does not affect trading logic)._
+_As of 2026-09-11 · beta start 2026-09-08 · observation-only (does not affect trading logic)._
 
 ## Summary
 
@@ -12,7 +12,7 @@ _As of 2026-09-10 · beta start 2026-09-08 · observation-only (does not affect 
 
 | Ticker | Entry date | Entry $ | Current $ | Days (of 504) | Return | SPY | Money-mkt | vs SPY | vs MM |
 |---|---|--:|--:|--:|--:|--:|--:|--:|--:|
-| COIN | 2026-09-08 | 184.64 | 174.72 | 2/504 | -5.37% | +349.88% | +0.02% | -355.25% | -5.39% |
+| COIN | 2026-09-08 | 184.64 | 172.28 | 3/504 | -6.69% | +347.18% | +0.03% | -353.88% | -6.72% |
 
 ## Closed positions
 
